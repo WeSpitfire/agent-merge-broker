@@ -1,0 +1,67 @@
+{
+  "name": "agent-merge-broker",
+  "version": "0.1.0",
+  "description": "A transaction coordinator for parallel code-producing agents and humans.",
+  "type": "module",
+  "bin": {
+    "merge-broker": "dist/cli.js",
+    "amb": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "schemas",
+    "templates",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-reporter=spec dist/*.test.js",
+    "test:source": "tsx --test src/*.test.ts",
+    "verify": "npm run lint && npm run build && npm test",
+    "prepublishOnly": "npm run verify"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "keywords": [
+    "ai-agents",
+    "git",
+    "merge-queue",
+    "worktree",
+    "ci",
+    "developer-tools"
+  ],
+  "author": "PowerHouse Exteriors",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WeSpitfire/agent-merge-broker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/WeSpitfire/agent-merge-broker/issues"
+  },
+  "homepage": "https://github.com/WeSpitfire/agent-merge-broker#readme",
+  "dependencies": {
+    "commander": "^13.1.0",
+    "picomatch": "^4.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/picomatch": "^4.0.2",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/config.schema.json",
+  "title": "Agent Merge Broker configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "baseBranch",
+    "remote",
+    "stateDirectory",
+    "leases",
+    "policies",
+    "scheduling",
+    "integration",
+    "validation",
+    "publish"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "baseBranch": { "type": "string", "minLength": 1 },
+    "remote": { "type": "string", "minLength": 1 },
+    "stateDirectory": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Safe relative directory beneath Git's common directory; Git-reserved top-level names are rejected."
+    },
+    "leases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ttlSeconds", "lockTimeoutSeconds", "serializedPatterns"],
+      "properties": {
+        "ttlSeconds": { "type": "integer", "minimum": 1 },
+        "lockTimeoutSeconds": { "type": "integer", "minimum": 1 },
+        "serializedPatterns": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unexpectedPaths", "requireCleanWorktree", "requireDependencies"],
+      "properties": {
+        "unexpectedPaths": { "enum": ["error", "warn", "allow"] },
+        "requireCleanWorktree": { "type": "boolean" },
+        "requireDependencies": { "type": "boolean" }
+      }
+    },
+    "scheduling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxTasks", "maxCommits", "maxWaitSeconds", "allowPathOverlap"],
+      "properties": {
+        "maxTasks": { "type": "integer", "minimum": 1 },
+        "maxCommits": { "type": "integer", "minimum": 1 },
+        "maxWaitSeconds": { "type": "integer", "minimum": 1 },
+        "allowPathOverlap": { "type": "boolean" }
+      }
+    },
+    "integration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchPrefix", "history", "keepFailedWorktrees"],
+      "properties": {
+        "branchPrefix": { "type": "string", "minLength": 1 },
+        "history": { "enum": ["preserve", "squash"] },
+        "keepFailedWorktrees": { "type": "boolean" }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["focused", "authoritative"],
+      "properties": {
+        "focused": { "type": "array", "items": { "$ref": "#/$defs/validator" } },
+        "authoritative": { "type": "array", "items": { "$ref": "#/$defs/validator" } }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "draft", "labels", "titleTemplate"],
+      "properties": {
+        "mode": { "enum": ["none", "branch", "pull-request"] },
+        "draft": { "type": "boolean" },
+        "labels": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "titleTemplate": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "validator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "command"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 },
+        "paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+dist/*.test.*
+src/
+.github/
+CHANGELOG.md
+CONTRIBUTING.md
+tsconfig.json
