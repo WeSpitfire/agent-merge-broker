@@ -24,10 +24,11 @@ This repository coordinates parallel work with Agent Merge Broker.
 The broker owns integration ordering, conflict resolution requests, validation, batching, and publication.
 `;
 
-export function defaultConfig(baseBranch = "main", remote = "origin"): BrokerConfig {
+export function defaultConfig(baseBranch = "main", remote = "origin", baseRef = baseBranch): BrokerConfig {
   return {
     version: CONFIG_VERSION,
     baseBranch,
+    baseRef,
     remote,
     stateDirectory: "merge-broker",
     leases: {
@@ -83,7 +84,7 @@ export function configPath(repoRoot: string): string {
 
 export async function initializeConfig(
   repoRoot: string,
-  options: { baseBranch?: string; remote?: string; force?: boolean } = {},
+  options: { baseBranch?: string; baseRef?: string; remote?: string; force?: boolean } = {},
 ): Promise<{ path: string; config: BrokerConfig; created: boolean }> {
   const target = configPath(repoRoot);
   if ((await exists(target)) && !options.force) {
@@ -91,7 +92,7 @@ export async function initializeConfig(
     if (!(await exists(instructions))) await writeFile(instructions, AGENT_INSTRUCTIONS, "utf8");
     return { path: target, config: await loadConfig(repoRoot), created: false };
   }
-  const config = defaultConfig(options.baseBranch, options.remote);
+  const config = defaultConfig(options.baseBranch, options.remote, options.baseRef);
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   const instructions = path.join(path.dirname(target), AGENT_INSTRUCTIONS_FILENAME);
@@ -154,6 +155,7 @@ export function validateConfig(value: unknown): BrokerConfig {
   assertAllowedKeys(config, "root", [
     "version",
     "baseBranch",
+    "baseRef",
     "remote",
     "stateDirectory",
     "leases",
@@ -167,8 +169,10 @@ export function validateConfig(value: unknown): BrokerConfig {
     throw new BrokerError("INVALID_CONFIG", `Unsupported configuration version: ${String(config.version)}`);
   }
   assertString(config.baseBranch, "baseBranch");
+  assertString(config.baseRef, "baseRef");
   assertString(config.remote, "remote");
   assertSafeGitName(config.baseBranch, "baseBranch");
+  assertSafeGitName(config.baseRef, "baseRef");
   assertSafeGitName(config.remote, "remote");
   assertString(config.stateDirectory, "stateDirectory");
   if (

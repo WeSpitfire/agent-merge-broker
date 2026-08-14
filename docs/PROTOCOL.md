@@ -64,6 +64,8 @@ Avoid `**/*` unless the task genuinely owns the repository. A committed file out
 
 Dependencies refer to broker task IDs. With `requireDependencies` enabled, every referenced task must exist before submission. A dependency is schedulable when it is selected earlier in the same batch or has reached `merged` status.
 
+Repository adapters should distinguish `baseRef`, the Git revision used to build transactions, from `baseBranch`, the forge target. For repositories with a passive local checkout, use `baseRef: "origin/main"` and `baseBranch: "main"`.
+
 Published or prepared work is not treated as merged. This prevents a child from being integrated against a base that does not contain its parent.
 
 ## Stable error categories

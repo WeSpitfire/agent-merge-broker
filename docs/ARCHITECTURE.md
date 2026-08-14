@@ -71,7 +71,7 @@ Expected path globs coordinate editing leases. Actual paths are derived from Git
 
 For a selected batch the broker:
 
-1. Resolves the configured base branch to a specific SHA.
+1. Resolves the configured integration `baseRef` to a specific SHA while retaining `baseBranch` as the forge target.
 2. Marks selected tasks `integrating` under the state lock.
 3. Adds a detached Git worktree at that SHA.
 4. Cherry-picks each receipt commit with `-x` in dependency order.

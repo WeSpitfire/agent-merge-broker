@@ -124,11 +124,13 @@ program
   .command("init")
   .description("initialize Merge Broker in the current Git repository")
   .option("--base <branch>", "base branch", "main")
+  .option("--base-ref <revision>", "Git revision used as the integration base")
   .option("--remote <name>", "Git remote", "origin")
   .option("--force", "replace the existing configuration")
-  .action(async (options: { base: string; remote: string; force?: boolean }) => {
+  .action(async (options: { base: string; baseRef?: string; remote: string; force?: boolean }) => {
     const result = await MergeBroker.initialize(globalOptions().cwd, {
       baseBranch: options.base,
+      ...(options.baseRef ? { baseRef: options.baseRef } : {}),
       remote: options.remote,
       force: options.force ?? false,
     });

@@ -43,7 +43,7 @@ After publication, applications will be able to install it as a development tool
 
 ```bash
 npm install --save-dev agent-merge-broker
-npx merge-broker init --base main
+npx merge-broker init --base main --base-ref origin/main
 ```
 
 `init` writes two portable files into the application:
@@ -58,7 +58,7 @@ Runtime state, receipt records, manifests, locks, and integration worktrees live
 Initialize an existing Git repository and edit its generated configuration:
 
 ```bash
-merge-broker init --base main --remote origin
+merge-broker init --base main --base-ref origin/main --remote origin
 merge-broker doctor
 ```
 
@@ -104,12 +104,13 @@ merge-broker batch sync <batch-id>
 
 ## Configuration
 
-The generated `.merge-broker/config.json` is intentionally explicit and reviewable:
+The generated `.merge-broker/config.json` is intentionally explicit and reviewable. `baseBranch` is the forge/PR target, while `baseRef` is the Git revision used to construct a batch; repositories that keep a passive local `main` should use `origin/main`:
 
 ```json
 {
   "version": 1,
   "baseBranch": "main",
+  "baseRef": "origin/main",
   "remote": "origin",
   "stateDirectory": "merge-broker",
   "leases": {

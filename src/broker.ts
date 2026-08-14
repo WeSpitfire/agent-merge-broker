@@ -126,7 +126,7 @@ export class MergeBroker {
 
   static async initialize(
     cwd = process.cwd(),
-    options: { baseBranch?: string; remote?: string; force?: boolean } = {},
+    options: { baseBranch?: string; baseRef?: string; remote?: string; force?: boolean } = {},
   ): Promise<{ repoRoot: string; configPath: string; created: boolean }> {
     const repo = await GitRepository.discover(cwd);
     const initialized = await initializeConfig(repo.root, options);
@@ -144,7 +144,7 @@ export class MergeBroker {
     if (input.priority !== undefined && !Number.isInteger(input.priority)) {
       throw new BrokerError("INVALID_TASK", "Task priority must be an integer.");
     }
-    const baseSha = await this.repo.resolveCommit(input.base ?? this.config.baseBranch);
+    const baseSha = await this.repo.resolveCommit(input.base ?? this.config.baseRef);
     const timestamp = now();
     return await this.store.transaction((state, audit) => {
       if (Object.hasOwn(state.tasks, input.id)) throw new BrokerError("TASK_EXISTS", `Task already exists: ${input.id}`);
@@ -179,7 +179,7 @@ export class MergeBroker {
     const token = createToken();
     const timestamp = now();
     const expiresAt = new Date(Date.now() + this.config.leases.ttlSeconds * 1_000).toISOString();
-    const defaultBase = await this.repo.resolveCommit(input.base ?? this.config.baseBranch);
+    const defaultBase = await this.repo.resolveCommit(input.base ?? this.config.baseRef);
     return await this.store.transaction((state, audit) => {
       let task = Object.hasOwn(state.tasks, input.id) ? state.tasks[input.id] : undefined;
       if (!task) {
@@ -440,7 +440,7 @@ export class MergeBroker {
         });
       }
       const id = batchId();
-      const baseSha = await this.repo.resolveCommit(this.config.baseBranch);
+      const baseSha = await this.repo.resolveCommit(this.config.baseRef);
       const worktree = path.join(this.store.worktreesDirectory, id);
       const batch: BatchRecord = {
         id,
@@ -794,7 +794,7 @@ export class MergeBroker {
 
   async doctor(): Promise<Record<string, unknown>> {
     const [baseSha, clean, worktrees] = await Promise.all([
-      this.repo.resolveCommit(this.config.baseBranch),
+      this.repo.resolveCommit(this.config.baseRef),
       this.repo.isClean(),
       this.repo.listWorktrees(),
     ]);
@@ -805,6 +805,7 @@ export class MergeBroker {
       stateDirectory: this.store.directory,
       config: path.join(this.repo.root, ".merge-broker", "config.json"),
       baseBranch: this.config.baseBranch,
+      baseRef: this.config.baseRef,
       baseSha,
       worktreeClean: clean,
       worktreeCount: worktrees.length,

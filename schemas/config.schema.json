@@ -7,6 +7,7 @@
   "required": [
     "version",
     "baseBranch",
+    "baseRef",
     "remote",
     "stateDirectory",
     "leases",
@@ -19,6 +20,11 @@
   "properties": {
     "version": { "const": 1 },
     "baseBranch": { "type": "string", "minLength": 1 },
+    "baseRef": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Git revision used for integration, such as origin/main; separate from the forge target branch."
+    },
     "remote": { "type": "string", "minLength": 1 },
     "stateDirectory": {
       "type": "string",

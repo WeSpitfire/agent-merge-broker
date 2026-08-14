@@ -149,6 +149,7 @@ test("publishes one integration branch and reconciles it after merge", async (co
 
   const config = await loadConfig(repo);
   config.publish.mode = "branch";
+  config.baseRef = "origin/main";
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   const broker = await MergeBroker.open(repo);
   const claim = await broker.claimTask({ id: "PUBLISH", holder: "agent", expectedPaths: ["src/publish.ts"] });

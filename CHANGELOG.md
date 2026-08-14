@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 — Unreleased
+
+- Separated the integration `baseRef` from the forge target `baseBranch` so passive local main branches cannot produce stale batches.
+
 ## 0.1.0 — Unreleased
 
 - Added versioned repository configuration and generated agent instructions.

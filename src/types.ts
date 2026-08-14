@@ -27,6 +27,7 @@ export interface ValidatorConfig {
 export interface BrokerConfig {
   version: typeof CONFIG_VERSION;
   baseBranch: string;
+  baseRef: string;
   remote: string;
   stateDirectory: string;
   leases: {
