@@ -68,9 +68,21 @@ test("claims, submits, verifies, and transactionally batches independent commits
   const integrated = await broker.integrate();
   assert.equal(integrated.batch.status, "prepared");
   assert.ok(integrated.batch.branchName);
+  assert.ok(integrated.batch.provenancePath);
+  assert.ok(integrated.batch.integratedHeadSha);
   assert.equal((await broker.task("TASK-A")).status, "batched");
   assert.equal(await git(repo, "show", `${integrated.batch.branchName}:src/a/feature.ts`), "export const a = 1;");
   assert.equal(await git(repo, "show", `${integrated.batch.branchName}:src/b/feature.ts`), "export const b = 2;");
+  const provenance = JSON.parse(
+    await git(repo, "show", `${integrated.batch.branchName}:${integrated.batch.provenancePath}`),
+  ) as {
+    batchId: string;
+    integratedHeadSha: string;
+    taskIds: string[];
+  };
+  assert.equal(provenance.batchId, integrated.batch.id);
+  assert.equal(provenance.integratedHeadSha, await git(repo, "rev-parse", `${integrated.batch.branchName}^`));
+  assert.deepEqual(provenance.taskIds, ["TASK-A", "TASK-B"]);
 
   await broker.markBatchMerged(integrated.batch.id);
   assert.equal((await broker.task("TASK-A")).status, "merged");
@@ -91,9 +103,15 @@ test("rejects overlapping active leases and out-of-scope receipts", async (conte
     (error: unknown) => error instanceof BrokerError && error.code === "INVALID_TASK",
   );
   const claim = await broker.claimTask({ id: "ONE", holder: "agent-one", expectedPaths: ["src/shared/**"] });
+  const extended = await broker.extendTask("ONE", ["src/owned/**"], claim.token);
+  assert.deepEqual(extended.expectedPaths, ["src/shared/**", "src/owned/**"]);
   await assert.rejects(
     broker.claimTask({ id: "TWO", holder: "agent-two", expectedPaths: ["src/shared/file.ts"] }),
     (error: unknown) => error instanceof BrokerError && error.code === "LEASE_CONFLICT",
+  );
+  await assert.rejects(
+    broker.extendTask("ONE", ["src/shared/file.ts"], "wrong-token"),
+    (error: unknown) => error instanceof BrokerError && error.code === "LEASE_TOKEN",
   );
   const commit = await commitFile(repo, "outside", "docs/outside.md", "outside\n");
   await assert.rejects(

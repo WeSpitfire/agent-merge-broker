@@ -69,7 +69,16 @@
       "properties": {
         "branchPrefix": { "type": "string", "minLength": 1 },
         "history": { "enum": ["preserve", "squash"] },
-        "keepFailedWorktrees": { "type": "boolean" }
+        "keepFailedWorktrees": { "type": "boolean" },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "directory"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "directory": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "validation": {

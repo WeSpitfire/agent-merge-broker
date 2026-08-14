@@ -78,9 +78,10 @@ For a selected batch the broker:
 5. Runs applicable focused validators after each task.
 6. Runs all authoritative validators over the complete batch.
 7. Optionally squashes the batch while preserving task IDs in the message.
-8. Creates a uniquely named local branch at the verified head.
-9. Removes the disposable worktree.
-10. Optionally pushes the branch and opens one GitHub PR.
+8. Optionally commits a provenance manifest whose parent is the integrated task head.
+9. Creates a uniquely named local branch at the resulting head.
+10. Removes the disposable worktree.
+11. Optionally pushes the branch and opens one GitHub PR.
 
 A failed cherry-pick is aborted. No retained branch is created after a validation failure. Configurable failed-worktree retention exists for diagnosis, but defaults off because worktrees can contain build products and secrets.
 
@@ -91,6 +92,12 @@ Publication supports three modes:
 - `none`: retain a local branch only.
 - `branch`: push one branch.
 - `pull-request`: push and invoke `gh pr create`.
+
+When provenance is enabled, the final generated commit records the base SHA,
+integrated parent, task receipts, paths, and completed broker validators. A
+remote workflow can validate this structure before dependency installation and
+then either trust broker-authoritative validation or run the single
+authoritative suite itself.
 
 PR reconciliation queries GitHub for merged state. Branch reconciliation fetches the configured base and checks that the batch head is an ancestor. Squash and rebase workflows may require the explicit `batch complete` escape hatch because the local batch head can disappear from final ancestry.
 

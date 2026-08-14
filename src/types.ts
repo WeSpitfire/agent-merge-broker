@@ -50,6 +50,10 @@ export interface BrokerConfig {
     branchPrefix: string;
     history: HistoryMode;
     keepFailedWorktrees: boolean;
+    provenance?: {
+      enabled: boolean;
+      directory: string;
+    };
   };
   validation: {
     focused: ValidatorConfig[];
@@ -117,6 +121,8 @@ export interface BatchRecord {
   baseSha: string;
   branchName?: string;
   headSha?: string;
+  integratedHeadSha?: string;
+  provenancePath?: string;
   worktree?: string;
   validations: ValidationResult[];
   createdAt: string;
@@ -124,6 +130,30 @@ export interface BatchRecord {
   publishedAt?: string;
   pullRequestUrl?: string;
   error?: string;
+}
+
+export interface BatchProvenance {
+  version: 1;
+  generator: "agent-merge-broker";
+  batchId: string;
+  baseBranch: string;
+  baseSha: string;
+  integratedHeadSha: string;
+  taskIds: string[];
+  tasks: Array<{
+    id: string;
+    commits: string[];
+    actualPaths: string[];
+    dependsOn: string[];
+  }>;
+  validations: Array<{
+    name: string;
+    scope: "focused" | "authoritative";
+    taskId?: string;
+    exitCode: number;
+    durationMs: number;
+  }>;
+  createdAt: string;
 }
 
 export interface AuditEvent {

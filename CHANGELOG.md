@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 — Unreleased
+
+- Added committed batch-provenance manifests that bind a published integration
+  branch to its base SHA, integrated parent, task receipts, and broker validators.
+- Made provenance opt-in compatible for existing version-one configurations and
+  enabled it by default for new installations.
+- Added token-authenticated active-lease scope extension for coordinator adapters.
+
 ## 0.1.1 — Unreleased
 
 - Separated the integration `baseRef` from the forge target `baseBranch` so passive local main branches cannot produce stale batches.

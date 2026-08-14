@@ -3,5 +3,6 @@ export { GitRepository, type WorktreeInfo } from "./git.js";
 export { StateStore } from "./store.js";
 export { defaultConfig, initializeConfig, loadConfig, validateConfig } from "./config.js";
 export { scheduleTasks } from "./scheduler.js";
+export { buildBatchProvenance, provenancePath } from "./provenance.js";
 export { BrokerError, CommandError, ValidationError } from "./errors.js";
 export type * from "./types.js";

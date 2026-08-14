@@ -55,6 +55,10 @@ export function defaultConfig(baseBranch = "main", remote = "origin", baseRef = 
       branchPrefix: "merge-broker/",
       history: "preserve",
       keepFailedWorktrees: false,
+      provenance: {
+        enabled: true,
+        directory: ".merge-broker/attestations",
+      },
     },
     validation: {
       focused: [],
@@ -213,13 +217,34 @@ export function validateConfig(value: unknown): BrokerConfig {
   assertPositiveInteger(config.scheduling?.maxCommits, "scheduling.maxCommits");
   assertPositiveInteger(config.scheduling?.maxWaitSeconds, "scheduling.maxWaitSeconds");
   assertBoolean(config.scheduling?.allowPathOverlap, "scheduling.allowPathOverlap");
-  assertAllowedKeys(config.integration, "integration", ["branchPrefix", "history", "keepFailedWorktrees"]);
+  assertAllowedKeys(config.integration, "integration", [
+    "branchPrefix",
+    "history",
+    "keepFailedWorktrees",
+    "provenance",
+  ]);
   assertString(config.integration?.branchPrefix, "integration.branchPrefix");
   assertSafeGitName(config.integration.branchPrefix, "integration.branchPrefix", true);
   if (!(["preserve", "squash"] as const).includes(config.integration?.history)) {
     throw new BrokerError("INVALID_CONFIG", "integration.history must be preserve or squash.");
   }
   assertBoolean(config.integration?.keepFailedWorktrees, "integration.keepFailedWorktrees");
+  if (config.integration.provenance !== undefined) {
+    assertAllowedKeys(config.integration.provenance, "integration.provenance", ["enabled", "directory"]);
+    assertBoolean(config.integration.provenance.enabled, "integration.provenance.enabled");
+    assertString(config.integration.provenance.directory, "integration.provenance.directory");
+    const directory = config.integration.provenance.directory.replaceAll("\\", "/");
+    if (
+      path.isAbsolute(directory) ||
+      directory === "." ||
+      directory.split("/").some((part) => part === ".." || part === ".git")
+    ) {
+      throw new BrokerError(
+        "INVALID_CONFIG",
+        "integration.provenance.directory must be a safe repository-relative directory.",
+      );
+    }
+  }
   assertAllowedKeys(config.validation, "validation", ["focused", "authoritative"]);
   if (!Array.isArray(config.validation.focused) || !Array.isArray(config.validation.authoritative)) {
     throw new BrokerError("INVALID_CONFIG", "validation.focused and validation.authoritative must be arrays.");

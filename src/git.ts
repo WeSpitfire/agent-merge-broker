@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
 import { runCommand, type CommandResult } from "./process.js";
 
@@ -131,6 +131,24 @@ export class GitRepository {
 
   async squash(cwd: string, baseSha: string, message: string): Promise<string> {
     await this.git(["reset", "--soft", baseSha], cwd);
+    await this.git(["commit", "-m", message], cwd);
+    return await this.currentHead(cwd);
+  }
+
+  async commitGeneratedFile(
+    cwd: string,
+    relativePath: string,
+    contents: string,
+    message: string,
+  ): Promise<string> {
+    const target = path.resolve(cwd, relativePath);
+    const relative = path.relative(cwd, target);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new BrokerError("UNSAFE_PATH", `Generated file escapes the integration worktree: ${relativePath}`);
+    }
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, contents, "utf8");
+    await this.git(["add", "--", relativePath], cwd);
     await this.git(["commit", "-m", message], cwd);
     return await this.currentHead(cwd);
   }

@@ -8,6 +8,7 @@ import { scheduleTasks } from "./scheduler.js";
 import { StateStore } from "./store.js";
 import { runValidators } from "./validation.js";
 import { inspectPullRequest, publishBatch as publishPreparedBatch } from "./publisher.js";
+import { buildBatchProvenance, provenancePath } from "./provenance.js";
 import type {
   BatchRecord,
   BrokerConfig,
@@ -277,6 +278,52 @@ export class MergeBroker {
     });
   }
 
+  async extendTask(taskId: string, expectedPaths: string[], token: string): Promise<TaskRecord> {
+    if (expectedPaths.length === 0) {
+      throw new BrokerError("PATHS_REQUIRED", "At least one expected path pattern is required to extend a task.");
+    }
+    return await this.store.transaction((state, audit) => {
+      const task = requireTask(state, taskId);
+      verifyLease(task, token);
+      if (task.status !== "claimed") {
+        throw new BrokerError("TASK_NOT_CLAIMABLE", `Task ${task.id} cannot be extended while ${task.status}.`);
+      }
+      const nextPaths = [...new Set([...task.expectedPaths, ...expectedPaths])];
+      for (const existing of Object.values(state.tasks)) {
+        if (existing.id === task.id || !existing.lease || leaseExpired(existing)) continue;
+        if (patternSetsMayOverlap(nextPaths, existing.expectedPaths)) {
+          throw new BrokerError(
+            "LEASE_CONFLICT",
+            `Expected paths overlap active task ${existing.id}, leased by ${existing.lease.holder}.`,
+            { conflictingTask: existing.id },
+          );
+        }
+        const resources = this.config.leases.serializedPatterns.filter((resource) =>
+          patternSetsMayOverlap(nextPaths, [resource]),
+        );
+        const existingResources = this.config.leases.serializedPatterns.filter((resource) =>
+          patternSetsMayOverlap(existing.expectedPaths, [resource]),
+        );
+        const sharedResource = resources.find((resource) => existingResources.includes(resource));
+        if (sharedResource) {
+          throw new BrokerError(
+            "LEASE_CONFLICT",
+            `Serialized resource ${sharedResource} is leased by task ${existing.id}.`,
+            { conflictingTask: existing.id, resource: sharedResource },
+          );
+        }
+      }
+      task.expectedPaths = nextPaths;
+      task.updatedAt = now();
+      audit("task.extended", {
+        ...(task.lease?.holder ? { actor: task.lease.holder } : {}),
+        taskId,
+        details: { expectedPaths: nextPaths },
+      });
+      return structuredClone(task);
+    });
+  }
+
   async releaseTask(taskId: string, token: string): Promise<TaskRecord> {
     return await this.store.transaction((state, audit) => {
       const task = requireTask(state, taskId);
@@ -516,6 +563,24 @@ export class MergeBroker {
             baseSha,
             `Integrate batch ${id}\n\n${plan.selected.map((task) => `Task: ${task.id}`).join("\n")}`,
           );
+        }
+        const provenance = this.config.integration.provenance;
+        if (provenance?.enabled) {
+          const integratedHeadSha = headSha;
+          const relativePath = provenancePath(provenance.directory, id);
+          const record = buildBatchProvenance({
+            batch,
+            tasks: plan.selected,
+            integratedHeadSha,
+          });
+          headSha = await this.repo.commitGeneratedFile(
+            worktree,
+            relativePath,
+            `${JSON.stringify(record, null, 2)}\n`,
+            `Record Merge Broker batch ${id}`,
+          );
+          batch.integratedHeadSha = integratedHeadSha;
+          batch.provenancePath = relativePath;
         }
         batch.headSha = headSha;
         batch.finishedAt = now();

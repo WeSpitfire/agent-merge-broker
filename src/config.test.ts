@@ -32,3 +32,19 @@ test("rejects unknown fields instead of silently ignoring policy typos", () => {
     (error: unknown) => error instanceof BrokerError && /schedulling/u.test(error.message),
   );
 });
+
+test("accepts legacy version-one configuration without provenance settings", () => {
+  const config = defaultConfig();
+  delete config.integration.provenance;
+  assert.deepEqual(validateConfig(config), config);
+});
+
+test("rejects provenance directories that escape the repository", () => {
+  const config = defaultConfig();
+  if (!config.integration.provenance) throw new Error("default provenance missing");
+  config.integration.provenance.directory = "../attestations";
+  assert.throws(
+    () => validateConfig(config),
+    (error: unknown) => error instanceof BrokerError && error.code === "INVALID_CONFIG",
+  );
+});

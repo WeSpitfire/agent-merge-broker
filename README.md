@@ -16,6 +16,7 @@ The broker establishes a single integration authority while keeping implementati
 - Every batch is tested through real cherry-picks in a disposable worktree.
 - Focused checks run after each task and authoritative checks run over the batch.
 - Successful work becomes one local branch, remote branch, or GitHub pull request.
+- Published branches can carry a committed provenance manifest for fast remote policy checks.
 - Tasks are dependency-complete only after their batch is actually merged.
 - An append-only audit stream records lifecycle decisions and validation results.
 
@@ -132,7 +133,11 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
   "integration": {
     "branchPrefix": "merge-broker/",
     "history": "preserve",
-    "keepFailedWorktrees": false
+    "keepFailedWorktrees": false,
+    "provenance": {
+      "enabled": true,
+      "directory": ".merge-broker/attestations"
+    }
   },
   "validation": {
     "focused": [
@@ -169,12 +174,21 @@ Commands may also use the shell-safe placeholders `{taskId}` and `{files}`. Vali
 
 The JSON schemas in [`schemas/`](schemas/) can be used by editors, adapters, and independent receipt producers.
 
+### One authoritative CI pass
+
+Repositories that make GitHub the authoritative validator can leave broker
+authoritative validators empty, keep provenance enabled, and reject any PR
+without a valid broker manifest before installing dependencies. The full lint,
+type, test, and build suite then runs exactly once on the assembled broker PR.
+Task worktrees retain only fast changed-scope feedback, while deployment builds
+the already-checked revision without repeating the whole suite.
+
 ## Command surface
 
 ```text
 merge-broker init
 merge-broker doctor
-merge-broker task register|claim|heartbeat|submit|retry|release|cancel|show
+merge-broker task register|claim|extend|heartbeat|submit|retry|release|cancel|show
 merge-broker status
 merge-broker plan
 merge-broker integrate [--dry-run] [--publish]
