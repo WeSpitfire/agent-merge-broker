@@ -6,6 +6,7 @@ import {
   access,
   appendFile,
   mkdir,
+  open,
   readFile,
   rename,
   rm,
@@ -14,6 +15,22 @@ import {
 } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
 import { STATE_VERSION, type AuditEvent, type BrokerState, type CommitReceipt } from "./types.js";
+
+/** Most recent audit bytes scanned by a read. Older events remain in the rotated segments. */
+const AUDIT_TAIL_BYTES = 1_024 * 1_024;
+
+/** Size at which the active audit file is rotated into an archive segment. */
+const AUDIT_ROTATE_BYTES = 16 * 1_024 * 1_024;
+
+export interface LockStatus {
+  name: string;
+  held: boolean;
+  path: string;
+  owner?: { pid?: number; host?: string; createdAt?: string };
+  ageMs?: number;
+  /** True only when the holder is provably gone: this machine, and the process no longer exists. */
+  abandoned?: boolean;
+}
 
 const delay = async (milliseconds: number): Promise<void> => {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -36,6 +53,7 @@ export type AuditRecorder = (
 export class StateStore {
   readonly directory: string;
   readonly worktreesDirectory: string;
+  readonly archiveDirectory: string;
   private readonly stateFile: string;
   private readonly auditFile: string;
   private readonly receiptsDirectory: string;
@@ -45,6 +63,7 @@ export class StateStore {
   constructor(commonGitDir: string, stateDirectory: string, lockTimeoutSeconds: number) {
     this.directory = path.resolve(commonGitDir, stateDirectory);
     this.worktreesDirectory = path.join(this.directory, "worktrees");
+    this.archiveDirectory = path.join(this.directory, "archive");
     this.stateFile = path.join(this.directory, "state.json");
     this.auditFile = path.join(this.directory, "audit.jsonl");
     this.receiptsDirectory = path.join(this.directory, "receipts");
@@ -58,6 +77,7 @@ export class StateStore {
       mkdir(this.worktreesDirectory, { recursive: true }),
       mkdir(this.receiptsDirectory, { recursive: true }),
       mkdir(this.batchesDirectory, { recursive: true }),
+      mkdir(this.archiveDirectory, { recursive: true }),
     ]);
     if (!(await exists(this.stateFile))) {
       try {
@@ -105,6 +125,7 @@ export class StateStore {
       const result = await mutator(state, record);
       await this.atomicWrite(this.stateFile, state);
       if (events.length > 0) {
+        await this.rotateAuditIfLarge();
         await appendFile(this.auditFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
       }
       return result;
@@ -129,15 +150,110 @@ export class StateStore {
     return target;
   }
 
+  /**
+   * Reads the tail of the active audit stream. Deliberately tolerant: a tail read can begin
+   * mid-line, and a crash between writing and flushing can leave a truncated final line. Neither is
+   * a reason to make the whole audit trail unreadable, which is exactly when it is needed most.
+   */
   async readAudit(limit = 100): Promise<AuditEvent[]> {
     if (!(await exists(this.auditFile))) return [];
-    const contents = await readFile(this.auditFile, "utf8");
-    return contents
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as AuditEvent)
-      .slice(-limit);
+    const handle = await open(this.auditFile, "r");
+    let text: string;
+    let partialStart: boolean;
+    try {
+      const { size } = await handle.stat();
+      const start = Math.max(0, size - AUDIT_TAIL_BYTES);
+      partialStart = start > 0;
+      const length = size - start;
+      if (length === 0) return [];
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, start);
+      text = buffer.toString("utf8");
+    } finally {
+      await handle.close();
+    }
+    const lines = text.split("\n").filter((line) => line.trim() !== "");
+    if (partialStart) lines.shift();
+    const events: AuditEvent[] = [];
+    for (const line of lines) {
+      try {
+        events.push(JSON.parse(line) as AuditEvent);
+      } catch {
+        continue;
+      }
+    }
+    return events.slice(-limit);
+  }
+
+  /**
+   * Moves the active audit file aside once it grows large enough to make reads expensive. Segments
+   * are never deleted: an audit stream that silently forgets is worse than a large one.
+   */
+  private async rotateAuditIfLarge(): Promise<void> {
+    const current = await stat(this.auditFile).catch(() => undefined);
+    if (!current || current.size < AUDIT_ROTATE_BYTES) return;
+    const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+    await mkdir(this.archiveDirectory, { recursive: true });
+    await rename(this.auditFile, path.join(this.archiveDirectory, `audit-${stamp}.jsonl`));
+  }
+
+  /** Writes a retired slice of state to the archive directory and returns its path. */
+  async archive(name: string, value: unknown): Promise<string> {
+    await mkdir(this.archiveDirectory, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+    const label = name.replace(/[^a-zA-Z0-9._-]/gu, "-").slice(0, 32) || "archive";
+    const target = path.join(this.archiveDirectory, `${label}-${stamp}.json`);
+    await this.atomicWrite(target, value);
+    return target;
+  }
+
+  async inspectLock(name: string): Promise<LockStatus> {
+    const lockDirectory = path.join(this.directory, `${name}.lock`);
+    const lockStat = await stat(lockDirectory).catch(() => undefined);
+    if (!lockStat) return { name, held: false, path: lockDirectory };
+    let owner: LockStatus["owner"];
+    try {
+      const parsed = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as {
+        pid?: unknown;
+        host?: unknown;
+        createdAt?: unknown;
+      };
+      owner = {
+        ...(Number.isInteger(parsed.pid) ? { pid: parsed.pid as number } : {}),
+        ...(typeof parsed.host === "string" ? { host: parsed.host } : {}),
+        ...(typeof parsed.createdAt === "string" ? { createdAt: parsed.createdAt } : {}),
+      };
+    } catch {
+      owner = undefined;
+    }
+    return {
+      name,
+      held: true,
+      path: lockDirectory,
+      ...(owner ? { owner } : {}),
+      ageMs: Date.now() - lockStat.mtimeMs,
+      abandoned: await this.lockOwnerCrashed(lockDirectory),
+    };
+  }
+
+  /**
+   * Releases a held lock. Without `force` this refuses unless the holder is provably gone, because
+   * removing a live lock allows two integrations to run against the same repository at once.
+   */
+  async releaseLock(name: string, options: { force?: boolean } = {}): Promise<LockStatus> {
+    const status = await this.inspectLock(name);
+    if (!status.held) return status;
+    if (!options.force && !status.abandoned) {
+      throw new BrokerError(
+        "LOCK_HELD",
+        `The ${name} lock is held by ${status.owner?.host ?? "an unknown host"} (pid ${
+          status.owner?.pid ?? "unknown"
+        }) and is not provably abandoned. Re-run with --force only after confirming no integration is running.`,
+        { lock: status },
+      );
+    }
+    await rm(status.path, { recursive: true, force: true });
+    return { ...status, held: false };
   }
 
   private async withLock<T>(name: string, operation: () => Promise<T>, staleMs = 60_000): Promise<T> {

@@ -11,9 +11,16 @@ permissions:
 jobs:
   verify:
     strategy:
+      fail-fast: false
       matrix:
-        node: [20, 22]
-    runs-on: ubuntu-latest
+        include:
+          - os: ubuntu-latest
+            node: 20
+          - os: ubuntu-latest
+            node: 22
+          - os: macos-latest
+            node: 22
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,5 +29,22 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
-      - if: matrix.node == 22
+      - if: matrix.os == 'ubuntu-latest' && matrix.node == 22
         run: npm pack --dry-run
+
+  # Windows is best-effort, not a supported platform: the shell selection and command quoting
+  # differ, and the surrounding toolchain (git worktree, gh) is the operator's responsibility. This
+  # job reports the real state without gating a release, so the gap stays visible instead of being
+  # discovered by the first Windows user.
+  windows:
+    continue-on-error: true
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: git config --global core.autocrlf false
+      - run: npm ci
+      - run: npm run verify

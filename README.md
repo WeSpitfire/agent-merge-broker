@@ -30,6 +30,9 @@ The `0.1.x` line contains the complete local broker core and GitHub CLI publishi
 - Git 2.31 or newer with worktree support
 - GitHub CLI only when `publish.mode` is `pull-request`
 
+Linux and macOS are the supported platforms and are covered by CI. Windows runs as an informational
+CI job: shell selection and command quoting differ there and are not yet supported.
+
 ## Install
 
 Until the first npm release, clone this repository and link the CLI:
@@ -126,6 +129,19 @@ Integration failures are attributed as narrowly as the evidence allows:
 
 `integration.maxAttempts` bounds automatic re-queueing so a task that never integrates eventually stops consuming CI capacity and waits for a human. `task retry` resets that budget.
 
+A process that dies mid-integration leaves its lock behind. A holder on this machine is reclaimed automatically once its process is gone, but a holder on another machine cannot be probed at all and would otherwise block integration for the full stale window. `merge-broker unlock` reports lock state and releases a lock whose owner is provably gone; `--force` overrides that check and should follow confirming that no integration is running.
+
+## Housekeeping
+
+`state.json` is rewritten in full on every transaction, including heartbeats, so completed work should not accumulate in it forever:
+
+```bash
+merge-broker prune --older-than 30 --dry-run
+merge-broker prune --older-than 30
+```
+
+Retired tasks and batches move to `<state>/archive/`, and the audit stream rotates into the same place once the active file grows large. Nothing is deleted. A completed task is kept in active state for as long as any retained task still declares it as a dependency, because the scheduler cannot distinguish a pruned dependency from one that has never merged.
+
 ## Configuration
 
 The generated `.merge-broker/config.json` is intentionally explicit and reviewable. `baseBranch` is the forge/PR target, while `baseRef` is the Git revision used to construct a batch; repositories that keep a passive local `main` should use `origin/main`:
@@ -165,6 +181,7 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
     }
   },
   "validation": {
+    "shell": "/bin/sh",
     "focused": [
       {
         "name": "related tests",
@@ -189,7 +206,13 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
 }
 ```
 
-Validator commands run inside the isolated integration worktree. They receive these environment variables:
+Validator commands run inside the isolated integration worktree, under `/bin/sh` unless
+`validation.shell` names another interpreter. The shell is deliberately fixed and is never a login
+shell: an integration decision must not depend on whose machine assembled the batch. The environment
+is inherited from the process that invoked the broker, minus `MERGE_BROKER_TOKEN`, so PATH and
+toolchain managers work while worker credentials stay out of repository-defined commands.
+
+Validators receive these environment variables:
 
 - `MERGE_BROKER_TASK_ID`
 - `MERGE_BROKER_FILES`, newline-separated
@@ -223,6 +246,8 @@ merge-broker batch list|show|publish|sync|complete
 merge-broker audit
 merge-broker metrics
 merge-broker events
+merge-broker prune [--older-than <days>] [--dry-run]
+merge-broker unlock [state|integration] [--force]
 merge-broker serve [--publish] [--eager]
 ```
 

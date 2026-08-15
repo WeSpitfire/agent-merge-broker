@@ -97,6 +97,11 @@
       "additionalProperties": false,
       "required": ["focused", "authoritative"],
       "properties": {
+        "shell": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Interpreter used to run validator commands. Defaults to /bin/sh, or ComSpec on Windows. Never a login shell: validation must not depend on personal dotfiles."
+        },
         "focused": { "type": "array", "items": { "$ref": "#/$defs/validator" } },
         "authoritative": { "type": "array", "items": { "$ref": "#/$defs/validator" } }
       }

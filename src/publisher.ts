@@ -87,6 +87,38 @@ export async function publishBatch(options: {
   return { mode: "pull-request", branchName: batch.branchName, pullRequestUrl: url, autoMergeEnabled };
 }
 
+export interface PullRequestMergeState {
+  state: string;
+  mergeStateStatus: string;
+  mergeable: string;
+}
+
+/**
+ * GitHub's own view of whether a pull request can merge. Returns undefined when the state cannot be
+ * read at all, which is treated as "do not merge" rather than as permission to proceed.
+ */
+export async function readMergeState(
+  repoRoot: string,
+  pullRequestUrl: string,
+): Promise<PullRequestMergeState | undefined> {
+  const result = await runCommand(
+    "gh",
+    ["pr", "view", pullRequestUrl, "--json", "state,mergeStateStatus,mergeable"],
+    { cwd: repoRoot, allowFailure: true },
+  );
+  if (result.exitCode !== 0) return undefined;
+  try {
+    const value = JSON.parse(result.stdout) as Partial<PullRequestMergeState>;
+    return {
+      state: value.state ?? "UNKNOWN",
+      mergeStateStatus: value.mergeStateStatus ?? "UNKNOWN",
+      mergeable: value.mergeable ?? "UNKNOWN",
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Hands the merge decision to GitHub: it lands the pull request once required checks pass, and
  * updates the branch itself when the base branch requires it. The broker never pushes to the base
@@ -105,16 +137,21 @@ export async function enableAutoMerge(
   if (result.exitCode === 0) return true;
 
   // GitHub refuses to queue auto-merge on a pull request that is already mergeable, which happens
-  // whenever the required checks finish before publication returns. Merging now is exactly what the
-  // queue would have done, because "clean" means the required checks already passed.
-  if (/clean status|not.*required|already.*mergeable/iu.test(`${result.stdout}\n${result.stderr}`)) {
+  // whenever the required checks finish before publication returns. Ask GitHub what the state is
+  // instead of reading the CLI's prose, which differs across gh versions and locales.
+  const mergeState = await readMergeState(repoRoot, pullRequestUrl);
+  if (mergeState?.state === "MERGED") return true;
+  if (mergeState?.mergeStateStatus === "CLEAN") {
+    // "CLEAN" means mergeable with every required check already passed, so merging now is exactly
+    // what the auto-merge queue would have done.
     const direct = await runCommand("gh", ["pr", "merge", pullRequestUrl, `--${config.publish.mergeMethod}`], {
       cwd: repoRoot,
       allowFailure: true,
     });
     if (direct.exitCode === 0) return true;
-    throw new BrokerError("AUTO_MERGE_FAILED", "The pull request reported a clean status but did not merge.", {
+    throw new BrokerError("AUTO_MERGE_FAILED", "The pull request reported a clean merge state but did not merge.", {
       pullRequestUrl,
+      mergeState,
       stdout: direct.stdout,
       stderr: direct.stderr,
     });
@@ -122,7 +159,12 @@ export async function enableAutoMerge(
   throw new BrokerError(
     "AUTO_MERGE_FAILED",
     "Could not enable auto-merge on the published pull request. Enable auto-merge in the repository settings, or set publish.autoMerge to false.",
-    { pullRequestUrl, stdout: result.stdout, stderr: result.stderr },
+    {
+      pullRequestUrl,
+      ...(mergeState ? { mergeState } : {}),
+      stdout: result.stdout,
+      stderr: result.stderr,
+    },
   );
 }
 

@@ -255,10 +255,11 @@ export function validateConfig(value: unknown): BrokerConfig {
       );
     }
   }
-  assertAllowedKeys(config.validation, "validation", ["focused", "authoritative"]);
+  assertAllowedKeys(config.validation, "validation", ["shell", "focused", "authoritative"]);
   if (!Array.isArray(config.validation.focused) || !Array.isArray(config.validation.authoritative)) {
     throw new BrokerError("INVALID_CONFIG", "validation.focused and validation.authoritative must be arrays.");
   }
+  if (config.validation.shell !== undefined) assertString(config.validation.shell, "validation.shell");
   assertAllowedKeys(config.publish, "publish", [
     "mode",
     "draft",
@@ -296,6 +297,7 @@ export function validateConfig(value: unknown): BrokerConfig {
   assertStringArray(config.publish?.labels, "publish.labels");
   assertString(config.publish?.titleTemplate, "publish.titleTemplate");
   for (const [scope, validators] of Object.entries(config.validation ?? {})) {
+    if (scope === "shell") continue;
     if (!Array.isArray(validators)) {
       throw new BrokerError("INVALID_CONFIG", `validation.${scope} must be an array.`);
     }

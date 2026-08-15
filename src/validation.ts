@@ -1,4 +1,4 @@
-import { runShell } from "./process.js";
+import { resolveShell, runShell, type ResolvedShell } from "./process.js";
 import { matchesAny } from "./patterns.js";
 import { ValidationError } from "./errors.js";
 import type { ValidationResult, ValidatorConfig } from "./types.js";
@@ -12,15 +12,25 @@ function truncateOutput(value: string): string {
   return `${head}\n... output truncated by Merge Broker ...\n${tail}`;
 }
 
-function shellQuote(value: string): string {
-  if (process.platform === "win32") return `"${value.replaceAll('"', '\\"')}"`;
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
+function renderCommand(
+  command: string,
+  taskId: string | undefined,
+  files: string[],
+  shell: ResolvedShell,
+): string {
+  return command
+    .replaceAll("{taskId}", shell.quote(taskId ?? ""))
+    .replaceAll("{files}", files.map(shell.quote).join(" "));
 }
 
-function renderCommand(command: string, taskId: string | undefined, files: string[]): string {
-  return command
-    .replaceAll("{taskId}", taskId ? shellQuote(taskId) : "''")
-    .replaceAll("{files}", files.map(shellQuote).join(" "));
+/**
+ * A validator command is repository-trusted, but a lease token is a worker credential that no
+ * validator needs. Passing it through would hand every configured command the ability to submit or
+ * cancel on that worker's behalf.
+ */
+function validatorEnvironment(overrides: Record<string, string> | undefined): NodeJS.ProcessEnv {
+  const { MERGE_BROKER_TOKEN: _token, ...inherited } = process.env;
+  return { ...inherited, ...overrides };
 }
 
 export async function runValidators(options: {
@@ -32,7 +42,9 @@ export async function runValidators(options: {
   baseSha: string;
   headSha: string;
   batchId: string;
+  shell?: string;
 }): Promise<ValidationResult[]> {
+  const shell = resolveShell(options.shell);
   const results: ValidationResult[] = [];
   for (const validator of options.validators) {
     if (
@@ -43,15 +55,15 @@ export async function runValidators(options: {
     ) {
       continue;
     }
-    const command = renderCommand(validator.command, options.taskId, options.files);
+    const command = renderCommand(validator.command, options.taskId, options.files, shell);
     const startedAt = new Date();
     const result = await runShell(command, {
       cwd: options.cwd,
       allowFailure: true,
       timeoutMs: (validator.timeoutSeconds ?? 900) * 1_000,
+      shell,
       env: {
-        ...process.env,
-        ...validator.env,
+        ...validatorEnvironment(validator.env),
         MERGE_BROKER_TASK_ID: options.taskId ?? "",
         MERGE_BROKER_FILES: options.files.join("\n"),
         MERGE_BROKER_BASE_SHA: options.baseSha,

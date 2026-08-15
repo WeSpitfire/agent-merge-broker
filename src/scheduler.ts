@@ -53,7 +53,15 @@ export function scheduleTasks(
       if (selectedIds.has(task.id) || rejectedIds.has(task.id)) continue;
       if (!dependencyReady(task, selectedIds, state, config.policies.requireDependencies)) continue;
       if (totalCommits + task.commits.length > config.scheduling.maxCommits) {
-        rejected.push({ taskId: task.id, reason: "batch commit limit" });
+        // A task larger than the whole limit can never be scheduled, however many times it is
+        // re-planned. Say so, instead of reporting the same transient-looking reason forever.
+        rejected.push({
+          taskId: task.id,
+          reason:
+            task.commits.length > config.scheduling.maxCommits
+              ? `task has ${task.commits.length} commits and can never fit scheduling.maxCommits (${config.scheduling.maxCommits}); raise the limit or split the task`
+              : "batch commit limit",
+        });
         rejectedIds.add(task.id);
         continue;
       }

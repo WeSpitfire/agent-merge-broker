@@ -59,6 +59,7 @@ export interface BrokerConfig {
     };
   };
   validation: {
+    shell?: string;
     focused: ValidatorConfig[];
     authoritative: ValidatorConfig[];
   };
@@ -218,5 +219,20 @@ export interface IntegrationResult {
   batch: BatchRecord;
   selected: string[];
   rejected: ScheduleRejection[];
+  dryRun: boolean;
+}
+
+export interface PruneOptions {
+  olderThanDays?: number;
+  dryRun?: boolean;
+}
+
+export interface PruneResult {
+  tasks: string[];
+  batches: string[];
+  /** Completed tasks kept because a retained task still declares them as a dependency. */
+  retainedForDependencies: string[];
+  cutoff: string;
+  archivePath?: string;
   dryRun: boolean;
 }

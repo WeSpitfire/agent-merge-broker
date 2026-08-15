@@ -72,6 +72,17 @@ test("orders dependencies inside a batch and waits for unmerged dependencies", (
   assert.match(waiting.rejected[0]?.reason ?? "", /dependencies not integrated/u);
 });
 
+test("distinguishes a task that can never fit from one deferred to a later batch", () => {
+  const config = defaultConfig();
+  config.scheduling.maxCommits = 1;
+  const oversized = task("oversized", ["src/oversized.ts"]);
+  oversized.commits = ["a".repeat(40), "b".repeat(40)];
+
+  const plan = scheduleTasks(state([oversized, task("small", ["src/small.ts"])]), config);
+  assert.deepEqual(plan.selected.map((item) => item.id), ["small"]);
+  assert.match(plan.rejected[0]?.reason ?? "", /can never fit scheduling\.maxCommits/u);
+});
+
 test("treats a merged dependency as ready", () => {
   const plan = scheduleTasks(
     state([

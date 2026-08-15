@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.2.0 — Unreleased
+
+Correctness pass ahead of the first public release. Everything below was found by reviewing the
+package as an outside adopter would receive it, rather than as it is used in its home repository.
+
+### Changed
+
+- **Validators no longer run under the operator's login shell.** They previously ran under
+  `$SHELL -lc`, which made every integration decision depend on whose machine assembled the batch:
+  a non-POSIX `$SHELL` such as fish or nushell broke validation outright, and personal login
+  profiles could silently reshape the result. Validators now run under `/bin/sh -c`
+  (`%ComSpec% /d /s /c` on Windows), configurable with `validation.shell`. The environment still
+  comes from the calling process, so PATH and toolchain managers keep working; a validator that
+  needs more should set its own `env`.
+- Auto-merge no longer decides by pattern-matching the GitHub CLI's prose. It queries
+  `mergeStateStatus` and merges directly only when GitHub reports `CLEAN`. The previous English
+  regular expression turned a clean pull request into a hard failure under a different `gh` version
+  or locale.
+
+### Added
+
+- `merge-broker prune [--older-than <days>] [--dry-run]` retires completed tasks and batches into
+  `<state>/archive/`. `state.json` is rewritten in full on every transaction, including heartbeats,
+  so an unbounded history made routine operations progressively slower. A completed task that a
+  retained task still depends on is never pruned: the scheduler cannot tell a pruned dependency from
+  one that has never merged, and the dependent would wait forever.
+- `merge-broker unlock [state|integration] [--force]` releases a lock left by a crashed process.
+  A holder on another machine cannot be probed, so integration could previously stall for the full
+  24-hour stale window with no recourse. Without `--force` the lock is released only when its owner
+  is provably gone.
+- `doctor` now reports lock state and warns when no validators are configured, which otherwise
+  assembles batches without checking anything and says nothing about it.
+- `validation.shell` configuration field and JSON-schema entry.
+
+### Fixed
+
+- One truncated line no longer makes the entire audit trail unreadable. `events` skips malformed
+  records and reads a bounded tail instead of loading the whole file, and the active audit file is
+  rotated into `<state>/archive/` once it grows large. Rotated segments are never deleted.
+- The lease token is no longer passed to validator commands. Repository configuration is trusted to
+  run commands, but no validator needs a worker credential that can submit or cancel on its behalf.
+- A task with more commits than `scheduling.maxCommits` now reports that it can never be scheduled
+  instead of repeating the same transient-looking deferral on every planning pass.
+
+### Platform support
+
+- CI now covers Ubuntu and macOS on Node 20 and 22. Windows runs as an informational job:
+  the shell selection and command quoting differ there and are not yet a supported platform.
+
 ## 0.1.6 — Unreleased
 
 - Added `--force` to `task cancel` and `task release`, so an integration owner can reclaim a lease

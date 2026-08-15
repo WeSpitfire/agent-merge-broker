@@ -105,8 +105,8 @@ Adapters should primarily branch on these codes:
 - `CHERRY_PICK_CONFLICT`
 - `VALIDATION_FAILED`
 - `EMPTY_BATCH`
-- `LOCK_TIMEOUT`
-- `PUBLISH_DISABLED`, `PUBLISH_FAILED`
+- `LOCK_TIMEOUT`, `LOCK_HELD`
+- `PUBLISH_DISABLED`, `PUBLISH_FAILED`, `AUTO_MERGE_FAILED`
 
 Additional codes may be introduced. Adapters must display unknown errors rather than treating them as success.
 

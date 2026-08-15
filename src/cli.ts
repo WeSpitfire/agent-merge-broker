@@ -146,7 +146,16 @@ program
   .description("verify repository discovery, configuration, state, and base branch")
   .action(async () => {
     const result = await (await openBroker()).doctor();
-    output(result, `Merge Broker is ready.\nRepository: ${String(result.repository)}\nState: ${String(result.stateDirectory)}`);
+    const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+    output(
+      result,
+      [
+        "Merge Broker is ready.",
+        `Repository: ${String(result.repository)}`,
+        `State: ${String(result.stateDirectory)}`,
+        ...warnings.map((warning) => `Warning: ${warning}`),
+      ].join("\n"),
+    );
   });
 
 const task = program.command("task").description("register, lease, and submit work");
@@ -433,6 +442,57 @@ program
   .action(async () => {
     const result = await (await openBroker()).metrics();
     output(result, JSON.stringify(result, null, 2));
+  });
+
+program
+  .command("prune")
+  .description("retire completed tasks and batches from active state into the archive")
+  .option("--older-than <days>", "retire records completed at least this many days ago", "30")
+  .option("--dry-run", "report what would be retired without changing state")
+  .action(async (options: { olderThan: string; dryRun?: boolean }) => {
+    const olderThanDays = Number(options.olderThan);
+    if (!Number.isFinite(olderThanDays) || olderThanDays < 0) {
+      throw new BrokerError("INVALID_LIMIT", "--older-than must be a non-negative number of days.");
+    }
+    const result = await (await openBroker()).prune({ olderThanDays, dryRun: options.dryRun ?? false });
+    output(
+      result,
+      [
+        `${result.dryRun ? "Would retire" : "Retired"} ${result.tasks.length} task(s) and ${
+          result.batches.length
+        } batch(es) completed before ${result.cutoff}.`,
+        ...(result.retainedForDependencies.length > 0
+          ? [`Kept as dependencies of active work: ${result.retainedForDependencies.join(", ")}`]
+          : []),
+        ...(result.archivePath ? [`Archive: ${result.archivePath}`] : []),
+      ].join("\n"),
+    );
+  });
+
+program
+  .command("unlock [name]")
+  .description("release a stuck state or integration lock left by a crashed process")
+  .option("--force", "release even when the holder cannot be proven gone")
+  .action(async (name: string | undefined, options: { force?: boolean }) => {
+    const broker = await openBroker();
+    if (!name) {
+      const locks = await broker.inspectLocks();
+      output(
+        locks,
+        locks
+          .map((lock) =>
+            lock.held
+              ? `${lock.name}: held by ${lock.owner?.host ?? "unknown"} (pid ${
+                  lock.owner?.pid ?? "unknown"
+                }), ${Math.round((lock.ageMs ?? 0) / 1_000)}s old${lock.abandoned ? ", owner process is gone" : ""}`
+              : `${lock.name}: free`,
+          )
+          .join("\n"),
+      );
+      return;
+    }
+    const result = await broker.releaseLock(name, { force: options.force ?? false });
+    output(result, `Released the ${result.name} lock.`);
   });
 
 program

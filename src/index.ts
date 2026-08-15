@@ -1,6 +1,6 @@
 export { MergeBroker, type ClaimTaskInput, type RegisterTaskInput } from "./broker.js";
 export { GitRepository, type WorktreeInfo } from "./git.js";
-export { StateStore } from "./store.js";
+export { StateStore, type LockStatus } from "./store.js";
 export { defaultConfig, initializeConfig, loadConfig, validateConfig } from "./config.js";
 export { scheduleTasks } from "./scheduler.js";
 export { buildBatchProvenance, provenancePath } from "./provenance.js";

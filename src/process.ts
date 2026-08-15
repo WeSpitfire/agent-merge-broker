@@ -14,7 +14,43 @@ export interface RunOptions {
   input?: string;
   allowFailure?: boolean;
   timeoutMs?: number;
-  shell?: boolean;
+}
+
+export interface ResolvedShell {
+  executable: string;
+  args: string[];
+  quote: (value: string) => string;
+}
+
+function quotePosix(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+/**
+ * cmd.exe has no escape for a literal `%`, so a path containing one can still be expanded as an
+ * environment reference. Git paths that contain `%` or `"` are pathological; POSIX shells are the
+ * supported and tested surface.
+ */
+function quoteCmd(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+/**
+ * Validators must run in a predictable interpreter. Deliberately not the operator's `$SHELL`, and
+ * deliberately not a login shell: sourcing personal dotfiles would make an integration decision
+ * depend on whose machine assembled the batch. The environment still comes from the calling
+ * process, so PATH and toolchain managers work; a validator that needs more can set `env`.
+ */
+export function resolveShell(configured?: string): ResolvedShell {
+  if (configured) {
+    const isCmd = /(^|[\\/])cmd(\.exe)?$/iu.test(configured);
+    return isCmd
+      ? { executable: configured, args: ["/d", "/s", "/c"], quote: quoteCmd }
+      : { executable: configured, args: ["-c"], quote: quotePosix };
+  }
+  return process.platform === "win32"
+    ? { executable: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c"], quote: quoteCmd }
+    : { executable: "/bin/sh", args: ["-c"], quote: quotePosix };
 }
 
 function quoteForDisplay(value: string): string {
@@ -32,7 +68,7 @@ export async function runCommand(
     const child = spawn(executable, args, {
       cwd: options.cwd,
       env: options.env ?? process.env,
-      shell: options.shell ?? false,
+      shell: false,
       stdio: "pipe",
     });
     let stdout = "";
@@ -77,8 +113,10 @@ export async function runCommand(
   });
 }
 
-export async function runShell(command: string, options: RunOptions): Promise<CommandResult> {
-  const shell = process.platform === "win32" ? process.env.ComSpec ?? "cmd.exe" : process.env.SHELL ?? "/bin/sh";
-  const args = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-lc", command];
-  return await runCommand(shell, args, options);
+export async function runShell(
+  command: string,
+  options: RunOptions & { shell?: ResolvedShell },
+): Promise<CommandResult> {
+  const shell = options.shell ?? resolveShell();
+  return await runCommand(shell.executable, [...shell.args, command], options);
 }

@@ -387,3 +387,99 @@ test("requeues tasks when a published batch closes without merging", async (cont
   assert.match(closed.error ?? "", /closed without merge/u);
   assert.equal((await broker.task("CLOSED-PR")).status, "submitted");
 });
+
+test(
+  "runs validators in a fixed shell and keeps the lease token out of them",
+  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
+  async (context) => {
+    const repo = await createRepository();
+    // Validators used to run under the operator's $SHELL as a login shell, so an unusual shell
+    // broke integration outright and personal dotfiles could reshape the result.
+    const previousShell = process.env.SHELL;
+    const previousToken = process.env.MERGE_BROKER_TOKEN;
+    process.env.SHELL = "/nonexistent/shell-that-cannot-run";
+    process.env.MERGE_BROKER_TOKEN = "lease-token-that-must-not-leak";
+    context.after(async () => {
+      if (previousShell === undefined) delete process.env.SHELL;
+      else process.env.SHELL = previousShell;
+      if (previousToken === undefined) delete process.env.MERGE_BROKER_TOKEN;
+      else process.env.MERGE_BROKER_TOKEN = previousToken;
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    const config = await loadConfig(repo);
+    config.validation.authoritative.push({
+      name: "lease token is not visible to validators",
+      command: 'test -z "$MERGE_BROKER_TOKEN"',
+      timeoutSeconds: 30,
+    });
+    await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+    const broker = await MergeBroker.open(repo);
+    const claim = await broker.claimTask({ id: "SHELL", holder: "agent", expectedPaths: ["src/shell/**"] });
+    const commit = await commitFile(repo, "shell", "src/shell/value.ts", "export const value = 1;\n");
+    await broker.submitTask("SHELL", [commit], claim.token);
+
+    const result = await broker.integrate();
+    assert.equal(result.batch.status, "prepared");
+    assert.deepEqual(
+      result.batch.validations.map((validation) => validation.exitCode),
+      [0],
+    );
+  },
+);
+
+test("retires completed records but keeps dependencies of active work", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+
+  const merge = async (id: string, file: string): Promise<string> => {
+    const claim = await broker.claimTask({ id, holder: "agent", expectedPaths: [file] });
+    const commit = await commitFile(repo, `branch-${id}`, file, `export const ${id.toLowerCase()} = 1;\n`);
+    await broker.submitTask(id, [commit], claim.token);
+    const integrated = await broker.integrate();
+    await broker.markBatchMerged(integrated.batch.id);
+    return integrated.batch.id;
+  };
+
+  const keptBatch = await merge("DONE-A", "src/done-a.ts");
+  const prunedBatch = await merge("DONE-B", "src/done-b.ts");
+
+  // Still in flight, and still declaring the older task as a dependency.
+  const active = await broker.claimTask({
+    id: "ACTIVE",
+    holder: "agent",
+    expectedPaths: ["src/active.ts"],
+    dependsOn: ["DONE-A"],
+  });
+  const activeCommit = await commitFile(repo, "branch-active", "src/active.ts", "export const active = 1;\n");
+  await broker.submitTask("ACTIVE", [activeCommit], active.token);
+
+  const preview = await broker.prune({ olderThanDays: 0, dryRun: true });
+  assert.deepEqual(preview.tasks, ["DONE-B"]);
+  assert.deepEqual(preview.retainedForDependencies, ["DONE-A"]);
+  assert.equal(preview.archivePath, undefined);
+  assert.equal(Object.keys((await broker.state()).tasks).length, 3);
+
+  const pruned = await broker.prune({ olderThanDays: 0 });
+  assert.deepEqual(pruned.tasks, ["DONE-B"]);
+  assert.deepEqual(pruned.batches, [prunedBatch]);
+
+  const state = await broker.state();
+  assert.deepEqual(Object.keys(state.tasks).sort(), ["ACTIVE", "DONE-A"]);
+  assert.deepEqual(Object.keys(state.batches), [keptBatch]);
+
+  // The archive keeps what active state no longer carries.
+  const archived = JSON.parse(await readFile(pruned.archivePath ?? "", "utf8")) as {
+    tasks: Record<string, unknown>;
+    batches: Record<string, unknown>;
+  };
+  assert.deepEqual(Object.keys(archived.tasks), ["DONE-B"]);
+  assert.deepEqual(Object.keys(archived.batches), [prunedBatch]);
+
+  // A pruned dependency would strand its dependents, so the surviving one still plans.
+  assert.deepEqual((await broker.plan()).selected.map((task) => task.id), ["ACTIVE"]);
+});

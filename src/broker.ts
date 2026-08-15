@@ -5,7 +5,7 @@ import { GitRepository } from "./git.js";
 import { initializeConfig, loadConfig } from "./config.js";
 import { patternSetsMayOverlap, unexpectedPaths } from "./patterns.js";
 import { scheduleTasks } from "./scheduler.js";
-import { StateStore } from "./store.js";
+import { StateStore, type LockStatus } from "./store.js";
 import { runValidators } from "./validation.js";
 import { inspectPullRequest, publishBatch as publishPreparedBatch } from "./publisher.js";
 import { buildBatchProvenance, provenancePath } from "./provenance.js";
@@ -16,6 +16,8 @@ import type {
   CommitReceipt,
   IntegrationOptions,
   IntegrationResult,
+  PruneOptions,
+  PruneResult,
   SchedulePlan,
   TaskRecord,
   ValidationResult,
@@ -69,6 +71,39 @@ function verifyLease(task: TaskRecord, token: string): void {
   }
 }
 
+/**
+ * Editing leases are coordinated on declared globs, before any commit exists. Two glob languages
+ * cannot always be proven disjoint cheaply, so overlap is treated conservatively as a conflict.
+ */
+function assertNoLeaseConflict(
+  state: BrokerState,
+  taskId: string,
+  expectedPaths: string[],
+  serializedPatterns: string[],
+): void {
+  for (const existing of Object.values(state.tasks)) {
+    if (existing.id === taskId || !existing.lease || leaseExpired(existing)) continue;
+    if (patternSetsMayOverlap(expectedPaths, existing.expectedPaths)) {
+      throw new BrokerError(
+        "LEASE_CONFLICT",
+        `Expected paths overlap active task ${existing.id}, leased by ${existing.lease.holder}.`,
+        { conflictingTask: existing.id },
+      );
+    }
+    const resources = serializedPatterns.filter((resource) => patternSetsMayOverlap(expectedPaths, [resource]));
+    const existingResources = serializedPatterns.filter((resource) =>
+      patternSetsMayOverlap(existing.expectedPaths, [resource]),
+    );
+    const sharedResource = resources.find((resource) => existingResources.includes(resource));
+    if (sharedResource) {
+      throw new BrokerError("LEASE_CONFLICT", `Serialized resource ${sharedResource} is leased by task ${existing.id}.`, {
+        conflictingTask: existing.id,
+        resource: sharedResource,
+      });
+    }
+  }
+}
+
 function batchId(): string {
   const stamp = new Date().toISOString().replace(/[-:.]/gu, "").replace("Z", "Z");
   return `${stamp}-${randomBytes(3).toString("hex")}`;
@@ -89,6 +124,61 @@ function validationResultsFromError(error: unknown): ValidationResult[] {
   if (!(error instanceof ValidationError)) return [];
   const results = error.details?.completedValidations;
   return Array.isArray(results) ? (results as ValidationResult[]) : [];
+}
+
+const PRUNABLE_TASK_STATUSES = new Set<TaskRecord["status"]>(["merged", "cancelled"]);
+const PRUNABLE_BATCH_STATUSES = new Set<BatchRecord["status"]>(["merged", "closed", "failed"]);
+
+function taskRetiredAt(task: TaskRecord): number {
+  return Date.parse(task.mergedAt ?? task.updatedAt);
+}
+
+function batchRetiredAt(batch: BatchRecord): number {
+  return Date.parse(batch.finishedAt ?? batch.closedAt ?? batch.createdAt);
+}
+
+/**
+ * Chooses completed records that are safe to retire. An unparsable timestamp compares false and so
+ * keeps the record: forgetting work is worse than keeping it a while longer.
+ */
+function selectPrunable(
+  state: BrokerState,
+  cutoffMs: number,
+): { tasks: string[]; batches: string[]; retainedForDependencies: string[] } {
+  const candidateIds = new Set(
+    Object.values(state.tasks)
+      .filter((task) => PRUNABLE_TASK_STATUSES.has(task.status) && taskRetiredAt(task) <= cutoffMs)
+      .map((task) => task.id),
+  );
+
+  // Removing a task that a retained task still depends on would strand the dependent forever: the
+  // scheduler cannot distinguish a pruned dependency from one that has never merged.
+  const retainedForDependencies = new Set<string>();
+  for (const task of Object.values(state.tasks)) {
+    if (candidateIds.has(task.id)) continue;
+    for (const dependency of task.dependsOn) {
+      if (candidateIds.has(dependency)) retainedForDependencies.add(dependency);
+    }
+  }
+  for (const id of retainedForDependencies) candidateIds.delete(id);
+
+  const batchIds = new Set(
+    Object.values(state.batches)
+      .filter((batch) => PRUNABLE_BATCH_STATUSES.has(batch.status) && batchRetiredAt(batch) <= cutoffMs)
+      // A batch whose tasks are staying would become an orphaned reference; retire the two together.
+      .filter((batch) => batch.taskIds.every((id) => candidateIds.has(id) || !Object.hasOwn(state.tasks, id)))
+      .map((batch) => batch.id),
+  );
+  const tasks = [...candidateIds].filter((id) => {
+    const batchId = state.tasks[id]?.batchId;
+    return !batchId || batchIds.has(batchId) || !Object.hasOwn(state.batches, batchId);
+  });
+
+  return {
+    tasks: tasks.sort(),
+    batches: [...batchIds].sort(),
+    retainedForDependencies: [...retainedForDependencies].sort(),
+  };
 }
 
 export interface RegisterTaskInput {
@@ -214,30 +304,7 @@ export class MergeBroker {
       if (expectedPaths.length === 0) {
         throw new BrokerError("PATHS_REQUIRED", "At least one expected path pattern is required to claim a task.");
       }
-      for (const existing of Object.values(state.tasks)) {
-        if (existing.id === task.id || !existing.lease || leaseExpired(existing)) continue;
-        if (patternSetsMayOverlap(expectedPaths, existing.expectedPaths)) {
-          throw new BrokerError(
-            "LEASE_CONFLICT",
-            `Expected paths overlap active task ${existing.id}, leased by ${existing.lease.holder}.`,
-            { conflictingTask: existing.id },
-          );
-        }
-        const resources = this.config.leases.serializedPatterns.filter((resource) =>
-          patternSetsMayOverlap(expectedPaths, [resource]),
-        );
-        const existingResources = this.config.leases.serializedPatterns.filter((resource) =>
-          patternSetsMayOverlap(existing.expectedPaths, [resource]),
-        );
-        const sharedResource = resources.find((resource) => existingResources.includes(resource));
-        if (sharedResource) {
-          throw new BrokerError(
-            "LEASE_CONFLICT",
-            `Serialized resource ${sharedResource} is leased by task ${existing.id}.`,
-            { conflictingTask: existing.id, resource: sharedResource },
-          );
-        }
-      }
+      assertNoLeaseConflict(state, task.id, expectedPaths, this.config.leases.serializedPatterns);
 
       task.expectedPaths = [...new Set(expectedPaths)];
       task.dependsOn = [...new Set(input.dependsOn ?? task.dependsOn)];
@@ -289,30 +356,7 @@ export class MergeBroker {
         throw new BrokerError("TASK_NOT_CLAIMABLE", `Task ${task.id} cannot be extended while ${task.status}.`);
       }
       const nextPaths = [...new Set([...task.expectedPaths, ...expectedPaths])];
-      for (const existing of Object.values(state.tasks)) {
-        if (existing.id === task.id || !existing.lease || leaseExpired(existing)) continue;
-        if (patternSetsMayOverlap(nextPaths, existing.expectedPaths)) {
-          throw new BrokerError(
-            "LEASE_CONFLICT",
-            `Expected paths overlap active task ${existing.id}, leased by ${existing.lease.holder}.`,
-            { conflictingTask: existing.id },
-          );
-        }
-        const resources = this.config.leases.serializedPatterns.filter((resource) =>
-          patternSetsMayOverlap(nextPaths, [resource]),
-        );
-        const existingResources = this.config.leases.serializedPatterns.filter((resource) =>
-          patternSetsMayOverlap(existing.expectedPaths, [resource]),
-        );
-        const sharedResource = resources.find((resource) => existingResources.includes(resource));
-        if (sharedResource) {
-          throw new BrokerError(
-            "LEASE_CONFLICT",
-            `Serialized resource ${sharedResource} is leased by task ${existing.id}.`,
-            { conflictingTask: existing.id, resource: sharedResource },
-          );
-        }
-      }
+      assertNoLeaseConflict(state, task.id, nextPaths, this.config.leases.serializedPatterns);
       task.expectedPaths = nextPaths;
       task.updatedAt = now();
       audit("task.extended", {
@@ -568,6 +612,7 @@ export class MergeBroker {
             baseSha,
             headSha,
             batchId: id,
+            ...(this.config.validation.shell ? { shell: this.config.validation.shell } : {}),
           });
           batch.validations.push(...focused);
         }
@@ -582,6 +627,7 @@ export class MergeBroker {
           baseSha,
           headSha,
           batchId: id,
+          ...(this.config.validation.shell ? { shell: this.config.validation.shell } : {}),
         });
         batch.validations.push(...authoritative);
         if (this.config.integration.history === "squash") {
@@ -908,6 +954,62 @@ export class MergeBroker {
     };
   }
 
+  /**
+   * Retires completed records so `state.json` stops growing without bound. The file is rewritten in
+   * full on every transaction, including heartbeats, so an unbounded history makes routine
+   * operations progressively slower.
+   */
+  async prune(options: PruneOptions = {}): Promise<PruneResult> {
+    const days = options.olderThanDays ?? 30;
+    if (!Number.isFinite(days) || days < 0) {
+      throw new BrokerError("INVALID_LIMIT", "olderThanDays must be a non-negative number.");
+    }
+    const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1_000;
+    const cutoff = new Date(cutoffMs).toISOString();
+    if (options.dryRun) {
+      const selection = selectPrunable(await this.store.read(), cutoffMs);
+      return { ...selection, cutoff, dryRun: true };
+    }
+    return await this.store.transaction(async (state, audit) => {
+      const selection = selectPrunable(state, cutoffMs);
+      if (selection.tasks.length === 0 && selection.batches.length === 0) {
+        return { ...selection, cutoff, dryRun: false };
+      }
+      const archivePath = await this.store.archive("state", {
+        archivedAt: now(),
+        cutoff,
+        tasks: Object.fromEntries(selection.tasks.map((id) => [id, state.tasks[id]])),
+        batches: Object.fromEntries(selection.batches.map((id) => [id, state.batches[id]])),
+      });
+      for (const id of selection.tasks) delete state.tasks[id];
+      for (const id of selection.batches) delete state.batches[id];
+      audit("state.pruned", {
+        details: {
+          cutoff,
+          tasks: selection.tasks,
+          batches: selection.batches,
+          archivePath,
+        },
+      });
+      return { ...selection, cutoff, archivePath, dryRun: false };
+    });
+  }
+
+  async inspectLocks(): Promise<LockStatus[]> {
+    return await Promise.all(["state", "integration"].map(async (name) => await this.store.inspectLock(name)));
+  }
+
+  async releaseLock(name: string, options: { force?: boolean } = {}): Promise<LockStatus> {
+    if (name !== "state" && name !== "integration") {
+      throw new BrokerError("UNKNOWN_LOCK", `Unknown lock: ${name}. Expected "state" or "integration".`);
+    }
+    const released = await this.store.releaseLock(name, options);
+    await this.store.transaction((_state, audit) => {
+      audit("lock.released", { details: { lock: name, forced: options.force ?? false, previous: released.owner } });
+    });
+    return released;
+  }
+
   async metrics(): Promise<Record<string, unknown>> {
     const state = await this.store.read();
     const tasks = Object.values(state.tasks);
@@ -952,13 +1054,30 @@ export class MergeBroker {
   }
 
   async doctor(): Promise<Record<string, unknown>> {
-    const [baseSha, clean, worktrees] = await Promise.all([
+    const [baseSha, clean, worktrees, locks] = await Promise.all([
       this.repo.resolveCommit(this.config.baseRef),
       this.repo.isClean(),
       this.repo.listWorktrees(),
+      this.inspectLocks(),
     ]);
+    const warnings: string[] = [];
+    if (this.config.validation.focused.length === 0 && this.config.validation.authoritative.length === 0) {
+      warnings.push(
+        "No validators are configured, so batches are assembled without being checked. Configure validation.authoritative, or rely on a remote gate that verifies broker provenance.",
+      );
+    }
+    for (const lock of locks) {
+      if (!lock.held) continue;
+      warnings.push(
+        `The ${lock.name} lock is held${lock.owner?.host ? ` by ${lock.owner.host}` : ""} and is ${Math.round(
+          (lock.ageMs ?? 0) / 1_000,
+        )}s old${lock.abandoned ? "; its owning process is gone, so \"merge-broker unlock\" can clear it" : ""}.`,
+      );
+    }
     return {
       ok: true,
+      warnings,
+      locks,
       repository: this.repo.root,
       gitDirectory: this.repo.commonGitDir,
       stateDirectory: this.store.directory,

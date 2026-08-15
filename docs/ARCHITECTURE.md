@@ -30,10 +30,23 @@ $(git rev-parse --git-common-dir)/merge-broker/
 ├── batches/<batch-id>.json
 ├── state.lock/
 ├── integration.lock/
+├── archive/
 └── worktrees/<batch-id>/
 ```
 
 JSON state writes use a temporary sibling followed by an atomic rename. Lock acquisition uses atomic directory creation. Short state mutations and long integration transactions use separate locks so status reads and heartbeats do not need to hold the integration lock.
+
+## Retention
+
+Active state is a working set, not a historical record. Because `state.json` is rewritten in full on every transaction, an unbounded history makes every heartbeat progressively more expensive. `prune` moves completed tasks and batches into `archive/`, and the audit stream rotates into the same directory once the active file grows large. Archived material is never deleted.
+
+Two records are deliberately not prunable. A completed task that a retained task still declares as a dependency stays, because `dependencyReady` cannot distinguish a pruned dependency from one that has never merged and would block the dependent forever. A batch stays while any of its tasks does, so a retained task never points at a batch that no longer exists.
+
+Audit reads are tolerant by design: they scan a bounded tail and skip records that fail to parse. A crash between writing and flushing leaves a truncated line, which is exactly the moment the audit trail matters most.
+
+## Lock recovery
+
+A lock owner records its process ID, hostname, and creation time. A holder on this machine whose process is gone is provably abandoned and is reclaimed after a short grace period. A holder on another machine cannot be probed — the state directory is shared, process IDs are not — so it waits out the full stale window rather than risking two integrations at once. `unlock` exposes that same decision to an operator, and `--force` is the deliberate override for a holder that cannot be proven dead.
 
 ## Task lifecycle
 
@@ -81,7 +94,7 @@ For a selected batch the broker:
 2. Marks selected tasks `integrating` under the state lock.
 3. Adds a detached Git worktree at that SHA.
 4. Cherry-picks each receipt commit with `-x` in dependency order.
-5. Runs applicable focused validators after each task.
+5. Runs applicable focused validators after each task, in a fixed non-login shell.
 6. Runs all authoritative validators over the complete batch.
 7. Optionally squashes the batch while preserving task IDs in the message.
 8. Optionally commits a provenance manifest whose parent is the integrated task head.
