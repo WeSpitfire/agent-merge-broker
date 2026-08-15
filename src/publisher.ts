@@ -103,6 +103,22 @@ export async function enableAutoMerge(
     { cwd: repoRoot, allowFailure: true },
   );
   if (result.exitCode === 0) return true;
+
+  // GitHub refuses to queue auto-merge on a pull request that is already mergeable, which happens
+  // whenever the required checks finish before publication returns. Merging now is exactly what the
+  // queue would have done, because "clean" means the required checks already passed.
+  if (/clean status|not.*required|already.*mergeable/iu.test(`${result.stdout}\n${result.stderr}`)) {
+    const direct = await runCommand("gh", ["pr", "merge", pullRequestUrl, `--${config.publish.mergeMethod}`], {
+      cwd: repoRoot,
+      allowFailure: true,
+    });
+    if (direct.exitCode === 0) return true;
+    throw new BrokerError("AUTO_MERGE_FAILED", "The pull request reported a clean status but did not merge.", {
+      pullRequestUrl,
+      stdout: direct.stdout,
+      stderr: direct.stderr,
+    });
+  }
   throw new BrokerError(
     "AUTO_MERGE_FAILED",
     "Could not enable auto-merge on the published pull request. Enable auto-merge in the repository settings, or set publish.autoMerge to false.",

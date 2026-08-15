@@ -1,4 +1,5 @@
 import path from "node:path";
+import { hostname } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -148,7 +149,7 @@ export class StateStore {
         await mkdir(lockDirectory);
         await writeFile(
           path.join(lockDirectory, "owner.json"),
-          `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+          `${JSON.stringify({ pid: process.pid, host: hostname(), createdAt: new Date().toISOString() })}\n`,
           "utf8",
         );
         break;
@@ -156,11 +157,12 @@ export class StateStore {
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "EEXIST") throw error;
         const lockStat = await stat(lockDirectory).catch(() => undefined);
-        if (
-          lockStat &&
-          Date.now() - lockStat.mtimeMs > staleMs &&
-          !(await this.lockOwnerAlive(lockDirectory))
-        ) {
+        // A crashed holder on this machine can be detected directly, so its lock is reclaimed after a
+        // short grace period. A holder on another machine cannot be probed at all -- the state
+        // directory is shared, but process IDs are not -- so those wait out the full stale timeout
+        // rather than risk two integrations running at once.
+        const age = lockStat ? Date.now() - lockStat.mtimeMs : 0;
+        if (lockStat && (age > staleMs || (age > 2_000 && (await this.lockOwnerCrashed(lockDirectory))))) {
           await rm(lockDirectory, { recursive: true, force: true });
           continue;
         }
@@ -178,20 +180,30 @@ export class StateStore {
     }
   }
 
-  private async lockOwnerAlive(lockDirectory: string): Promise<boolean> {
-    let pid: number;
+  /**
+   * True only when the lock is provably abandoned: written by this machine, by a process that is
+   * gone. An unreadable owner file is not proof -- it is also what a lock looks like in the instant
+   * between creating the directory and recording its owner.
+   */
+  private async lockOwnerCrashed(lockDirectory: string): Promise<boolean> {
+    let owner: { pid?: unknown; host?: unknown };
     try {
-      const owner = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as { pid?: unknown };
-      if (!Number.isInteger(owner.pid) || (owner.pid as number) <= 0) return false;
-      pid = owner.pid as number;
+      owner = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as {
+        pid?: unknown;
+        host?: unknown;
+      };
     } catch {
       return false;
     }
+    // Records written before owners carried a hostname fall back to the process check. Treating them
+    // as foreign instead would strand a crashed holder's lock for the full stale timeout.
+    if (owner.host !== undefined && owner.host !== hostname()) return false;
+    if (!Number.isInteger(owner.pid) || (owner.pid as number) <= 0) return false;
     try {
-      process.kill(pid, 0);
-      return true;
+      process.kill(owner.pid as number, 0);
+      return false;
     } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "EPERM";
+      return (error as NodeJS.ErrnoException).code !== "EPERM";
     }
   }
 

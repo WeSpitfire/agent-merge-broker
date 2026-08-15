@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.1.4 — Unreleased
+## 0.1.6 — Unreleased
+
+- Merged a published pull request directly when GitHub refuses to queue auto-merge because the pull
+  request is already mergeable. A "clean" status means the required checks have passed, so the batch
+  no longer stalls when checks finish before publication returns.
+- Fixed cross-machine lock recovery. Liveness was probed with a process ID, but the state directory
+  is shared across machines while process IDs are not, so one machine could reclaim a lock that
+  another machine was actively holding. Owner records now carry a hostname: a crashed holder on this
+  machine is reclaimed after a short grace period, and a holder elsewhere waits out the full stale
+  timeout. Records written without a hostname keep the previous behaviour.
+
+## 0.1.5 — Unreleased
 
 - Added `publish.autoMerge` and `publish.mergeMethod`. The broker now asks GitHub to merge a
   published batch once required checks pass, so integration completes without a human step.
@@ -16,8 +27,6 @@
 - Limited failure blast radius: a cherry-pick or focused-validation failure now fails only the task
   responsible and returns its batch-mates to the queue. Authoritative failures still fail the batch.
 - Added `integration.maxAttempts` to bound automatic re-queueing.
-- Fixed integration lock staleness, which collapsed the 24-hour timeout to 2 seconds and allowed a
-  long-running integration to have its lock taken.
 - Added committed batch-provenance manifests that bind a published integration
   branch to its base SHA, integrated parent, task receipts, and broker validators.
 - Made provenance opt-in compatible for existing version-one configurations and
