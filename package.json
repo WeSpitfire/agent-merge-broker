@@ -1,6 +1,6 @@
 {
   "name": "agent-merge-broker",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "A transaction coordinator for parallel code-producing agents and humans.",
   "type": "module",
   "bin": {

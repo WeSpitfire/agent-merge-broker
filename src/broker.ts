@@ -567,11 +567,16 @@ export class MergeBroker {
         const provenance = this.config.integration.provenance;
         if (provenance?.enabled) {
           const integratedHeadSha = headSha;
+          const integratedPaths = await this.repo.changedFilesBetween(
+            baseSha,
+            integratedHeadSha,
+          );
           const relativePath = provenancePath(provenance.directory, id);
           const record = buildBatchProvenance({
             batch,
             tasks: plan.selected,
             integratedHeadSha,
+            integratedPaths,
           });
           headSha = await this.repo.commitGeneratedFile(
             worktree,

@@ -9,8 +9,10 @@ export function buildBatchProvenance(options: {
   batch: BatchRecord;
   tasks: TaskRecord[];
   integratedHeadSha: string;
+  integratedPaths: string[];
 }): BatchProvenance {
-  const { batch, tasks, integratedHeadSha } = options;
+  const { batch, tasks, integratedHeadSha, integratedPaths } = options;
+  const integratedPathSet = new Set(integratedPaths);
   return {
     version: 1,
     generator: "agent-merge-broker",
@@ -22,7 +24,10 @@ export function buildBatchProvenance(options: {
     tasks: tasks.map((task) => ({
       id: task.id,
       commits: [...task.commits],
-      actualPaths: [...task.actualPaths],
+      // A corrective commit may intentionally cancel an earlier change. The
+      // attestation describes the integrated result, while task receipts retain
+      // the historical union used for scope checks and validation routing.
+      actualPaths: task.actualPaths.filter((file) => integratedPathSet.has(file)),
       dependsOn: [...task.dependsOn],
     })),
     validations: batch.validations.map((result) => ({

@@ -84,6 +84,16 @@ export class GitRepository {
     return [...files].sort();
   }
 
+  async changedFilesBetween(base: string, head: string): Promise<string[]> {
+    const result = await this.git([
+      "diff",
+      "--name-only",
+      "-z",
+      `${base}..${head}`,
+    ]);
+    return [...new Set(splitNull(result.stdout))].sort();
+  }
+
   async parentCount(commit: string): Promise<number> {
     const result = await this.git(["rev-list", "--parents", "-n", "1", commit]);
     return Math.max(0, result.stdout.trim().split(/\s+/u).length - 1);

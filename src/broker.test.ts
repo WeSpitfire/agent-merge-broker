@@ -92,6 +92,44 @@ test("claims, submits, verifies, and transactionally batches independent commits
   assert.ok(audit.some((event) => event.event === "batch.merged"));
 });
 
+test("attests the final net diff when a corrective commit cancels an earlier path", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({
+    id: "CORRECTED",
+    holder: "agent",
+    expectedPaths: ["src/corrected/**"],
+  });
+
+  await git(repo, "switch", "-c", "corrected", "main");
+  await import("node:fs/promises").then(({ mkdir }) =>
+    mkdir(path.join(repo, "src/corrected"), { recursive: true }),
+  );
+  await writeFile(path.join(repo, "src/corrected/retained.ts"), "export const value = 1;\n", "utf8");
+  await writeFile(path.join(repo, "src/corrected/transient.ts"), "remove me\n", "utf8");
+  await git(repo, "add", "src/corrected");
+  await git(repo, "commit", "-m", "initial implementation");
+  const initial = await git(repo, "rev-parse", "HEAD");
+
+  await rm(path.join(repo, "src/corrected/transient.ts"));
+  await writeFile(path.join(repo, "src/corrected/retained.ts"), "export const value = 2;\n", "utf8");
+  await git(repo, "add", "src/corrected");
+  await git(repo, "commit", "-m", "correct implementation");
+  const correction = await git(repo, "rev-parse", "HEAD");
+  await git(repo, "switch", "main");
+
+  await broker.submitTask("CORRECTED", [initial, correction], claim.token);
+  const integrated = await broker.integrate();
+  const provenance = JSON.parse(
+    await git(repo, "show", `${integrated.batch.branchName}:${integrated.batch.provenancePath}`),
+  ) as { tasks: Array<{ actualPaths: string[] }> };
+
+  assert.deepEqual(provenance.tasks[0]?.actualPaths, ["src/corrected/retained.ts"]);
+});
+
 test("rejects overlapping active leases and out-of-scope receipts", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
