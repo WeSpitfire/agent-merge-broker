@@ -26,3 +26,17 @@ test("conservatively detects glob overlap without serializing unrelated literals
   assert.equal(patternsMayOverlap("src/a/**", "package-lock.json"), false);
   assert.equal(patternSetsMayOverlap(["src/**"], ["src/api/**"]), true);
 });
+
+test("treats escaped Next.js dynamic route segments as literal paths", () => {
+  const dynamicRoute = "src/app/crm-v2/jobs/\\[jobId\\]/page.tsx/**";
+  const staticRoute = "src/app/crm-v2/jobs/new/page.tsx/**";
+
+  assert.equal(
+    matchesPattern(
+      "src/app/crm-v2/jobs/[jobId]/page.tsx/child",
+      dynamicRoute,
+    ),
+    true,
+  );
+  assert.equal(patternsMayOverlap(dynamicRoute, staticRoute), false);
+});

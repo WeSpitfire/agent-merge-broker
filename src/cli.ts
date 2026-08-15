@@ -236,6 +236,16 @@ task
   );
 
 task
+  .command("extend <id>")
+  .description("extend an active task lease with additional expected paths")
+  .option("--path <pattern>", "expected path or glob; repeatable", collect, [])
+  .option("--token <token>")
+  .action(async (id: string, options: { path: string[]; token?: string }) => {
+    const result = await (await openBroker()).extendTask(id, options.path, requiredToken(options.token));
+    output(publicTask(result), `Extended task ${id} to ${result.expectedPaths.length} path pattern(s).`);
+  });
+
+task
   .command("retry <id>")
   .description("return a failed task to the submitted queue")
   .option("--token <token>")

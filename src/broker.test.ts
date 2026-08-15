@@ -68,9 +68,21 @@ test("claims, submits, verifies, and transactionally batches independent commits
   const integrated = await broker.integrate();
   assert.equal(integrated.batch.status, "prepared");
   assert.ok(integrated.batch.branchName);
+  assert.ok(integrated.batch.provenancePath);
+  assert.ok(integrated.batch.integratedHeadSha);
   assert.equal((await broker.task("TASK-A")).status, "batched");
   assert.equal(await git(repo, "show", `${integrated.batch.branchName}:src/a/feature.ts`), "export const a = 1;");
   assert.equal(await git(repo, "show", `${integrated.batch.branchName}:src/b/feature.ts`), "export const b = 2;");
+  const provenance = JSON.parse(
+    await git(repo, "show", `${integrated.batch.branchName}:${integrated.batch.provenancePath}`),
+  ) as {
+    batchId: string;
+    integratedHeadSha: string;
+    taskIds: string[];
+  };
+  assert.equal(provenance.batchId, integrated.batch.id);
+  assert.equal(provenance.integratedHeadSha, await git(repo, "rev-parse", `${integrated.batch.branchName}^`));
+  assert.deepEqual(provenance.taskIds, ["TASK-A", "TASK-B"]);
 
   await broker.markBatchMerged(integrated.batch.id);
   assert.equal((await broker.task("TASK-A")).status, "merged");
@@ -78,6 +90,44 @@ test("claims, submits, verifies, and transactionally batches independent commits
   const audit = await broker.store.readAudit();
   assert.ok(audit.some((event) => event.event === "batch.prepared"));
   assert.ok(audit.some((event) => event.event === "batch.merged"));
+});
+
+test("attests the final net diff when a corrective commit cancels an earlier path", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({
+    id: "CORRECTED",
+    holder: "agent",
+    expectedPaths: ["src/corrected/**"],
+  });
+
+  await git(repo, "switch", "-c", "corrected", "main");
+  await import("node:fs/promises").then(({ mkdir }) =>
+    mkdir(path.join(repo, "src/corrected"), { recursive: true }),
+  );
+  await writeFile(path.join(repo, "src/corrected/retained.ts"), "export const value = 1;\n", "utf8");
+  await writeFile(path.join(repo, "src/corrected/transient.ts"), "remove me\n", "utf8");
+  await git(repo, "add", "src/corrected");
+  await git(repo, "commit", "-m", "initial implementation");
+  const initial = await git(repo, "rev-parse", "HEAD");
+
+  await rm(path.join(repo, "src/corrected/transient.ts"));
+  await writeFile(path.join(repo, "src/corrected/retained.ts"), "export const value = 2;\n", "utf8");
+  await git(repo, "add", "src/corrected");
+  await git(repo, "commit", "-m", "correct implementation");
+  const correction = await git(repo, "rev-parse", "HEAD");
+  await git(repo, "switch", "main");
+
+  await broker.submitTask("CORRECTED", [initial, correction], claim.token);
+  const integrated = await broker.integrate();
+  const provenance = JSON.parse(
+    await git(repo, "show", `${integrated.batch.branchName}:${integrated.batch.provenancePath}`),
+  ) as { tasks: Array<{ actualPaths: string[] }> };
+
+  assert.deepEqual(provenance.tasks[0]?.actualPaths, ["src/corrected/retained.ts"]);
 });
 
 test("rejects overlapping active leases and out-of-scope receipts", async (context) => {
@@ -91,9 +141,15 @@ test("rejects overlapping active leases and out-of-scope receipts", async (conte
     (error: unknown) => error instanceof BrokerError && error.code === "INVALID_TASK",
   );
   const claim = await broker.claimTask({ id: "ONE", holder: "agent-one", expectedPaths: ["src/shared/**"] });
+  const extended = await broker.extendTask("ONE", ["src/owned/**"], claim.token);
+  assert.deepEqual(extended.expectedPaths, ["src/shared/**", "src/owned/**"]);
   await assert.rejects(
     broker.claimTask({ id: "TWO", holder: "agent-two", expectedPaths: ["src/shared/file.ts"] }),
     (error: unknown) => error instanceof BrokerError && error.code === "LEASE_CONFLICT",
+  );
+  await assert.rejects(
+    broker.extendTask("ONE", ["src/shared/file.ts"], "wrong-token"),
+    (error: unknown) => error instanceof BrokerError && error.code === "LEASE_TOKEN",
   );
   const commit = await commitFile(repo, "outside", "docs/outside.md", "outside\n");
   await assert.rejects(
@@ -269,4 +325,34 @@ test("publishes one integration branch and reconciles it after merge", async (co
   const reconciled = await broker.syncBatch(published.id);
   assert.equal(reconciled.status, "merged");
   assert.equal((await broker.task("PUBLISH")).status, "merged");
+});
+
+test("requeues tasks when a published batch closes without merging", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({
+    id: "CLOSED-PR",
+    holder: "agent",
+    expectedPaths: ["src/closed.ts"],
+  });
+  const commit = await commitFile(repo, "closed-pr", "src/closed.ts", "export const closed = true;\n");
+  await broker.submitTask("CLOSED-PR", [commit], claim.token);
+  const integrated = await broker.integrate();
+
+  await broker.store.transaction((state) => {
+    const batch = state.batches[integrated.batch.id];
+    const task = state.tasks["CLOSED-PR"];
+    assert.ok(batch);
+    assert.ok(task);
+    batch.status = "published";
+    task.status = "published";
+  });
+  const closed = await broker.closeBatch(integrated.batch.id, "Published pull request closed without merge.");
+
+  assert.equal(closed.status, "closed");
+  assert.match(closed.error ?? "", /closed without merge/u);
+  assert.equal((await broker.task("CLOSED-PR")).status, "submitted");
 });

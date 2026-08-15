@@ -36,6 +36,19 @@ MERGE_BROKER_TOKEN=... merge-broker --json task heartbeat TASK-123
 
 An expired lease can be claimed by another worker. A former holder must not continue editing after losing the lease.
 
+## Extend scope
+
+When a discovered dependency expands the task, extend the active lease with
+the same token before editing the additional path:
+
+```bash
+MERGE_BROKER_TOKEN=... merge-broker --json task extend TASK-123 \
+  --path 'src/shared/contract.ts'
+```
+
+The broker rechecks active and serialized-resource conflicts before accepting
+the larger scope.
+
 ## Submit
 
 ```bash
@@ -47,6 +60,19 @@ MERGE_BROKER_TOKEN=... merge-broker --json task submit TASK-123 \
 Commit order is significant. The broker resolves every revision to a full immutable commit ID and computes actual paths from Git rather than trusting the caller.
 
 The receipt written under Git's common directory conforms to [`../schemas/receipt.schema.json`](../schemas/receipt.schema.json). It contains no lease credential.
+
+## Published batch provenance
+
+With `integration.provenance.enabled`, the broker's final integration commit
+adds one JSON manifest under the configured repository-relative directory. Its
+parent is the assembled task head. The record binds the branch to its base,
+task IDs, submitted commits, changed paths, dependencies, and any broker-side
+validators. It conforms to
+[`../schemas/provenance.schema.json`](../schemas/provenance.schema.json).
+
+Remote policy should verify the branch prefix, manifest path, batch ID, base
+SHA, final-commit parent, and one-file provenance commit before spending time
+on dependency installation or authoritative CI.
 
 ## Path semantics
 

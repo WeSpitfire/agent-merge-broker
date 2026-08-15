@@ -57,6 +57,10 @@ export function defaultConfig(baseBranch = "main", remote = "origin", baseRef = 
       keepFailedWorktrees: false,
       refreshBase: true,
       maxAttempts: 3,
+      provenance: {
+        enabled: true,
+        directory: ".merge-broker/attestations",
+      },
     },
     validation: {
       focused: [],
@@ -223,6 +227,7 @@ export function validateConfig(value: unknown): BrokerConfig {
     "keepFailedWorktrees",
     "refreshBase",
     "maxAttempts",
+    "provenance",
   ]);
   assertString(config.integration?.branchPrefix, "integration.branchPrefix");
   assertSafeGitName(config.integration.branchPrefix, "integration.branchPrefix", true);
@@ -234,6 +239,22 @@ export function validateConfig(value: unknown): BrokerConfig {
   config.integration.maxAttempts ??= 3;
   assertBoolean(config.integration.refreshBase, "integration.refreshBase");
   assertPositiveInteger(config.integration.maxAttempts, "integration.maxAttempts");
+  if (config.integration.provenance !== undefined) {
+    assertAllowedKeys(config.integration.provenance, "integration.provenance", ["enabled", "directory"]);
+    assertBoolean(config.integration.provenance.enabled, "integration.provenance.enabled");
+    assertString(config.integration.provenance.directory, "integration.provenance.directory");
+    const directory = config.integration.provenance.directory.replaceAll("\\", "/");
+    if (
+      path.isAbsolute(directory) ||
+      directory === "." ||
+      directory.split("/").some((part) => part === ".." || part === ".git")
+    ) {
+      throw new BrokerError(
+        "INVALID_CONFIG",
+        "integration.provenance.directory must be a safe repository-relative directory.",
+      );
+    }
+  }
   assertAllowedKeys(config.validation, "validation", ["focused", "authoritative"]);
   if (!Array.isArray(config.validation.focused) || !Array.isArray(config.validation.authoritative)) {
     throw new BrokerError("INVALID_CONFIG", "validation.focused and validation.authoritative must be arrays.");

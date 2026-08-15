@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.2 — Unreleased
+## 0.1.4 — Unreleased
 
 - Added `publish.autoMerge` and `publish.mergeMethod`. The broker now asks GitHub to merge a
   published batch once required checks pass, so integration completes without a human step.
@@ -18,6 +18,11 @@
 - Added `integration.maxAttempts` to bound automatic re-queueing.
 - Fixed integration lock staleness, which collapsed the 24-hour timeout to 2 seconds and allowed a
   long-running integration to have its lock taken.
+- Added committed batch-provenance manifests that bind a published integration
+  branch to its base SHA, integrated parent, task receipts, and broker validators.
+- Made provenance opt-in compatible for existing version-one configurations and
+  enabled it by default for new installations.
+- Added token-authenticated active-lease scope extension for coordinator adapters.
 
 ## 0.1.1 — Unreleased
 
