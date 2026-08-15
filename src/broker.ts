@@ -324,33 +324,47 @@ export class MergeBroker {
     });
   }
 
-  async releaseTask(taskId: string, token: string): Promise<TaskRecord> {
+  async releaseTask(taskId: string, token?: string, options: { force?: boolean } = {}): Promise<TaskRecord> {
     return await this.store.transaction((state, audit) => {
       const task = requireTask(state, taskId);
-      verifyLease(task, token);
+      // A lease token is shown once. When the holder is gone and its token with it, the integration
+      // owner still needs a way to reclaim the scope, so a forced release skips verification and
+      // records that it did.
+      if (!options.force) {
+        if (!token) throw new BrokerError("LEASE_TOKEN", `A lease token is required to release task ${taskId}.`);
+        verifyLease(task, token);
+      }
       const actor = task.lease?.holder;
       delete task.lease;
       if (task.status === "claimed" || task.status === "failed") task.status = "registered";
       task.updatedAt = now();
-      audit("task.released", { ...(actor ? { actor } : {}), taskId });
+      audit("task.released", {
+        ...(actor ? { actor } : {}),
+        taskId,
+        ...(options.force ? { details: { forced: true } } : {}),
+      });
       return structuredClone(task);
     });
   }
 
-  async cancelTask(taskId: string, token?: string): Promise<TaskRecord> {
+  async cancelTask(taskId: string, token?: string, options: { force?: boolean } = {}): Promise<TaskRecord> {
     return await this.store.transaction((state, audit) => {
       const task = requireTask(state, taskId);
-      if (task.lease) {
+      if (task.lease && !options.force) {
         if (!token) throw new BrokerError("LEASE_TOKEN", `A lease token is required to cancel task ${taskId}.`);
         verifyLease(task, token);
       }
       if (["batched", "published", "merged"].includes(task.status)) {
         throw new BrokerError("TASK_NOT_CANCELLABLE", `Task ${taskId} cannot be cancelled while ${task.status}.`);
       }
+      const revokedFrom = options.force && task.lease ? task.lease.holder : undefined;
       task.status = "cancelled";
       delete task.lease;
       task.updatedAt = now();
-      audit("task.cancelled", { taskId });
+      audit("task.cancelled", {
+        taskId,
+        ...(revokedFrom ? { details: { forced: true, revokedLeaseFrom: revokedFrom } } : {}),
+      });
       return structuredClone(task);
     });
   }

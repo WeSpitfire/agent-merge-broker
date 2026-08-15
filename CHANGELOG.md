@@ -2,6 +2,10 @@
 
 ## 0.1.6 — Unreleased
 
+- Added `--force` to `task cancel` and `task release`, so an integration owner can reclaim a lease
+  whose one-time token was lost with its worker. Previously such a scope stayed locked until its TTL
+  expired. Forced revocation is recorded in the audit stream with the holder it was taken from.
+
 - Merged a published pull request directly when GitHub refuses to queue auto-merge because the pull
   request is already mergeable. A "clean" status means the required checks have passed, so the batch
   no longer stalls when checks finish before publication returns.

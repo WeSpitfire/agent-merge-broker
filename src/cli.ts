@@ -281,8 +281,12 @@ task
   .command("release <id>")
   .description("release a task lease")
   .option("--token <token>")
-  .action(async (id: string, options: { token?: string }) => {
-    const result = await (await openBroker()).releaseTask(id, requiredToken(options.token));
+  .option("--force", "revoke the lease without its token, for a holder that is gone")
+  .action(async (id: string, options: { token?: string; force?: boolean }) => {
+    const broker = await openBroker();
+    const result = options.force
+      ? await broker.releaseTask(id, undefined, { force: true })
+      : await broker.releaseTask(id, requiredToken(options.token));
     output(publicTask(result), `Released task ${id}.`);
   });
 
@@ -290,8 +294,11 @@ task
   .command("cancel <id>")
   .description("cancel a task that has not been batched")
   .option("--token <token>")
-  .action(async (id: string, options: { token?: string }) => {
-    const result = await (await openBroker()).cancelTask(id, options.token ?? process.env.MERGE_BROKER_TOKEN);
+  .option("--force", "cancel without a lease token, for a holder that is gone")
+  .action(async (id: string, options: { token?: string; force?: boolean }) => {
+    const result = await (await openBroker()).cancelTask(id, options.token ?? process.env.MERGE_BROKER_TOKEN, {
+      force: options.force ?? false,
+    });
     output(publicTask(result), `Cancelled task ${id}.`);
   });
 

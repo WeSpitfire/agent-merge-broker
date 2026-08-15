@@ -162,6 +162,37 @@ test("rejects overlapping active leases and out-of-scope receipts", async (conte
   );
 });
 
+test("reclaims a lease whose one-time token is gone", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+  await broker.claimTask({ id: "ORPHANED", holder: "departed-agent", expectedPaths: ["src/orphan/**"] });
+
+  // The token was shown once and lost with the worker, so the scope is unreachable without a remedy.
+  await assert.rejects(
+    broker.cancelTask("ORPHANED"),
+    (error: unknown) => error instanceof BrokerError && error.code === "LEASE_TOKEN",
+  );
+  await assert.rejects(
+    broker.releaseTask("ORPHANED"),
+    (error: unknown) => error instanceof BrokerError && error.code === "LEASE_TOKEN",
+  );
+
+  const cancelled = await broker.cancelTask("ORPHANED", undefined, { force: true });
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.lease, undefined);
+  const cancellations = (await broker.store.readAudit()).filter((item) => item.event === "task.cancelled");
+  const event = cancellations[cancellations.length - 1];
+  assert.equal(event?.details?.forced, true);
+  assert.equal(event?.details?.revokedLeaseFrom, "departed-agent");
+
+  // The scope is free again, so another worker can claim it.
+  const reclaimed = await broker.claimTask({ id: "REPLACEMENT", holder: "new-agent", expectedPaths: ["src/orphan/**"] });
+  assert.equal(reclaimed.task.status, "claimed");
+});
+
 test("returns tasks to the queue when authoritative validation fails", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
