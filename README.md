@@ -1,14 +1,33 @@
 # Agent Merge Broker
 
-Agent Merge Broker is a transaction coordinator for parallel code-producing agents and humans. Workers submit immutable Git commits; the broker decides what can integrate together, applies the commits in an isolated worktree, runs repository-defined validation, and produces one bounded integration branch or pull request.
+**Four agents just finished at the same time. Who merges first?**
 
-It is deliberately not an agent framework and not a replacement for protected branches. Codex, Claude, Cursor, custom agents, CI jobs, and humans all use the same small commit-receipt protocol.
+Agent Merge Broker answers that so your agents never have to. Workers commit their work and stop. The broker decides what can safely go together, cherry-picks it into a disposable worktree, runs your test suite against the combination, and lands one validated branch or pull request.
 
-## Why it exists
+No agent pushes. No agent rebases. No agent quietly clobbers another agent's `package-lock.json`.
 
-Parallel coding slows down when every worker also acts as a Git administrator. Overlapping edits, lockfiles, stale branches, repeated pushes, and one CI run per agent create coordination work that grows faster than the number of agents.
+## The problem
 
-The broker establishes a single integration authority while keeping implementation distributed:
+Put four coding agents on one repository and the bottleneck stops being code. It becomes Git.
+
+Two agents edit the same file and find out at merge time. A third rebases onto a branch that moved twenty minutes ago. Everyone regenerates the lockfile. CI runs four times to test four things that were never once tested *together*. And the pull request that has been sitting there since lunch is now so far behind `main` that nothing can merge it at all.
+
+The work is parallel. Integration is not. Every worker doing its own integration turns a coordination problem into a coordination disaster.
+
+## Try it in one minute
+
+```bash
+git clone https://github.com/WeSpitfire/agent-merge-broker
+cd agent-merge-broker && npm install && npm run build && npm run example
+```
+
+Two workers race on a throwaway repository, a third gets turned away for claiming ground someone else already leased, and four commits land as one validated branch. No forge, no network, no credentials.
+
+It is also this project's acceptance test in CI — so if the demo ever stops telling the truth, the build goes red.
+
+## How it works
+
+One integration authority; implementation stays distributed:
 
 - Expiring, cross-worktree leases prevent predictable collisions before editing.
 - Commit receipts separate implementation from integration authority.
@@ -19,6 +38,8 @@ The broker establishes a single integration authority while keeping implementati
 - Published branches can carry a committed provenance manifest for fast remote policy checks.
 - Tasks are dependency-complete only after their batch is actually merged.
 - An append-only audit stream records lifecycle decisions and validation results.
+
+It is deliberately **not** an agent framework and **not** a replacement for protected branches. Codex, Claude, Cursor, custom agents, CI jobs, and humans all speak the same small commit-receipt protocol, and your forge keeps the final say on what merges.
 
 ## Status
 
