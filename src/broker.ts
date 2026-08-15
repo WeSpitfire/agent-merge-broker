@@ -9,6 +9,7 @@ import { StateStore, type LockStatus } from "./store.js";
 import { runValidators } from "./validation.js";
 import { inspectPullRequest, publishBatch as publishPreparedBatch } from "./publisher.js";
 import { buildBatchProvenance, provenancePath } from "./provenance.js";
+import { installHooks, uninstallHooks, type HookInstallation } from "./hooks.js";
 import type {
   BatchRecord,
   BrokerConfig,
@@ -194,6 +195,10 @@ export interface RegisterTaskInput {
 
 export interface ClaimTaskInput extends RegisterTaskInput {
   holder: string;
+  /** Set false to keep the token out of broker state entirely and handle custody elsewhere. */
+  storeToken?: boolean;
+  /** Write the token here instead of the default location inside the broker state directory. */
+  tokenFile?: string;
 }
 
 export class MergeBroker {
@@ -262,7 +267,7 @@ export class MergeBroker {
     });
   }
 
-  async claimTask(input: ClaimTaskInput): Promise<{ task: TaskRecord; token: string }> {
+  async claimTask(input: ClaimTaskInput): Promise<{ task: TaskRecord; token: string; tokenPath?: string }> {
     assertTaskId(input.id);
     if (input.priority !== undefined && !Number.isInteger(input.priority)) {
       throw new BrokerError("INVALID_TASK", "Task priority must be an integer.");
@@ -271,7 +276,7 @@ export class MergeBroker {
     const timestamp = now();
     const expiresAt = new Date(Date.now() + this.config.leases.ttlSeconds * 1_000).toISOString();
     const defaultBase = await this.repo.resolveCommit(input.base ?? this.config.baseRef);
-    return await this.store.transaction((state, audit) => {
+    const claimed = await this.store.transaction((state, audit) => {
       let task = Object.hasOwn(state.tasks, input.id) ? state.tasks[input.id] : undefined;
       if (!task) {
         task = {
@@ -325,6 +330,12 @@ export class MergeBroker {
       audit("task.claimed", { actor: input.holder, taskId: task.id, details: { expiresAt } });
       return { task: structuredClone(task), token };
     });
+    if (input.storeToken === false) return claimed;
+    // A token written outside the default location is the caller's to supply again later; the
+    // automatic lookup only knows the default path.
+    const target = input.tokenFile ? path.resolve(input.tokenFile) : this.store.tokenPath(claimed.task.id);
+    const tokenPath = await this.store.writeToken(claimed.task.id, token, target);
+    return { ...claimed, tokenPath };
   }
 
   async heartbeat(taskId: string, token: string): Promise<TaskRecord> {
@@ -369,7 +380,7 @@ export class MergeBroker {
   }
 
   async releaseTask(taskId: string, token?: string, options: { force?: boolean } = {}): Promise<TaskRecord> {
-    return await this.store.transaction((state, audit) => {
+    const released = await this.store.transaction((state, audit) => {
       const task = requireTask(state, taskId);
       // A lease token is shown once. When the holder is gone and its token with it, the integration
       // owner still needs a way to reclaim the scope, so a forced release skips verification and
@@ -389,10 +400,12 @@ export class MergeBroker {
       });
       return structuredClone(task);
     });
+    await this.store.deleteToken(taskId);
+    return released;
   }
 
   async cancelTask(taskId: string, token?: string, options: { force?: boolean } = {}): Promise<TaskRecord> {
-    return await this.store.transaction((state, audit) => {
+    const cancelled = await this.store.transaction((state, audit) => {
       const task = requireTask(state, taskId);
       if (task.lease && !options.force) {
         if (!token) throw new BrokerError("LEASE_TOKEN", `A lease token is required to cancel task ${taskId}.`);
@@ -411,6 +424,8 @@ export class MergeBroker {
       });
       return structuredClone(task);
     });
+    await this.store.deleteToken(taskId);
+    return cancelled;
   }
 
   async retryTask(taskId: string, token?: string): Promise<TaskRecord> {
@@ -434,11 +449,27 @@ export class MergeBroker {
     });
   }
 
-  async submitTask(taskId: string, commits: string[], token: string): Promise<{ task: TaskRecord; receiptPath: string }> {
+  async submitTask(
+    taskId: string,
+    commits: string[],
+    token: string,
+    options: { sinceBase?: boolean } = {},
+  ): Promise<{ task: TaskRecord; receiptPath: string }> {
     assertTaskId(taskId);
-    if (commits.length === 0) throw new BrokerError("COMMITS_REQUIRED", "At least one commit is required.");
     const snapshot = requireTask(await this.store.read(), taskId);
     verifyLease(snapshot, token);
+    if (options.sinceBase) {
+      const worktree = snapshot.worktree ?? this.repo.root;
+      commits = await this.repo.commitsSinceBase(worktree, snapshot.baseSha);
+      if (commits.length === 0) {
+        throw new BrokerError(
+          "COMMITS_REQUIRED",
+          `Task ${taskId} has no commits after its recorded base ${snapshot.baseSha} in ${worktree}.`,
+          { worktree, baseSha: snapshot.baseSha },
+        );
+      }
+    }
+    if (commits.length === 0) throw new BrokerError("COMMITS_REQUIRED", "At least one commit is required.");
     if (this.config.policies.requireCleanWorktree && snapshot.worktree) {
       if (!(await this.repo.isClean(snapshot.worktree))) {
         throw new BrokerError("DIRTY_WORKTREE", `Task worktree is not clean: ${snapshot.worktree}`);
@@ -650,6 +681,7 @@ export class MergeBroker {
             tasks: plan.selected,
             integratedHeadSha,
             integratedPaths,
+            history: this.config.integration.history,
           });
           headSha = await this.repo.commitGeneratedFile(
             worktree,
@@ -695,6 +727,8 @@ export class MergeBroker {
               details: { taskIds: batch.taskIds, branchName, headSha },
             });
           });
+          // Batching ends the lease, so any token held for it is now dead weight.
+          for (const taskId of batch.taskIds) await this.store.deleteToken(taskId);
         }
         await this.store.writeBatchManifest(id, {
           batch,
@@ -970,7 +1004,7 @@ export class MergeBroker {
       const selection = selectPrunable(await this.store.read(), cutoffMs);
       return { ...selection, cutoff, dryRun: true };
     }
-    return await this.store.transaction(async (state, audit) => {
+    const pruned = await this.store.transaction(async (state, audit) => {
       const selection = selectPrunable(state, cutoffMs);
       if (selection.tasks.length === 0 && selection.batches.length === 0) {
         return { ...selection, cutoff, dryRun: false };
@@ -992,6 +1026,17 @@ export class MergeBroker {
         },
       });
       return { ...selection, cutoff, archivePath, dryRun: false };
+    });
+    for (const taskId of pruned.tasks) await this.store.deleteToken(taskId);
+    return pruned;
+  }
+
+  async installHooks(options: { force?: boolean; uninstall?: boolean } = {}): Promise<HookInstallation> {
+    if (options.uninstall) return await uninstallHooks(this.repo);
+    return await installHooks({
+      repo: this.repo,
+      branchPrefix: this.config.integration.branchPrefix,
+      force: options.force ?? false,
     });
   }
 

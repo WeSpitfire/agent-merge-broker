@@ -14,11 +14,12 @@ This repository coordinates parallel work with Agent Merge Broker.
 
 1. Claim a task and declare the smallest accurate path scope before editing:
    \`merge-broker task claim <task-id> --holder <agent> --path 'src/area/**'\`
-2. Save the one-time lease token securely and heartbeat long-running work.
+2. Heartbeat long-running work with \`merge-broker task heartbeat <task-id>\`. The broker holds the
+   lease token for you; pass \`--token\` only when working from another machine.
 3. Work only inside the declared scope. Coordinate a new claim before expanding it.
 4. Commit the completed, focused change. Agents do not merge, rebase, push, or administer branches.
 5. Submit immutable commits to the broker:
-   \`merge-broker task submit <task-id> --commit HEAD --token "$MERGE_BROKER_TOKEN"\`
+   \`merge-broker task submit <task-id> --since-base\`
 6. Report the task ID, commit SHA, changed paths, and validation performed.
 
 The broker owns integration ordering, conflict resolution requests, validation, batching, and publication.

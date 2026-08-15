@@ -107,6 +107,8 @@ Adapters should primarily branch on these codes:
 - `EMPTY_BATCH`
 - `LOCK_TIMEOUT`, `LOCK_HELD`
 - `PUBLISH_DISABLED`, `PUBLISH_FAILED`, `AUTO_MERGE_FAILED`
+- `PROVENANCE_INVALID`
+- `HOOKS_PATH_CONFLICT`
 
 Additional codes may be introduced. Adapters must display unknown errors rather than treating them as success.
 

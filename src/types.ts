@@ -146,6 +146,12 @@ export interface BatchProvenance {
   generator: "agent-merge-broker";
   batchId: string;
   baseBranch: string;
+  /**
+   * How the batch was assembled. Squashing replaces the cherry-pick trail, so a verifier cannot
+   * look for submitted commits in the integrated history. Absent on manifests written before this
+   * field existed, which were always assembled with preserved history.
+   */
+  history?: HistoryMode;
   baseSha: string;
   integratedHeadSha: string;
   taskIds: string[];

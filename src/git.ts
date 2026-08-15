@@ -94,6 +94,26 @@ export class GitRepository {
     return [...new Set(splitNull(result.stdout))].sort();
   }
 
+  /**
+   * Linear commits on HEAD after `base`, oldest first. `git cherry` compares patch identities, so a
+   * change already contained in the base under a different SHA -- the ordinary result of a rebase --
+   * is not submitted a second time.
+   */
+  async commitsSinceBase(cwd: string, base: string): Promise<string[]> {
+    const cherry = await this.git(["cherry", base, "HEAD"], cwd);
+    const notUpstream = new Set(
+      cherry.stdout
+        .split("\n")
+        .filter((line) => line.startsWith("+ "))
+        .map((line) => line.slice(2).trim()),
+    );
+    const listed = await this.git(["rev-list", "--reverse", "--no-merges", `${base}..HEAD`], cwd);
+    return listed.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((commit) => commit !== "" && notUpstream.has(commit));
+  }
+
   async parentCount(commit: string): Promise<number> {
     const result = await this.git(["rev-list", "--parents", "-n", "1", commit]);
     return Math.max(0, result.stdout.trim().split(/\s+/u).length - 1);

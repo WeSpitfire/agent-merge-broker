@@ -1,0 +1,75 @@
+name: Verify Merge Broker provenance
+description: >-
+  Prove that a pull request head is an unaltered Merge Broker batch. Reads only Git, so it can run
+  before any dependency is installed and reject work that bypassed the broker for free.
+author: PowerHouse Exteriors
+
+branding:
+  icon: git-merge
+  color: purple
+
+inputs:
+  version:
+    description: Version of agent-merge-broker to run. Pin this.
+    required: false
+    default: 0.3.0
+  branch:
+    description: Head branch of the pull request.
+    required: false
+    default: ${{ github.head_ref }}
+  head:
+    description: Head commit of the pull request.
+    required: false
+    default: ${{ github.event.pull_request.head.sha }}
+  base:
+    description: Commit on the target branch to verify against.
+    required: false
+    default: ${{ github.event.pull_request.base.sha }}
+  base-branch:
+    description: Expected target branch. Defaults to the base-branch policy committed on the base.
+    required: false
+    default: ""
+  branch-prefix:
+    description: Integration branch prefix. Defaults to the policy committed on the base.
+    required: false
+    default: ""
+  provenance-directory:
+    description: Directory holding batch manifests. Defaults to the policy committed on the base.
+    required: false
+    default: ""
+  working-directory:
+    description: Repository directory to verify.
+    required: false
+    default: .
+
+runs:
+  using: composite
+  steps:
+    - name: Verify Merge Broker provenance
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        AMB_VERSION: ${{ inputs.version }}
+        AMB_BRANCH: ${{ inputs.branch }}
+        AMB_HEAD: ${{ inputs.head }}
+        AMB_BASE: ${{ inputs.base }}
+        AMB_BASE_BRANCH: ${{ inputs.base-branch }}
+        AMB_BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+        AMB_PROVENANCE_DIRECTORY: ${{ inputs.provenance-directory }}
+      run: |
+        set -euo pipefail
+        if [ -z "${AMB_BRANCH}" ] || [ -z "${AMB_HEAD}" ] || [ -z "${AMB_BASE}" ]; then
+          echo "::error::branch, head, and base are required. On non-pull_request events, pass them explicitly."
+          exit 1
+        fi
+        args=(verify-provenance --branch "${AMB_BRANCH}" --head "${AMB_HEAD}" --base "${AMB_BASE}")
+        if [ -n "${AMB_BASE_BRANCH}" ]; then
+          args+=(--base-branch "${AMB_BASE_BRANCH}")
+        fi
+        if [ -n "${AMB_BRANCH_PREFIX}" ]; then
+          args+=(--branch-prefix "${AMB_BRANCH_PREFIX}")
+        fi
+        if [ -n "${AMB_PROVENANCE_DIRECTORY}" ]; then
+          args+=(--provenance-directory "${AMB_PROVENANCE_DIRECTORY}")
+        fi
+        npx --yes "agent-merge-broker@${AMB_VERSION}" "${args[@]}"

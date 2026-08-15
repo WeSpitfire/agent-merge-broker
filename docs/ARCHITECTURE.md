@@ -120,6 +120,21 @@ authoritative suite itself.
 
 PR reconciliation queries GitHub for merged state. Branch reconciliation fetches the configured base and checks that the batch head is an ancestor. Squash and rebase workflows may require the explicit `batch complete` escape hatch because the local batch head can disappear from final ancestry.
 
+## Remote verification
+
+`verify-provenance` is the read-only inverse of integration: given a branch, its head, and the base,
+it re-derives what the broker must have done and rejects anything else. It uses only Git, so it runs
+on any forge, in any language ecosystem, before dependencies are installed — which is what makes it
+cheap enough to require on every pull request.
+
+It is deliberately tolerant of one thing: the merges a forge creates when a protected base requires
+branches to be up to date. Such a merge is accepted only when its merged side is already contained
+in the base and it changed nothing the base did not; the manifest commit is then located behind it.
+Every other commit added to an integration branch fails verification.
+
+Squashed batches cannot be traced commit by commit, because squashing discards the cherry-pick
+trail. The manifest records which mode produced it so a verifier knows which guarantees apply.
+
 ## Failure isolation
 
 The first failing cherry-pick identifies a commit and task. Focused validation identifies a task-scoped failure. An authoritative failure identifies the complete batch but may represent an interaction between otherwise valid tasks. Version 0.1 deliberately stops and marks the bounded batch failed rather than automatically guessing a resolution. Operators can requeue the unchanged receipt explicitly. Automatic delta debugging can be layered on without weakening the transaction invariant.

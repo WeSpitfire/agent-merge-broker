@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.0 — Unreleased
+
+The adoption layer. Everything here already existed as bespoke glue around the broker in the
+repository that pilots it; this release moves the generic parts into the tool so a new adopter does
+not have to rebuild them.
+
+### Added
+
+- `merge-broker verify-provenance --branch <ref> --head <sha> --base <sha>` proves that a pull
+  request head is an unaltered broker batch: assembled on real base history, changing exactly the
+  paths its receipts account for, carrying every submitted commit, and validated. It reads only Git,
+  so it runs on any forge and before any dependency is installed. It accepts the "update branch"
+  merges a protected base produces, and rejects a merge that brings in anything the base does not
+  already contain. Verification policy is read from the configuration committed on the base branch,
+  never from the change under review.
+- A composite GitHub Action at `verify/action.yml`, so requiring the gate is two lines:
+  `uses: WeSpitfire/agent-merge-broker/verify@v1`.
+- `merge-broker task submit --since-base` submits the linear commits made after the base the broker
+  handed out. Commits whose change is already upstream are skipped by patch identity, so a rebased
+  branch does not resubmit landed work.
+- The broker now holds the lease token for the worker, mode 0600, beside the state it authorizes.
+  Lease-aware commands find it automatically; `--token`, `--token-file`, and `MERGE_BROKER_TOKEN`
+  still work, and `task claim --no-store-token` opts out. Previously the token was shown once and
+  every adopter had to build a credential store, with the obvious implementation putting a live
+  token in the working tree where `git add` and validator commands can reach it.
+- `merge-broker install-hooks` installs a pre-push guard that refuses direct pushes of
+  implementation branches, with `MERGE_BROKER_ALLOW_DIRECT_PUSH=1` as the deliberate bypass. It
+  refuses to run when the repository already has hooks that moving `core.hooksPath` would silently
+  disable, and `--uninstall` reverses it.
+- `examples/two-agents` is a runnable demonstration: two workers in parallel worktrees, one refused
+  overlapping claim, four commits, one validated branch. It runs in CI as an acceptance test.
+- Batch provenance manifests record the `history` mode used to assemble them, so a verifier knows
+  whether submitted commits are traceable in the integrated history. Manifests written before this
+  field are treated as `preserve`, which is what they were.
+
 ## 0.2.0 — Unreleased
 
 Correctness pass ahead of the first public release. Everything below was found by reviewing the

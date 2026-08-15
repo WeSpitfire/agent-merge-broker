@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { MergeBroker } from "./broker.js";
 import { configPath, loadConfig } from "./config.js";
@@ -428,6 +428,79 @@ test(
     );
   },
 );
+
+test("submits every linear commit made after the recorded base", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({
+    id: "MULTI",
+    holder: "agent",
+    expectedPaths: ["src/multi/**"],
+    worktree: repo,
+  });
+
+  await git(repo, "switch", "-c", "agent-multi", "main");
+  await mkdir(path.join(repo, "src", "multi"), { recursive: true });
+  for (const step of ["one", "two", "three"]) {
+    await writeFile(path.join(repo, "src", "multi", `${step}.ts`), `export const ${step} = 1;\n`, "utf8");
+    await git(repo, "add", `src/multi/${step}.ts`);
+    await git(repo, "commit", "-m", `add ${step}`);
+  }
+  const expected = (await git(repo, "rev-list", "--reverse", "main..HEAD")).split("\n");
+
+  const result = await broker.submitTask("MULTI", [], claim.token, { sinceBase: true });
+  assert.deepEqual(result.task.commits, expected);
+  assert.deepEqual(result.task.actualPaths, ["src/multi/one.ts", "src/multi/three.ts", "src/multi/two.ts"]);
+
+  // A worker with nothing new to hand over should hear so, not submit the base itself.
+  await git(repo, "switch", "main");
+  const empty = await broker.claimTask({
+    id: "EMPTY",
+    holder: "agent",
+    expectedPaths: ["src/empty/**"],
+    worktree: repo,
+  });
+  await assert.rejects(
+    broker.submitTask("EMPTY", [], empty.token, { sinceBase: true }),
+    (error: unknown) => error instanceof BrokerError && error.code === "COMMITS_REQUIRED",
+  );
+});
+
+test("holds the lease token for the worker instead of printing it once", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+
+  const claim = await broker.claimTask({ id: "CUSTODY", holder: "agent", expectedPaths: ["src/custody/**"] });
+  assert.ok(claim.tokenPath, "expected the broker to store the token");
+  assert.equal(await broker.store.readToken("CUSTODY"), claim.token);
+
+  // The credential must not be readable by anyone else on the machine.
+  if (process.platform !== "win32") {
+    const mode = (await stat(claim.tokenPath ?? "")).mode & 0o777;
+    assert.equal(mode, 0o600);
+  }
+
+  // The stored copy is enough to act on the lease.
+  await broker.heartbeat("CUSTODY", (await broker.store.readToken("CUSTODY")) ?? "");
+
+  await broker.releaseTask("CUSTODY", claim.token);
+  assert.equal(await broker.store.readToken("CUSTODY"), undefined);
+
+  const unstored = await broker.claimTask({
+    id: "NO-CUSTODY",
+    holder: "agent",
+    expectedPaths: ["src/no-custody/**"],
+    storeToken: false,
+  });
+  assert.equal(unstored.tokenPath, undefined);
+  assert.equal(await broker.store.readToken("NO-CUSTODY"), undefined);
+});
 
 test("retires completed records but keeps dependencies of active work", async (context) => {
   const repo = await createRepository();

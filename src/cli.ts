@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 import os from "node:os";
+import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Command, Option } from "commander";
 import { BrokerError, CommandError } from "./errors.js";
 import { MergeBroker } from "./broker.js";
+import { GitRepository } from "./git.js";
+import { policyFromBase, verifyProvenance } from "./verify.js";
 import type { BatchRecord, BrokerState, SchedulePlan, TaskRecord } from "./types.js";
 
 const program = new Command();
@@ -23,12 +27,36 @@ function output(value: unknown, human?: string): void {
   else console.log(human);
 }
 
-function requiredToken(value?: string): string {
-  const token = value ?? process.env.MERGE_BROKER_TOKEN;
+interface TokenOptions {
+  token?: string;
+  tokenFile?: string;
+}
+
+/**
+ * Finds the lease token for a task: an explicit flag first, then an explicit file, then the
+ * environment, and finally the copy the broker kept when the task was claimed on this machine.
+ */
+async function findLeaseToken(
+  broker: MergeBroker,
+  taskId: string,
+  options: TokenOptions,
+): Promise<string | undefined> {
+  if (options.token) return options.token;
+  if (options.tokenFile) {
+    const contents = (await readFile(path.resolve(options.tokenFile), "utf8")).trim();
+    if (!contents) throw new BrokerError("LEASE_TOKEN", `No lease token in ${options.tokenFile}.`);
+    return contents;
+  }
+  if (process.env.MERGE_BROKER_TOKEN) return process.env.MERGE_BROKER_TOKEN;
+  return await broker.store.readToken(taskId);
+}
+
+async function requireLeaseToken(broker: MergeBroker, taskId: string, options: TokenOptions): Promise<string> {
+  const token = await findLeaseToken(broker, taskId, options);
   if (!token) {
     throw new BrokerError(
       "LEASE_TOKEN",
-      "A lease token is required. Pass --token or set MERGE_BROKER_TOKEN.",
+      `No lease token for ${taskId}. Pass --token or --token-file, set MERGE_BROKER_TOKEN, or claim the task on this machine so the broker holds it for you.`,
     );
   }
   return token;
@@ -208,6 +236,8 @@ task
   .option("--depends-on <task>", "dependency task ID; repeatable", collect, [])
   .option("--priority <number>", "higher values are scheduled first")
   .option("--worktree <path>", "agent worktree")
+  .option("--token-file <path>", "write the lease token here instead of the broker state directory")
+  .option("--no-store-token", "do not persist the token; handle custody yourself")
   .action(
     async (
       id: string,
@@ -220,6 +250,8 @@ task
         dependsOn: string[];
         priority?: string;
         worktree?: string;
+        tokenFile?: string;
+        storeToken: boolean;
       },
     ) => {
       const result = await (await openBroker()).claimTask({
@@ -232,13 +264,19 @@ task
         ...(options.dependsOn.length > 0 ? { dependsOn: options.dependsOn } : {}),
         ...(options.priority ? { priority: Number(options.priority) } : {}),
         worktree: options.worktree ?? globalOptions().cwd,
+        ...(options.tokenFile ? { tokenFile: options.tokenFile } : {}),
+        storeToken: options.storeToken,
       });
       output(
-        { task: publicTask(result.task), token: result.token },
+        { task: publicTask(result.task), token: result.token, tokenPath: result.tokenPath },
         [
           `Claimed task ${result.task.id} until ${result.task.lease?.expiresAt}.`,
-          `Lease token: ${result.token}`,
-          "Save this token; it is shown only once.",
+          ...(result.tokenPath
+            ? [
+                `Lease token stored at ${result.tokenPath} (readable only by you).`,
+                "Commands for this task on this machine will find it automatically.",
+              ]
+            : [`Lease token: ${result.token}`, "Save this token; it is shown only once."]),
         ].join("\n"),
       );
     },
@@ -249,8 +287,10 @@ task
   .description("extend an active task lease with additional expected paths")
   .option("--path <pattern>", "expected path or glob; repeatable", collect, [])
   .option("--token <token>")
-  .action(async (id: string, options: { path: string[]; token?: string }) => {
-    const result = await (await openBroker()).extendTask(id, options.path, requiredToken(options.token));
+  .option("--token-file <path>", "read the lease token from this file")
+  .action(async (id: string, options: { path: string[] } & TokenOptions) => {
+    const broker = await openBroker();
+    const result = await broker.extendTask(id, options.path, await requireLeaseToken(broker, id, options));
     output(publicTask(result), `Extended task ${id} to ${result.expectedPaths.length} path pattern(s).`);
   });
 
@@ -258,8 +298,10 @@ task
   .command("retry <id>")
   .description("return a failed task to the submitted queue")
   .option("--token <token>")
-  .action(async (id: string, options: { token?: string }) => {
-    const result = await (await openBroker()).retryTask(id, options.token ?? process.env.MERGE_BROKER_TOKEN);
+  .option("--token-file <path>", "read the lease token from this file")
+  .action(async (id: string, options: TokenOptions) => {
+    const broker = await openBroker();
+    const result = await broker.retryTask(id, await findLeaseToken(broker, id, options));
     output(publicTask(result), `Returned task ${id} to the integration queue.`);
   });
 
@@ -267,8 +309,10 @@ task
   .command("heartbeat <id>")
   .description("extend an active task lease")
   .option("--token <token>")
-  .action(async (id: string, options: { token?: string }) => {
-    const result = await (await openBroker()).heartbeat(id, requiredToken(options.token));
+  .option("--token-file <path>", "read the lease token from this file")
+  .action(async (id: string, options: TokenOptions) => {
+    const broker = await openBroker();
+    const result = await broker.heartbeat(id, await requireLeaseToken(broker, id, options));
     output(publicTask(result), `Lease for ${id} extended until ${result.lease?.expiresAt}.`);
   });
 
@@ -276,10 +320,18 @@ task
   .command("submit <id>")
   .description("submit one or more immutable Git commits as a receipt")
   .option("--commit <revision>", "commit to integrate; repeatable", collect, [])
+  .option("--since-base", "submit every linear commit made after the task's recorded base")
   .option("--token <token>")
-  .action(async (id: string, options: { commit: string[]; token?: string }) => {
+  .option("--token-file <path>", "read the lease token from this file")
+  .action(async (id: string, options: { commit: string[]; sinceBase?: boolean } & TokenOptions) => {
+    if (options.sinceBase && options.commit.length > 0) {
+      throw new BrokerError("INVALID_ARGUMENTS", "Use either --since-base or explicit --commit values, not both.");
+    }
+    const broker = await openBroker();
     const commits = options.commit.length > 0 ? options.commit : ["HEAD"];
-    const result = await (await openBroker()).submitTask(id, commits, requiredToken(options.token));
+    const result = await broker.submitTask(id, commits, await requireLeaseToken(broker, id, options), {
+      sinceBase: options.sinceBase ?? false,
+    });
     output(
       { ...result, task: publicTask(result.task) },
       `Submitted ${result.task.commits.length} commit(s) for ${id}.\nReceipt: ${result.receiptPath}`,
@@ -290,12 +342,13 @@ task
   .command("release <id>")
   .description("release a task lease")
   .option("--token <token>")
+  .option("--token-file <path>", "read the lease token from this file")
   .option("--force", "revoke the lease without its token, for a holder that is gone")
-  .action(async (id: string, options: { token?: string; force?: boolean }) => {
+  .action(async (id: string, options: { force?: boolean } & TokenOptions) => {
     const broker = await openBroker();
     const result = options.force
       ? await broker.releaseTask(id, undefined, { force: true })
-      : await broker.releaseTask(id, requiredToken(options.token));
+      : await broker.releaseTask(id, await requireLeaseToken(broker, id, options));
     output(publicTask(result), `Released task ${id}.`);
   });
 
@@ -303,9 +356,11 @@ task
   .command("cancel <id>")
   .description("cancel a task that has not been batched")
   .option("--token <token>")
+  .option("--token-file <path>", "read the lease token from this file")
   .option("--force", "cancel without a lease token, for a holder that is gone")
-  .action(async (id: string, options: { token?: string; force?: boolean }) => {
-    const result = await (await openBroker()).cancelTask(id, options.token ?? process.env.MERGE_BROKER_TOKEN, {
+  .action(async (id: string, options: { force?: boolean } & TokenOptions) => {
+    const broker = await openBroker();
+    const result = await broker.cancelTask(id, await findLeaseToken(broker, id, options), {
       force: options.force ?? false,
     });
     output(publicTask(result), `Cancelled task ${id}.`);
@@ -443,6 +498,71 @@ program
     const result = await (await openBroker()).metrics();
     output(result, JSON.stringify(result, null, 2));
   });
+
+program
+  .command("install-hooks")
+  .description("install the pre-push guard that keeps implementation branches out of the forge")
+  .option("--force", "replace an existing hooks path, disabling the hooks it holds")
+  .option("--uninstall", "remove the guard and restore the previous hooks path")
+  .action(async (options: { force?: boolean; uninstall?: boolean }) => {
+    const result = await (await openBroker()).installHooks({
+      force: options.force ?? false,
+      uninstall: options.uninstall ?? false,
+    });
+    output(
+      result,
+      result.installed
+        ? [
+            `Installed the pre-push guard at ${result.hookFile}.`,
+            ...(result.previousHooksPath ? [`Replaced core.hooksPath ${result.previousHooksPath}.`] : []),
+            "Commit .githooks/ so every clone of this repository is covered.",
+          ].join("\n")
+        : "Removed the pre-push guard.",
+    );
+  });
+
+program
+  .command("verify-provenance")
+  .description("prove a pull request head is an unaltered broker batch, before installing anything")
+  .requiredOption("--branch <ref>", "head branch of the pull request")
+  .requiredOption("--head <sha>", "head commit of the pull request")
+  .requiredOption("--base <sha>", "current tip of the target branch")
+  .option("--base-branch <name>", "expected target branch")
+  .option("--branch-prefix <prefix>", "integration branch prefix")
+  .option("--provenance-directory <path>", "directory holding batch manifests")
+  .action(
+    async (options: {
+      branch: string;
+      head: string;
+      base: string;
+      baseBranch?: string;
+      branchPrefix?: string;
+      provenanceDirectory?: string;
+    }) => {
+      const repo = await GitRepository.discover(globalOptions().cwd);
+      // Policy comes from the base branch, never from the change being verified.
+      const policy = await policyFromBase(repo, options.base);
+      const result = await verifyProvenance({
+        repo,
+        branch: options.branch,
+        headSha: options.head,
+        baseSha: options.base,
+        baseBranch: options.baseBranch ?? policy.baseBranch ?? "main",
+        branchPrefix: options.branchPrefix ?? policy.branchPrefix ?? "merge-broker/",
+        provenanceDirectory:
+          options.provenanceDirectory ?? policy.provenanceDirectory ?? ".merge-broker/attestations",
+      });
+      output(
+        result,
+        [
+          `Verified broker batch ${result.batchId}.`,
+          `Tasks: ${result.taskIds.join(", ")}`,
+          `Integrated head: ${result.parentSha}`,
+          `Validations recorded: ${result.manifest.validations.length}`,
+        ].join("\n"),
+      );
+    },
+  );
 
 program
   .command("prune")

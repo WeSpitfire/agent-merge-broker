@@ -5,6 +5,7 @@ import { constants } from "node:fs";
 import {
   access,
   appendFile,
+  chmod,
   mkdir,
   open,
   readFile,
@@ -54,6 +55,7 @@ export class StateStore {
   readonly directory: string;
   readonly worktreesDirectory: string;
   readonly archiveDirectory: string;
+  readonly tokensDirectory: string;
   private readonly stateFile: string;
   private readonly auditFile: string;
   private readonly receiptsDirectory: string;
@@ -64,6 +66,7 @@ export class StateStore {
     this.directory = path.resolve(commonGitDir, stateDirectory);
     this.worktreesDirectory = path.join(this.directory, "worktrees");
     this.archiveDirectory = path.join(this.directory, "archive");
+    this.tokensDirectory = path.join(this.directory, "tokens");
     this.stateFile = path.join(this.directory, "state.json");
     this.auditFile = path.join(this.directory, "audit.jsonl");
     this.receiptsDirectory = path.join(this.directory, "receipts");
@@ -78,6 +81,7 @@ export class StateStore {
       mkdir(this.receiptsDirectory, { recursive: true }),
       mkdir(this.batchesDirectory, { recursive: true }),
       mkdir(this.archiveDirectory, { recursive: true }),
+      mkdir(this.tokensDirectory, { recursive: true, mode: 0o700 }),
     ]);
     if (!(await exists(this.stateFile))) {
       try {
@@ -141,6 +145,38 @@ export class StateStore {
     const target = path.join(this.receiptsDirectory, `${safeName(receipt.taskId)}.json`);
     await this.atomicWrite(target, receipt);
     return target;
+  }
+
+  tokenPath(taskId: string): string {
+    return path.join(this.tokensDirectory, `${safeName(taskId)}.token`);
+  }
+
+  /**
+   * Holds a worker's lease token for it. A token shown once and never stored forces every adopter to
+   * build a token store, and the obvious implementation puts a live credential in the working tree
+   * where `git add` and validator commands can reach it. Here it stays owner-readable, beside the
+   * state it authorizes, under a directory whose contents are already trusted.
+   */
+  async writeToken(taskId: string, token: string, target = this.tokenPath(taskId)): Promise<string> {
+    await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    await chmod(path.dirname(target), 0o700).catch(() => undefined);
+    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(temporary, `${token}\n`, { encoding: "utf8", mode: 0o600 });
+    await chmod(temporary, 0o600).catch(() => undefined);
+    await rename(temporary, target);
+    return target;
+  }
+
+  async readToken(taskId: string): Promise<string | undefined> {
+    try {
+      return (await readFile(this.tokenPath(taskId), "utf8")).trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async deleteToken(taskId: string): Promise<void> {
+    await rm(this.tokenPath(taskId), { force: true });
   }
 
   async writeBatchManifest(batchId: string, manifest: unknown): Promise<string> {

@@ -75,19 +75,26 @@ merge-broker task claim CRM-142 \
   --path 'test/customers/**'
 ```
 
-The token is shown once. Store it in the worker process, not in source control:
+The broker keeps the lease token beside its own state, readable only by the user who claimed the
+task, so nothing in the worker has to carry a credential:
 
 ```bash
-export MERGE_BROKER_TOKEN='<returned-token>'
 merge-broker task heartbeat CRM-142
 ```
+
+Pass `--token`, `--token-file`, or `MERGE_BROKER_TOKEN` when the worker runs somewhere else, or
+claim with `--no-store-token` to handle custody yourself.
 
 The worker commits its change and submits a receipt. It does not merge or push:
 
 ```bash
 git commit -m 'Add customer search filters'
-merge-broker task submit CRM-142 --commit HEAD
+merge-broker task submit CRM-142 --since-base
 ```
+
+`--since-base` submits the linear commits made after the base the broker handed out, skipping any
+whose change is already upstream. Pass explicit `--commit` revisions instead when a worker wants to
+hand over only part of its branch.
 
 The integration owner can inspect and verify the next batch before retaining anything:
 
@@ -105,6 +112,52 @@ merge-broker batch sync <batch-id>
 ```
 
 `batch sync` checks the GitHub PR when available. For branch-only publication it fetches the configured base and verifies ancestry. `batch complete` exists as an explicit manual escape hatch for squash/rebase workflows that cannot be reconciled automatically.
+
+## See it work
+
+```bash
+npm run build
+sh examples/two-agents/run.sh
+```
+
+[`examples/two-agents`](examples/two-agents/) builds a throwaway repository, runs two workers in
+parallel worktrees, refuses a third worker that tries to claim an area already leased, and assembles
+four commits into one validated branch. No forge, no network, no credentials.
+
+## Enforcing the broker
+
+Nothing above prevents a worker from pushing its own branch and opening a pull request. Two optional
+guards close that gap.
+
+A local guard refuses direct pushes of implementation branches:
+
+```bash
+merge-broker install-hooks
+```
+
+This sets `core.hooksPath`, so it refuses to run when the repository already has hooks that would
+stop working, and `--uninstall` puts everything back. `MERGE_BROKER_ALLOW_DIRECT_PUSH=1` is the
+deliberate emergency bypass.
+
+A remote gate proves a pull request really is an unaltered broker batch. It reads only Git, so it
+can run before any dependency is installed and reject bypassed work for almost nothing:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    ref: ${{ github.event.pull_request.head.sha }}
+    fetch-depth: 0
+- uses: WeSpitfire/agent-merge-broker/verify@v1
+```
+
+The check confirms that the branch is a broker integration branch, that its manifest was assembled
+on real base history, that the final commit changes nothing but that manifest, that the integrated
+diff matches exactly the paths the receipts account for, that every submitted commit is present, and
+that all recorded validations passed. It accepts the "update branch" merges a protected base
+produces, and rejects a merge that brings in anything the base does not already contain.
+
+Verification policy is read from the configuration committed on the *base* branch, never from the
+change under review.
 
 ## Automatic merging
 
@@ -238,6 +291,8 @@ the already-checked revision without repeating the whole suite.
 ```text
 merge-broker init
 merge-broker doctor
+merge-broker install-hooks [--force] [--uninstall]
+merge-broker verify-provenance --branch <ref> --head <sha> --base <sha>
 merge-broker task register|claim|extend|heartbeat|submit|retry|release|cancel|show
 merge-broker status
 merge-broker plan

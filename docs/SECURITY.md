@@ -40,6 +40,18 @@ Validators run under a fixed interpreter — `/bin/sh` by default, or `validatio
 
 Task and batch metadata must still be treated as untrusted display text by external dashboards. The bundled GitHub publisher constructs command arguments without a shell and sends PR content through stdin.
 
+## Enforcement boundaries
+
+`install-hooks` is a local convenience, not a security control: a pre-push hook is client-side and
+any worker can bypass it. It exists to make the intended path the easy one and to catch mistakes
+early.
+
+`verify-provenance` is the enforceable boundary, and only when the forge requires it on a protected
+branch. It reads verification policy from the configuration committed on the base branch, because
+the checked-out tree belongs to the change being judged. It proves that a head is an unaltered
+broker batch; it does not prove that the batch's contents are good, which is what the repository's
+own validation is for.
+
 ## Reporting vulnerabilities
 
 Before a public security address is established, report vulnerabilities privately to the repository owner. Do not open a public issue containing exploitable details or credentials.

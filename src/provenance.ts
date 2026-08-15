@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { BatchProvenance, BatchRecord, TaskRecord } from "./types.js";
+import type { BatchProvenance, BatchRecord, HistoryMode, TaskRecord } from "./types.js";
 
 export function provenancePath(directory: string, batchId: string): string {
   return path.posix.join(directory.replaceAll("\\", "/"), `${batchId}.json`);
@@ -10,14 +10,16 @@ export function buildBatchProvenance(options: {
   tasks: TaskRecord[];
   integratedHeadSha: string;
   integratedPaths: string[];
+  history?: HistoryMode;
 }): BatchProvenance {
-  const { batch, tasks, integratedHeadSha, integratedPaths } = options;
+  const { batch, tasks, integratedHeadSha, integratedPaths, history } = options;
   const integratedPathSet = new Set(integratedPaths);
   return {
     version: 1,
     generator: "agent-merge-broker",
     batchId: batch.id,
     baseBranch: batch.baseBranch,
+    ...(history ? { history } : {}),
     baseSha: batch.baseSha,
     integratedHeadSha,
     taskIds: [...batch.taskIds],
