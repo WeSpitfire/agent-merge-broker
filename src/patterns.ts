@@ -1,7 +1,10 @@
 import picomatch from "picomatch";
 
 export function normalizeGitPath(value: string): string {
-  return value.replaceAll("\\", "/").replace(/^\.\//u, "").replace(/^\/+|\/+$/gu, "");
+  return value
+    .replace(/\\(?![?*{[(\]})])/gu, "/")
+    .replace(/^\.\//u, "")
+    .replace(/^\/+|\/+$/gu, "");
 }
 
 export function matchesPattern(file: string, pattern: string): boolean {
@@ -19,9 +22,22 @@ export function unexpectedPaths(actual: string[], expected: string[]): string[] 
   return actual.filter((file) => !matchesAny(file, expected));
 }
 
+function firstUnescapedMagicIndex(pattern: string): number {
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (!character) continue;
+    if (character === "\\") {
+      index += 1;
+      continue;
+    }
+    if (/[?*{[(]/u.test(character)) return index;
+  }
+  return -1;
+}
+
 function literalPrefix(pattern: string): string {
   const normalized = normalizeGitPath(pattern);
-  const magic = normalized.search(/[?*{[(]/u);
+  const magic = firstUnescapedMagicIndex(normalized);
   const prefix = magic === -1 ? normalized : normalized.slice(0, magic);
   return prefix.slice(0, prefix.lastIndexOf("/") + 1);
 }
@@ -30,8 +46,8 @@ export function patternsMayOverlap(left: string, right: string): boolean {
   const a = normalizeGitPath(left);
   const b = normalizeGitPath(right);
   if (a === b || matchesPattern(a, b) || matchesPattern(b, a)) return true;
-  const aHasMagic = /[?*{[(]/u.test(a);
-  const bHasMagic = /[?*{[(]/u.test(b);
+  const aHasMagic = firstUnescapedMagicIndex(a) !== -1;
+  const bHasMagic = firstUnescapedMagicIndex(b) !== -1;
   if (!aHasMagic || !bHasMagic) return false;
   const aPrefix = literalPrefix(a);
   const bPrefix = literalPrefix(b);

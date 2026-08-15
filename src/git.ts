@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
 import { runCommand, type CommandResult } from "./process.js";
 
@@ -84,6 +84,16 @@ export class GitRepository {
     return [...files].sort();
   }
 
+  async changedFilesBetween(base: string, head: string): Promise<string[]> {
+    const result = await this.git([
+      "diff",
+      "--name-only",
+      "-z",
+      `${base}..${head}`,
+    ]);
+    return [...new Set(splitNull(result.stdout))].sort();
+  }
+
   async parentCount(commit: string): Promise<number> {
     const result = await this.git(["rev-list", "--parents", "-n", "1", commit]);
     return Math.max(0, result.stdout.trim().split(/\s+/u).length - 1);
@@ -131,6 +141,33 @@ export class GitRepository {
 
   async squash(cwd: string, baseSha: string, message: string): Promise<string> {
     await this.git(["reset", "--soft", baseSha], cwd);
+    await this.git(["commit", "-m", message], cwd);
+    return await this.currentHead(cwd);
+  }
+
+  /**
+   * Best-effort refresh of the remote-tracking base. Integration must still work in a repository
+   * with no remote or no network, so a failed fetch is reported rather than thrown.
+   */
+  async fetchBranch(remote: string, branch: string): Promise<boolean> {
+    const result = await this.git(["fetch", "--quiet", "--", remote, branch], this.root, true);
+    return result.exitCode === 0;
+  }
+
+  async commitGeneratedFile(
+    cwd: string,
+    relativePath: string,
+    contents: string,
+    message: string,
+  ): Promise<string> {
+    const target = path.resolve(cwd, relativePath);
+    const relative = path.relative(cwd, target);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new BrokerError("UNSAFE_PATH", `Generated file escapes the integration worktree: ${relativePath}`);
+    }
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, contents, "utf8");
+    await this.git(["add", "--", relativePath], cwd);
     await this.git(["commit", "-m", message], cwd);
     return await this.currentHead(cwd);
   }

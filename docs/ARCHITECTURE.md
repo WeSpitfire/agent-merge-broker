@@ -39,8 +39,10 @@ JSON state writes use a temporary sibling followed by an atomic rename. Lock acq
 
 ```text
 registered → claimed → submitted → integrating → batched → published → merged
-                 ↑          │           │
-                 └──── retry ← failed
+                 ↑          ↑ │          │                     │
+                 │          │ │          │                     │ pull request closed
+                 │          └─┼──────────┴─────────────────────┘ or batch-mate failed
+                 └──── retry ←┴─ failed
 ```
 
 - `registered`: metadata exists but no active worker lease is required.
@@ -51,7 +53,11 @@ registered → claimed → submitted → integrating → batched → published �
 - `published`: the remote branch or PR was created.
 - `merged`: the result reached the base workflow and dependencies may proceed.
 
-Cancellation is allowed only before batching. A failed transactional attempt moves its selected tasks to `failed` with error evidence, preventing a polling broker from repeating the same broken batch. After correction, `task submit` can replace the receipt or `task retry` can requeue the existing receipt.
+Cancellation is allowed only before batching. After correction, `task submit` can replace the receipt or `task retry` can requeue the existing receipt.
+
+A failed attempt is attributed as narrowly as the evidence allows. A cherry-pick conflict or a focused validation failure is attributable to one task: that task moves to `failed` with error evidence and its batch-mates return to `submitted`, so an unrelated agent's work is not held hostage. An authoritative validation failure indicts the entire batch and moves every selected task to `failed`, which prevents a polling broker from repeating the same broken batch.
+
+A published batch whose pull request is closed without merging becomes `closed` rather than remaining `published`. Its tasks return to `submitted`, because a closed pull request means the work was rejected, not completed. `integration.maxAttempts` bounds how many times a task may be re-queued automatically before it is left `failed` for a human.
 
 ## Scheduling
 
@@ -78,9 +84,10 @@ For a selected batch the broker:
 5. Runs applicable focused validators after each task.
 6. Runs all authoritative validators over the complete batch.
 7. Optionally squashes the batch while preserving task IDs in the message.
-8. Creates a uniquely named local branch at the verified head.
-9. Removes the disposable worktree.
-10. Optionally pushes the branch and opens one GitHub PR.
+8. Optionally commits a provenance manifest whose parent is the integrated task head.
+9. Creates a uniquely named local branch at the resulting head.
+10. Removes the disposable worktree.
+11. Optionally pushes the branch and opens one GitHub PR.
 
 A failed cherry-pick is aborted. No retained branch is created after a validation failure. Configurable failed-worktree retention exists for diagnosis, but defaults off because worktrees can contain build products and secrets.
 
@@ -91,6 +98,12 @@ Publication supports three modes:
 - `none`: retain a local branch only.
 - `branch`: push one branch.
 - `pull-request`: push and invoke `gh pr create`.
+
+When provenance is enabled, the final generated commit records the base SHA,
+integrated parent, task receipts, paths, and completed broker validators. A
+remote workflow can validate this structure before dependency installation and
+then either trust broker-authoritative validation or run the single
+authoritative suite itself.
 
 PR reconciliation queries GitHub for merged state. Branch reconciliation fetches the configured base and checks that the batch head is an ancestor. Squash and rebase workflows may require the explicit `batch complete` escape hatch because the local batch head can disappear from final ancestry.
 

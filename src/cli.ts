@@ -103,6 +103,7 @@ function batchHuman(batch: BatchRecord): string {
     batch.branchName ? `Branch: ${batch.branchName}` : undefined,
     batch.headSha ? `Head: ${batch.headSha}` : undefined,
     batch.pullRequestUrl ? `Pull request: ${batch.pullRequestUrl}` : undefined,
+    batch.autoMergeEnabled ? "Auto-merge: enabled" : undefined,
     batch.error ? `Error: ${batch.error}` : undefined,
   ]
     .filter(Boolean)
@@ -233,6 +234,16 @@ task
       );
     },
   );
+
+task
+  .command("extend <id>")
+  .description("extend an active task lease with additional expected paths")
+  .option("--path <pattern>", "expected path or glob; repeatable", collect, [])
+  .option("--token <token>")
+  .action(async (id: string, options: { path: string[]; token?: string }) => {
+    const result = await (await openBroker()).extendTask(id, options.path, requiredToken(options.token));
+    output(publicTask(result), `Extended task ${id} to ${result.expectedPaths.length} path pattern(s).`);
+  });
 
 task
   .command("retry <id>")
@@ -377,7 +388,7 @@ batch
       const result = await broker.syncPublishedBatches();
       output(
         result,
-        `Merged: ${result.synced.length}; unchanged: ${result.unchanged.length}; errors: ${result.errors.length}`,
+        `Merged: ${result.synced.length}; closed: ${result.closed.length}; unchanged: ${result.unchanged.length}; errors: ${result.errors.length}`,
       );
       return;
     }
@@ -450,6 +461,12 @@ program
         const reconciliation = await broker.syncPublishedBatches();
         for (const failure of reconciliation.errors) {
           console.error(`Could not sync batch ${failure.batchId}: ${failure.error}`);
+        }
+        for (const merged of reconciliation.synced) {
+          console.log(`Batch ${merged.id} merged.`);
+        }
+        for (const abandoned of reconciliation.closed) {
+          console.error(`Batch ${abandoned.id} was closed without merging; its tasks returned to the queue.`);
         }
         const plan = await broker.plan();
         const oldest = plan.selected.reduce(

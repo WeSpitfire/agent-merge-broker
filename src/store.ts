@@ -158,7 +158,7 @@ export class StateStore {
         const lockStat = await stat(lockDirectory).catch(() => undefined);
         if (
           lockStat &&
-          Date.now() - lockStat.mtimeMs > Math.min(staleMs, 2_000) &&
+          Date.now() - lockStat.mtimeMs > staleMs &&
           !(await this.lockOwnerAlive(lockDirectory))
         ) {
           await rm(lockDirectory, { recursive: true, force: true });
