@@ -321,6 +321,8 @@ export class MergeBroker {
       task.status = "submitted";
       delete task.batchId;
       delete task.lastError;
+      // An explicit human retry restarts the automatic attempt budget.
+      delete task.attempts;
       task.updatedAt = now();
       audit("task.retried", { taskId });
       return structuredClone(task);
@@ -440,6 +442,12 @@ export class MergeBroker {
         });
       }
       const id = batchId();
+      // Cut the batch from the current remote tip. Without this the branch is born behind the base
+      // branch as soon as anything else lands, which "require branches to be up to date" protection
+      // treats as unmergeable.
+      if (this.config.integration.refreshBase) {
+        await this.repo.fetchBranch(this.config.remote, this.config.baseBranch);
+      }
       const baseSha = await this.repo.resolveCommit(this.config.baseRef);
       const worktree = path.join(this.store.worktreesDirectory, id);
       const batch: BatchRecord = {
@@ -469,10 +477,14 @@ export class MergeBroker {
 
       let worktreeAdded = false;
       let keepWorktree = false;
+      // Set while work is attributable to a single task, so one bad commit fails that task instead
+      // of the whole batch. Cleared before authoritative validation, which indicts the batch.
+      let culpritTaskId: string | undefined;
       try {
         await this.repo.addDetachedWorktree(worktree, baseSha);
         worktreeAdded = true;
         for (const task of plan.selected) {
+          culpritTaskId = task.id;
           for (const commit of task.commits) {
             const picked = await this.repo.cherryPick(worktree, commit);
             if (picked.exitCode !== 0) {
@@ -498,6 +510,7 @@ export class MergeBroker {
           });
           batch.validations.push(...focused);
         }
+        culpritTaskId = undefined;
         let headSha = await this.repo.currentHead(worktree);
         const allFiles = [...new Set(plan.selected.flatMap((task) => task.actualPaths))].sort();
         const authoritative = await runValidators({
@@ -576,16 +589,28 @@ export class MergeBroker {
         batch.finishedAt = now();
         if (keepWorktree) batch.worktree = worktree;
         else delete batch.worktree;
+        const requeued: string[] = [];
         await this.store.transaction((state, audit) => {
           state.batches[id] = structuredClone(batch);
           for (const taskId of batch.taskIds) {
             const task = requireTask(state, taskId);
-            task.status = "failed";
             delete task.batchId;
-            if (batch.error) task.lastError = batch.error;
             task.updatedAt = now();
+            // Only the task that actually broke stays failed. Its batch-mates are returned to the
+            // queue so a single conflicting commit cannot stall every other agent's work.
+            if (culpritTaskId && taskId !== culpritTaskId && (task.attempts ?? 0) + 1 < this.config.integration.maxAttempts) {
+              task.attempts = (task.attempts ?? 0) + 1;
+              task.status = "submitted";
+              requeued.push(taskId);
+              continue;
+            }
+            task.status = "failed";
+            if (batch.error) task.lastError = batch.error;
           }
-          audit("batch.failed", { batchId: id, details: { error: batch.error } });
+          audit("batch.failed", {
+            batchId: id,
+            details: { error: batch.error, ...(culpritTaskId ? { culpritTaskId } : {}), requeued },
+          });
         });
         await this.store.writeBatchManifest(id, { batch, error: batch.error });
         throw error;
@@ -630,6 +655,7 @@ export class MergeBroker {
       stored.publishedAt = now();
       delete stored.error;
       if (publication.pullRequestUrl) stored.pullRequestUrl = publication.pullRequestUrl;
+      if (publication.autoMergeEnabled !== undefined) stored.autoMergeEnabled = publication.autoMergeEnabled;
       for (const taskId of stored.taskIds) {
         const task = requireTask(current, taskId);
         task.status = "published";
@@ -638,7 +664,11 @@ export class MergeBroker {
       }
       audit("batch.published", {
         batchId: id,
-        details: { branchName: stored.branchName, pullRequestUrl: stored.pullRequestUrl },
+        details: {
+          branchName: stored.branchName,
+          pullRequestUrl: stored.pullRequestUrl,
+          autoMergeEnabled: stored.autoMergeEnabled,
+        },
       });
       return structuredClone(stored);
     });
@@ -652,6 +682,11 @@ export class MergeBroker {
     let mergeCommitSha: string | undefined;
     if (batch.pullRequestUrl) {
       const pullRequest = await inspectPullRequest(this.repo.root, batch.pullRequestUrl);
+      // A pull request closed without merging means the work was rejected, not completed. Leaving
+      // the batch "published" strands every task in it forever and reads like success.
+      if (pullRequest.state === "CLOSED") {
+        return await this.closeBatch(id, `Pull request ${batch.pullRequestUrl} was closed without merging.`);
+      }
       if (pullRequest.state !== "MERGED") return structuredClone(batch);
       mergedAt = pullRequest.mergedAt ?? now();
       mergeCommitSha = pullRequest.mergeCommitSha;
@@ -673,30 +708,69 @@ export class MergeBroker {
 
   async syncPublishedBatches(): Promise<{
     synced: BatchRecord[];
+    closed: BatchRecord[];
     unchanged: BatchRecord[];
     errors: Array<{ batchId: string; error: string }>;
   }> {
     const state = await this.store.read();
     const published = Object.values(state.batches).filter((batch) => batch.status === "published");
     const synced: BatchRecord[] = [];
+    const closed: BatchRecord[] = [];
     const unchanged: BatchRecord[] = [];
     const errors: Array<{ batchId: string; error: string }> = [];
     for (const batch of published) {
       try {
         const result = await this.syncBatch(batch.id);
         if (result.status === "merged") synced.push(result);
+        else if (result.status === "closed") closed.push(result);
         else unchanged.push(result);
       } catch (error) {
         errors.push({ batchId: batch.id, error: errorMessage(error) });
       }
     }
-    return { synced, unchanged, errors };
+    return { synced, closed, unchanged, errors };
+  }
+
+  /**
+   * Records that a published batch will never merge and returns its tasks to the queue, so the work
+   * is re-planned against a fresh base instead of being silently lost.
+   */
+  async closeBatch(id: string, reason: string): Promise<BatchRecord> {
+    return await this.store.transaction((state, audit) => {
+      const batch = requireBatch(state, id);
+      batch.status = "closed";
+      batch.error = reason;
+      batch.closedAt = now();
+      batch.finishedAt = batch.closedAt;
+      const requeued: string[] = [];
+      const exhausted: string[] = [];
+      for (const taskId of batch.taskIds) {
+        const task = requireTask(state, taskId);
+        if (task.status === "merged") continue;
+        delete task.batchId;
+        delete task.publishedAt;
+        task.lastError = reason;
+        task.attempts = (task.attempts ?? 0) + 1;
+        task.updatedAt = now();
+        if (task.attempts < this.config.integration.maxAttempts && task.commits.length > 0) {
+          task.status = "submitted";
+          requeued.push(taskId);
+        } else {
+          task.status = "failed";
+          exhausted.push(taskId);
+        }
+      }
+      audit("batch.closed", { batchId: id, details: { reason, requeued, exhausted } });
+      return structuredClone(batch);
+    });
   }
 
   async markBatchMerged(id: string, mergedAt = now(), mergeCommitSha?: string): Promise<BatchRecord> {
     return await this.store.transaction((state, audit) => {
       const batch = requireBatch(state, id);
-      if (!new Set<BatchRecord["status"]>(["prepared", "published", "merged"]).has(batch.status)) {
+      // "closed" is included so a pull request that was reopened and merged can still be reconciled
+      // with "batch complete".
+      if (!new Set<BatchRecord["status"]>(["prepared", "published", "closed", "merged"]).has(batch.status)) {
         throw new BrokerError("BATCH_NOT_MERGED", `Batch ${id} cannot be completed while ${batch.status}.`);
       }
       batch.status = "merged";
@@ -778,6 +852,7 @@ export class MergeBroker {
       batches: {
         total: batches.length,
         merged: batches.filter((batch) => batch.status === "merged").length,
+        closed: batches.filter((batch) => batch.status === "closed").length,
         failed: batches.filter((batch) => batch.status === "failed").length,
         averageTaskCount:
           batches.length > 0

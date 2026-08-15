@@ -39,8 +39,10 @@ JSON state writes use a temporary sibling followed by an atomic rename. Lock acq
 
 ```text
 registered → claimed → submitted → integrating → batched → published → merged
-                 ↑          │           │
-                 └──── retry ← failed
+                 ↑          ↑ │          │                     │
+                 │          │ │          │                     │ pull request closed
+                 │          └─┼──────────┴─────────────────────┘ or batch-mate failed
+                 └──── retry ←┴─ failed
 ```
 
 - `registered`: metadata exists but no active worker lease is required.
@@ -51,7 +53,11 @@ registered → claimed → submitted → integrating → batched → published �
 - `published`: the remote branch or PR was created.
 - `merged`: the result reached the base workflow and dependencies may proceed.
 
-Cancellation is allowed only before batching. A failed transactional attempt moves its selected tasks to `failed` with error evidence, preventing a polling broker from repeating the same broken batch. After correction, `task submit` can replace the receipt or `task retry` can requeue the existing receipt.
+Cancellation is allowed only before batching. After correction, `task submit` can replace the receipt or `task retry` can requeue the existing receipt.
+
+A failed attempt is attributed as narrowly as the evidence allows. A cherry-pick conflict or a focused validation failure is attributable to one task: that task moves to `failed` with error evidence and its batch-mates return to `submitted`, so an unrelated agent's work is not held hostage. An authoritative validation failure indicts the entire batch and moves every selected task to `failed`, which prevents a polling broker from repeating the same broken batch.
+
+A published batch whose pull request is closed without merging becomes `closed` rather than remaining `published`. Its tasks return to `submitted`, because a closed pull request means the work was rejected, not completed. `integration.maxAttempts` bounds how many times a task may be re-queued automatically before it is left `failed` for a human.
 
 ## Scheduling
 

@@ -2,7 +2,7 @@ import path from "node:path";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { BrokerError } from "./errors.js";
-import { CONFIG_VERSION, type BrokerConfig, type PublishMode } from "./types.js";
+import { CONFIG_VERSION, type BrokerConfig, type MergeMethod, type PublishMode } from "./types.js";
 
 export const CONFIG_DIRECTORY = ".merge-broker";
 export const CONFIG_FILENAME = "config.json";
@@ -55,6 +55,8 @@ export function defaultConfig(baseBranch = "main", remote = "origin", baseRef = 
       branchPrefix: "merge-broker/",
       history: "preserve",
       keepFailedWorktrees: false,
+      refreshBase: true,
+      maxAttempts: 3,
     },
     validation: {
       focused: [],
@@ -62,7 +64,9 @@ export function defaultConfig(baseBranch = "main", remote = "origin", baseRef = 
     },
     publish: {
       mode: "none",
-      draft: true,
+      draft: false,
+      autoMerge: true,
+      mergeMethod: "squash",
       labels: [],
       titleTemplate: "Integration batch {batchId}",
     },
@@ -213,22 +217,61 @@ export function validateConfig(value: unknown): BrokerConfig {
   assertPositiveInteger(config.scheduling?.maxCommits, "scheduling.maxCommits");
   assertPositiveInteger(config.scheduling?.maxWaitSeconds, "scheduling.maxWaitSeconds");
   assertBoolean(config.scheduling?.allowPathOverlap, "scheduling.allowPathOverlap");
-  assertAllowedKeys(config.integration, "integration", ["branchPrefix", "history", "keepFailedWorktrees"]);
+  assertAllowedKeys(config.integration, "integration", [
+    "branchPrefix",
+    "history",
+    "keepFailedWorktrees",
+    "refreshBase",
+    "maxAttempts",
+  ]);
   assertString(config.integration?.branchPrefix, "integration.branchPrefix");
   assertSafeGitName(config.integration.branchPrefix, "integration.branchPrefix", true);
   if (!(["preserve", "squash"] as const).includes(config.integration?.history)) {
     throw new BrokerError("INVALID_CONFIG", "integration.history must be preserve or squash.");
   }
   assertBoolean(config.integration?.keepFailedWorktrees, "integration.keepFailedWorktrees");
+  config.integration.refreshBase ??= true;
+  config.integration.maxAttempts ??= 3;
+  assertBoolean(config.integration.refreshBase, "integration.refreshBase");
+  assertPositiveInteger(config.integration.maxAttempts, "integration.maxAttempts");
   assertAllowedKeys(config.validation, "validation", ["focused", "authoritative"]);
   if (!Array.isArray(config.validation.focused) || !Array.isArray(config.validation.authoritative)) {
     throw new BrokerError("INVALID_CONFIG", "validation.focused and validation.authoritative must be arrays.");
   }
-  assertAllowedKeys(config.publish, "publish", ["mode", "draft", "labels", "titleTemplate"]);
+  assertAllowedKeys(config.publish, "publish", [
+    "mode",
+    "draft",
+    "autoMerge",
+    "mergeMethod",
+    "labels",
+    "titleTemplate",
+  ]);
   if (!(["none", "branch", "pull-request"] satisfies PublishMode[]).includes(config.publish?.mode)) {
     throw new BrokerError("INVALID_CONFIG", "publish.mode must be none, branch, or pull-request.");
   }
   assertBoolean(config.publish?.draft, "publish.draft");
+  // Absent on configurations written before auto-merge existed. Defaulting to false keeps an
+  // upgrade from silently starting to land agent work on the base branch.
+  config.publish.autoMerge ??= false;
+  config.publish.mergeMethod ??= "squash";
+  assertBoolean(config.publish.autoMerge, "publish.autoMerge");
+  if (!(["squash", "merge", "rebase"] satisfies MergeMethod[]).includes(config.publish.mergeMethod)) {
+    throw new BrokerError("INVALID_CONFIG", "publish.mergeMethod must be squash, merge, or rebase.");
+  }
+  if (config.publish.autoMerge && config.publish.draft) {
+    throw new BrokerError(
+      "INVALID_CONFIG",
+      "publish.autoMerge cannot be combined with publish.draft: GitHub refuses to merge a draft pull request.",
+    );
+  }
+  // "none" is the generated default and simply means publishing is not enabled yet, so auto-merge
+  // is allowed to sit there as declared intent. "branch" mode has no pull request to merge.
+  if (config.publish.autoMerge && config.publish.mode === "branch") {
+    throw new BrokerError(
+      "INVALID_CONFIG",
+      "publish.autoMerge has no effect in branch mode: set publish.mode to pull-request.",
+    );
+  }
   assertStringArray(config.publish?.labels, "publish.labels");
   assertString(config.publish?.titleTemplate, "publish.titleTemplate");
   for (const [scope, validators] of Object.entries(config.validation ?? {})) {

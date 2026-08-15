@@ -4,6 +4,7 @@ export const CONFIG_VERSION = 1 as const;
 export type UnexpectedPathPolicy = "error" | "warn" | "allow";
 export type PublishMode = "none" | "branch" | "pull-request";
 export type HistoryMode = "preserve" | "squash";
+export type MergeMethod = "squash" | "merge" | "rebase";
 export type TaskStatus =
   | "registered"
   | "claimed"
@@ -14,7 +15,7 @@ export type TaskStatus =
   | "merged"
   | "failed"
   | "cancelled";
-export type BatchStatus = "running" | "verified" | "prepared" | "published" | "merged" | "failed";
+export type BatchStatus = "running" | "verified" | "prepared" | "published" | "merged" | "closed" | "failed";
 
 export interface ValidatorConfig {
   name: string;
@@ -50,6 +51,8 @@ export interface BrokerConfig {
     branchPrefix: string;
     history: HistoryMode;
     keepFailedWorktrees: boolean;
+    refreshBase: boolean;
+    maxAttempts: number;
   };
   validation: {
     focused: ValidatorConfig[];
@@ -58,6 +61,8 @@ export interface BrokerConfig {
   publish: {
     mode: PublishMode;
     draft: boolean;
+    autoMerge: boolean;
+    mergeMethod: MergeMethod;
     labels: string[];
     titleTemplate: string;
   };
@@ -107,6 +112,7 @@ export interface TaskRecord {
   mergedAt?: string;
   batchId?: string;
   lastError?: string;
+  attempts?: number;
 }
 
 export interface BatchRecord {
@@ -123,6 +129,8 @@ export interface BatchRecord {
   finishedAt?: string;
   publishedAt?: string;
   pullRequestUrl?: string;
+  autoMergeEnabled?: boolean;
+  closedAt?: string;
   error?: string;
 }
 

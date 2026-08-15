@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { MergeBroker } from "./broker.js";
 import { configPath, loadConfig } from "./config.js";
@@ -135,6 +135,105 @@ test("returns tasks to the queue when authoritative validation fails", async (co
   assert.equal((await broker.task("FAIL")).status, "submitted");
 });
 
+test("fails only the conflicting task and returns its batch-mates to the queue", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+
+  // CONFLICT and BYSTANDER are independently mergeable, but CONFLICT no longer applies to the base
+  // because the same line already changed there.
+  const conflictCommit = await commitFile(repo, "conflict", "src/shared.ts", "export const value = 1;\n");
+  await git(repo, "switch", "main");
+  await mkdir(path.join(repo, "src"), { recursive: true });
+  await writeFile(path.join(repo, "src", "shared.ts"), "export const value = 999;\n", "utf8");
+  await git(repo, "add", "src/shared.ts");
+  await git(repo, "commit", "-m", "base moves shared.ts");
+
+  const claimConflict = await broker.claimTask({
+    id: "CONFLICT",
+    holder: "agent-conflict",
+    expectedPaths: ["src/shared.ts"],
+  });
+  await broker.submitTask("CONFLICT", [conflictCommit], claimConflict.token);
+
+  const claimBystander = await broker.claimTask({
+    id: "BYSTANDER",
+    holder: "agent-bystander",
+    expectedPaths: ["src/bystander.ts"],
+  });
+  const bystanderCommit = await commitFile(repo, "bystander", "src/bystander.ts", "export const safe = true;\n");
+  await broker.submitTask("BYSTANDER", [bystanderCommit], claimBystander.token);
+
+  const plan = await broker.plan();
+  assert.deepEqual(plan.selected.map((item) => item.id).sort(), ["BYSTANDER", "CONFLICT"]);
+
+  await assert.rejects(
+    broker.integrate(),
+    (error: unknown) => error instanceof BrokerError && error.code === "CHERRY_PICK_CONFLICT",
+  );
+
+  assert.equal((await broker.task("CONFLICT")).status, "failed");
+  // The bystander must not be collateral damage: it goes straight back to the queue.
+  assert.equal((await broker.task("BYSTANDER")).status, "submitted");
+  assert.equal((await broker.task("BYSTANDER")).attempts, 1);
+
+  // The next batch integrates cleanly without the offending task.
+  const recovered = await broker.integrate();
+  assert.deepEqual(recovered.batch.taskIds, ["BYSTANDER"]);
+  assert.equal((await broker.task("BYSTANDER")).status, "batched");
+});
+
+test("returns tasks to the queue when a published pull request is closed without merging", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "CLOSED", holder: "agent", expectedPaths: ["src/closed.ts"] });
+  const commit = await commitFile(repo, "closed-task", "src/closed.ts", "export const closed = true;\n");
+  await broker.submitTask("CLOSED", [commit], claim.token);
+  const integrated = await broker.integrate();
+  assert.equal((await broker.task("CLOSED")).status, "batched");
+
+  const closed = await broker.closeBatch(integrated.batch.id, "Pull request was closed without merging.");
+  assert.equal(closed.status, "closed");
+  assert.match(closed.error ?? "", /closed without merging/u);
+  const task = await broker.task("CLOSED");
+  assert.equal(task.status, "submitted");
+  assert.equal(task.attempts, 1);
+  assert.ok((await broker.plan()).selected.some((item) => item.id === "CLOSED"));
+
+  const audit = await broker.store.readAudit();
+  assert.ok(audit.some((event) => event.event === "batch.closed"));
+});
+
+test("stops re-queueing a task once its attempt budget is exhausted", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const config = await loadConfig(repo);
+  config.integration.maxAttempts = 2;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "GIVEUP", holder: "agent", expectedPaths: ["src/giveup.ts"] });
+  const commit = await commitFile(repo, "giveup", "src/giveup.ts", "export const giveUp = true;\n");
+  await broker.submitTask("GIVEUP", [commit], claim.token);
+
+  const first = await broker.integrate();
+  await broker.closeBatch(first.batch.id, "closed once");
+  assert.equal((await broker.task("GIVEUP")).status, "submitted");
+
+  const second = await broker.integrate();
+  await broker.closeBatch(second.batch.id, "closed twice");
+  const task = await broker.task("GIVEUP");
+  assert.equal(task.status, "failed");
+  assert.equal(task.attempts, 2);
+  assert.equal((await broker.plan()).selected.length, 0);
+});
+
 test("publishes one integration branch and reconciles it after merge", async (context) => {
   const repo = await createRepository();
   const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
@@ -149,6 +248,7 @@ test("publishes one integration branch and reconciles it after merge", async (co
 
   const config = await loadConfig(repo);
   config.publish.mode = "branch";
+  config.publish.autoMerge = false;
   config.baseRef = "origin/main";
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   const broker = await MergeBroker.open(repo);

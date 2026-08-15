@@ -102,6 +102,29 @@ merge-broker batch sync <batch-id>
 
 `batch sync` checks the GitHub PR when available. For branch-only publication it fetches the configured base and verifies ancestry. `batch complete` exists as an explicit manual escape hatch for squash/rebase workflows that cannot be reconciled automatically.
 
+## Automatic merging
+
+With `publish.mode` set to `pull-request` and `publish.autoMerge` enabled, the broker enables GitHub auto-merge on each published batch. GitHub lands the pull request once required status checks pass and updates the branch when the base branch requires it. The broker never pushes to the base branch itself, so branch protection remains the authority on what may merge.
+
+Two configuration combinations cannot work and are rejected at load time rather than stalling silently:
+
+- `autoMerge` with `draft`, because GitHub refuses to merge a draft pull request
+- `autoMerge` with `publish.mode` set to `branch`, because there is no pull request to merge
+
+Auto-merge requires the setting to be enabled on the GitHub repository. Configurations written before this feature existed default to `autoMerge: false`, so upgrading never starts landing work on its own.
+
+Running `merge-broker serve --publish` closes the loop: each cycle reconciles published batches, integrates the next batch, and publishes it for auto-merge.
+
+## Failure recovery
+
+Integration failures are attributed as narrowly as the evidence allows:
+
+- A cherry-pick conflict or focused validation failure fails only the responsible task. Its batch-mates return to the queue and are re-planned, so one bad commit cannot stall unrelated agents.
+- An authoritative validation failure indicts the whole batch, because no single task can be blamed. Those tasks stay `failed` until `task retry`.
+- A pull request closed without merging moves the batch to `closed` and returns its tasks to the queue. Leaving such a batch `published` strands the work and reads like success.
+
+`integration.maxAttempts` bounds automatic re-queueing so a task that never integrates eventually stops consuming CI capacity and waits for a human. `task retry` resets that budget.
+
 ## Configuration
 
 The generated `.merge-broker/config.json` is intentionally explicit and reviewable. `baseBranch` is the forge/PR target, while `baseRef` is the Git revision used to construct a batch; repositories that keep a passive local `main` should use `origin/main`:
@@ -132,7 +155,9 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
   "integration": {
     "branchPrefix": "merge-broker/",
     "history": "preserve",
-    "keepFailedWorktrees": false
+    "keepFailedWorktrees": false,
+    "refreshBase": true,
+    "maxAttempts": 3
   },
   "validation": {
     "focused": [
@@ -150,7 +175,9 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
   },
   "publish": {
     "mode": "pull-request",
-    "draft": true,
+    "draft": false,
+    "autoMerge": true,
+    "mergeMethod": "squash",
     "labels": ["integration-batch"],
     "titleTemplate": "Integration batch {batchId}"
   }

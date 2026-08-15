@@ -8,6 +8,7 @@ export interface PublicationResult {
   mode: "branch" | "pull-request";
   branchName: string;
   pullRequestUrl?: string;
+  autoMergeEnabled?: boolean;
 }
 
 function renderTitle(template: string, batch: BatchRecord): string {
@@ -79,7 +80,31 @@ export async function publishBatch(options: {
       stderr: result.stderr,
     });
   }
-  return { mode: "pull-request", branchName: batch.branchName, pullRequestUrl: url };
+  const autoMergeEnabled = config.publish.autoMerge ? await enableAutoMerge(repo.root, url, config) : false;
+  return { mode: "pull-request", branchName: batch.branchName, pullRequestUrl: url, autoMergeEnabled };
+}
+
+/**
+ * Hands the merge decision to GitHub: it lands the pull request once required checks pass, and
+ * updates the branch itself when the base branch requires it. The broker never pushes to the base
+ * branch, so branch protection stays authoritative.
+ */
+export async function enableAutoMerge(
+  repoRoot: string,
+  pullRequestUrl: string,
+  config: BrokerConfig,
+): Promise<boolean> {
+  const result = await runCommand(
+    "gh",
+    ["pr", "merge", pullRequestUrl, "--auto", `--${config.publish.mergeMethod}`],
+    { cwd: repoRoot, allowFailure: true },
+  );
+  if (result.exitCode === 0) return true;
+  throw new BrokerError(
+    "AUTO_MERGE_FAILED",
+    "Could not enable auto-merge on the published pull request. Enable auto-merge in the repository settings, or set publish.autoMerge to false.",
+    { pullRequestUrl, stdout: result.stdout, stderr: result.stderr },
+  );
 }
 
 export async function inspectPullRequest(

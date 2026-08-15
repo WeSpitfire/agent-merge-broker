@@ -135,6 +135,15 @@ export class GitRepository {
     return await this.currentHead(cwd);
   }
 
+  /**
+   * Best-effort refresh of the remote-tracking base. Integration must still work in a repository
+   * with no remote or no network, so a failed fetch is reported rather than thrown.
+   */
+  async fetchBranch(remote: string, branch: string): Promise<boolean> {
+    const result = await this.git(["fetch", "--quiet", "--", remote, branch], this.root, true);
+    return result.exitCode === 0;
+  }
+
   async push(remote: string, branch: string): Promise<void> {
     await this.git(
       ["push", "--set-upstream", "--", remote, `refs/heads/${branch}:refs/heads/${branch}`],

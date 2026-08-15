@@ -69,7 +69,18 @@
       "properties": {
         "branchPrefix": { "type": "string", "minLength": 1 },
         "history": { "enum": ["preserve", "squash"] },
-        "keepFailedWorktrees": { "type": "boolean" }
+        "keepFailedWorktrees": { "type": "boolean" },
+        "refreshBase": {
+          "type": "boolean",
+          "description": "Fetch the remote base branch before cutting a batch so the branch is not born behind it.",
+          "default": true
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many times a task may be automatically returned to the queue before it is left failed.",
+          "default": 3
+        }
       }
     },
     "validation": {
@@ -88,9 +99,23 @@
       "properties": {
         "mode": { "enum": ["none", "branch", "pull-request"] },
         "draft": { "type": "boolean" },
+        "autoMerge": {
+          "type": "boolean",
+          "description": "Ask GitHub to merge the pull request once required checks pass. Requires mode pull-request and draft false.",
+          "default": false
+        },
+        "mergeMethod": { "enum": ["squash", "merge", "rebase"], "default": "squash" },
         "labels": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
         "titleTemplate": { "type": "string", "minLength": 1 }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "autoMerge": { "const": true } }, "required": ["autoMerge"] },
+          "then": {
+            "properties": { "draft": { "const": false }, "mode": { "const": "pull-request" } }
+          }
+        }
+      ]
     }
   },
   "$defs": {
