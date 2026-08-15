@@ -226,3 +226,33 @@ test("publishes one integration branch and reconciles it after merge", async (co
   assert.equal(reconciled.status, "merged");
   assert.equal((await broker.task("PUBLISH")).status, "merged");
 });
+
+test("requeues tasks when a published batch closes without merging", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({
+    id: "CLOSED-PR",
+    holder: "agent",
+    expectedPaths: ["src/closed.ts"],
+  });
+  const commit = await commitFile(repo, "closed-pr", "src/closed.ts", "export const closed = true;\n");
+  await broker.submitTask("CLOSED-PR", [commit], claim.token);
+  const integrated = await broker.integrate();
+
+  await broker.store.transaction((state) => {
+    const batch = state.batches[integrated.batch.id];
+    const task = state.tasks["CLOSED-PR"];
+    assert.ok(batch);
+    assert.ok(task);
+    batch.status = "published";
+    task.status = "published";
+  });
+  const closed = await broker.markBatchClosed(integrated.batch.id);
+
+  assert.equal(closed.status, "failed");
+  assert.match(closed.error ?? "", /closed without merge/u);
+  assert.equal((await broker.task("CLOSED-PR")).status, "submitted");
+});

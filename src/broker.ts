@@ -722,6 +722,9 @@ export class MergeBroker {
     let mergeCommitSha: string | undefined;
     if (batch.pullRequestUrl) {
       const pullRequest = await inspectPullRequest(this.repo.root, batch.pullRequestUrl);
+      if (pullRequest.state === "CLOSED") {
+        return await this.markBatchClosed(id);
+      }
       if (pullRequest.state !== "MERGED") return structuredClone(batch);
       mergedAt = pullRequest.mergedAt ?? now();
       mergeCommitSha = pullRequest.mergeCommitSha;
@@ -754,7 +757,7 @@ export class MergeBroker {
     for (const batch of published) {
       try {
         const result = await this.syncBatch(batch.id);
-        if (result.status === "merged") synced.push(result);
+        if (result.status !== "published") synced.push(result);
         else unchanged.push(result);
       } catch (error) {
         errors.push({ batchId: batch.id, error: errorMessage(error) });
@@ -778,6 +781,27 @@ export class MergeBroker {
         task.updatedAt = now();
       }
       audit("batch.merged", { batchId: id, details: { mergedAt, mergeCommitSha } });
+      return structuredClone(batch);
+    });
+  }
+
+  async markBatchClosed(id: string, closedAt = now()): Promise<BatchRecord> {
+    return await this.store.transaction((state, audit) => {
+      const batch = requireBatch(state, id);
+      if (batch.status !== "published") {
+        throw new BrokerError("BATCH_NOT_CLOSED", `Batch ${id} cannot be closed while ${batch.status}.`);
+      }
+      batch.status = "failed";
+      batch.finishedAt = closedAt;
+      batch.error = "Published pull request closed without merge.";
+      for (const taskId of batch.taskIds) {
+        const task = requireTask(state, taskId);
+        task.status = "submitted";
+        delete task.batchId;
+        delete task.publishedAt;
+        task.updatedAt = now();
+      }
+      audit("batch.closed", { batchId: id, details: { closedAt } });
       return structuredClone(batch);
     });
   }
