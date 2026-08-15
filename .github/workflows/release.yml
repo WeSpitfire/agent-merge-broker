@@ -26,4 +26,9 @@ jobs:
         run: |
           package_version=$(node -p "require('./package.json').version")
           test "$GITHUB_REF_NAME" = "v$package_version"
+      # setup-node writes an .npmrc that reads NODE_AUTH_TOKEN. Without it the publish fails with a
+      # 401 after every other step has passed. Create an automation token on npmjs.com and store it
+      # as the NPM_TOKEN repository secret.
       - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

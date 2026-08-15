@@ -22,7 +22,9 @@ The broker establishes a single integration authority while keeping implementati
 
 ## Status
 
-The `0.1.x` line contains the complete local broker core and GitHub CLI publishing adapter. The on-disk state and receipt formats are versioned, but compatibility is not guaranteed until `1.0.0`.
+`0.3.0` is the first public release. It contains the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
+
+The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
 ## Requirements
 
@@ -35,19 +37,19 @@ CI job: shell selection and command quoting differ there and are not yet support
 
 ## Install
 
-Until the first npm release, clone this repository and link the CLI:
+Install it as a development tool:
+
+```bash
+npm install --save-dev agent-merge-broker
+npx merge-broker init --base main --base-ref origin/main
+```
+
+To work on the broker itself, clone this repository and link the CLI:
 
 ```bash
 npm install
 npm run build
 npm link
-```
-
-After publication, applications will be able to install it as a development tool:
-
-```bash
-npm install --save-dev agent-merge-broker
-npx merge-broker init --base main --base-ref origin/main
 ```
 
 `init` writes two portable files into the application:

@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.3.0 — Unreleased
+## 0.3.0 — 2026-08-15
+
+First public release. The versions below are development history and were never published to npm.
+
 
 The adoption layer. Everything here already existed as bespoke glue around the broker in the
 repository that pilots it; this release moves the generic parts into the tool so a new adopter does
