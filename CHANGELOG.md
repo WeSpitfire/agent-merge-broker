@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-08-15
 
 Recovery. Everything here came out of one repository's week of fighting the lifecycle rather than the
 merge: the broker was strict in places where strictness protected nothing, and the way out of an
