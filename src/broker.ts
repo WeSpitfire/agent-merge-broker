@@ -17,6 +17,7 @@ import type {
   CommitReceipt,
   IntegrationOptions,
   IntegrationResult,
+  LocalValidationResult,
   PruneOptions,
   PruneResult,
   SchedulePlan,
@@ -129,6 +130,41 @@ function validationResultsFromError(error: unknown): ValidationResult[] {
 
 const PRUNABLE_TASK_STATUSES = new Set<TaskRecord["status"]>(["merged", "cancelled"]);
 const PRUNABLE_BATCH_STATUSES = new Set<BatchRecord["status"]>(["merged", "closed", "failed"]);
+
+/**
+ * Local validation belongs to no batch. The validator contract still promises MERGE_BROKER_BATCH_ID,
+ * so it gets a reserved value a command can recognise rather than an empty string it cannot.
+ */
+const LOCAL_VALIDATION_BATCH_ID = "local";
+
+/**
+ * Every status whose commits no batch has read yet. A worker holding the lease may keep revising
+ * its receipt across all of them.
+ */
+const SUBMITTABLE_STATUSES = new Set<TaskRecord["status"]>(["claimed", "failed", "submitted"]);
+
+/**
+ * The state machine is invisible from the outside, so a refusal that only names the current status
+ * leaves the worker guessing which of a dozen subcommands moves it. Each refusal names the command
+ * that does.
+ */
+function recoveryHint(status: TaskRecord["status"]): string {
+  switch (status) {
+    case "integrating":
+      return "It is being integrated right now; wait for the batch to finish, then act on the result.";
+    case "batched":
+    case "published":
+      return "Its batch is already assembled. Land or close that batch, then start a new task for further work.";
+    case "merged":
+      return "It is already merged. Start a new task for further work.";
+    case "cancelled":
+      return "It was cancelled, which is final. Start a new task with `task claim`.";
+    case "registered":
+      return "Acquire a lease first with `task claim`.";
+    default:
+      return "";
+  }
+}
 
 function taskRetiredAt(task: TaskRecord): number {
   return Date.parse(task.mergedAt ?? task.updatedAt);
@@ -299,7 +335,10 @@ export class MergeBroker {
         state.tasks[input.id] = task;
         audit("task.registered", { actor: input.holder, taskId: task.id });
       } else if (!new Set<TaskRecord["status"]>(["registered", "claimed", "failed"]).has(task.status)) {
-        throw new BrokerError("TASK_NOT_CLAIMABLE", `Task ${task.id} cannot be claimed while ${task.status}.`);
+        throw new BrokerError(
+          "TASK_NOT_CLAIMABLE",
+          `Task ${task.id} cannot be claimed while ${task.status}. ${recoveryHint(task.status)}`,
+        );
       }
       if (task.lease && !leaseExpired(task)) {
         throw new BrokerError("LEASE_CONFLICT", `Task ${task.id} is already leased by ${task.lease.holder}.`);
@@ -363,8 +402,14 @@ export class MergeBroker {
     return await this.store.transaction((state, audit) => {
       const task = requireTask(state, taskId);
       verifyLease(task, token);
-      if (task.status !== "claimed") {
-        throw new BrokerError("TASK_NOT_CLAIMABLE", `Task ${task.id} cannot be extended while ${task.status}.`);
+      // `failed` is included for the same reason `claim` accepts it: fixing what validation caught
+      // often means touching a file the original scope did not cover, and refusing to widen scope
+      // exactly when the worker needs it leaves rebuilding the task as the only way forward.
+      if (task.status !== "claimed" && task.status !== "failed") {
+        throw new BrokerError(
+          "TASK_NOT_CLAIMABLE",
+          `Task ${task.id} cannot be extended while ${task.status}. ${recoveryHint(task.status)}`,
+        );
       }
       const nextPaths = [...new Set([...task.expectedPaths, ...expectedPaths])];
       assertNoLeaseConflict(state, task.id, nextPaths, this.config.leases.serializedPatterns);
@@ -412,7 +457,10 @@ export class MergeBroker {
         verifyLease(task, token);
       }
       if (["batched", "published", "merged"].includes(task.status)) {
-        throw new BrokerError("TASK_NOT_CANCELLABLE", `Task ${taskId} cannot be cancelled while ${task.status}.`);
+        throw new BrokerError(
+          "TASK_NOT_CANCELLABLE",
+          `Task ${taskId} cannot be cancelled while ${task.status}. ${recoveryHint(task.status)}`,
+        );
       }
       const revokedFrom = options.force && task.lease ? task.lease.holder : undefined;
       task.status = "cancelled";
@@ -432,7 +480,14 @@ export class MergeBroker {
     return await this.store.transaction((state, audit) => {
       const task = requireTask(state, taskId);
       if (task.status !== "failed") {
-        throw new BrokerError("TASK_NOT_RETRYABLE", `Task ${taskId} cannot be retried while ${task.status}.`);
+        throw new BrokerError(
+          "TASK_NOT_RETRYABLE",
+          `Task ${taskId} cannot be retried while ${task.status}. ${
+            task.status === "submitted"
+              ? "It is already queued for integration."
+              : recoveryHint(task.status)
+          }`,
+        );
       }
       if (task.lease && !leaseExpired(task)) {
         if (!token) throw new BrokerError("LEASE_TOKEN", `A lease token is required to retry task ${taskId}.`);
@@ -457,6 +512,16 @@ export class MergeBroker {
   ): Promise<{ task: TaskRecord; receiptPath: string }> {
     assertTaskId(taskId);
     const snapshot = requireTask(await this.store.read(), taskId);
+    // Status before lease, and before any Git work. Batching ends the lease, so a worker resubmitting
+    // after its batch was assembled would otherwise be told only that it holds no lease -- true, but
+    // not the reason, and not something reacquiring a lease can fix. Status is already public through
+    // `task show`, so answering with it first reveals nothing authorization was hiding.
+    if (!SUBMITTABLE_STATUSES.has(snapshot.status)) {
+      throw new BrokerError(
+        "TASK_NOT_SUBMITTABLE",
+        `Task ${taskId} cannot be submitted while ${snapshot.status}. ${recoveryHint(snapshot.status)}`,
+      );
+    }
     verifyLease(snapshot, token);
     if (options.sinceBase) {
       const worktree = snapshot.worktree ?? this.repo.root;
@@ -501,10 +566,24 @@ export class MergeBroker {
     const timestamp = now();
     const task = await this.store.transaction((state, audit) => {
       const current = requireTask(state, taskId);
-      verifyLease(current, token);
-      if (current.status !== "claimed" && current.status !== "failed") {
-        throw new BrokerError("TASK_NOT_SUBMITTABLE", `Task ${taskId} cannot be submitted while ${current.status}.`);
+      // Checked before the lease deliberately. Batching ends the lease, so a worker resubmitting
+      // after its batch was assembled would otherwise be told only that it holds no lease -- true,
+      // but not the reason, and not something reacquiring a lease can fix. Status is already public
+      // through `task show`, so answering with it first reveals nothing authorization was hiding.
+      if (!SUBMITTABLE_STATUSES.has(current.status)) {
+        throw new BrokerError(
+          "TASK_NOT_SUBMITTABLE",
+          `Task ${taskId} cannot be submitted while ${current.status}. ${recoveryHint(current.status)}`,
+        );
       }
+      verifyLease(current, token);
+      // Resubmitting while `submitted` replaces the receipt. Nothing downstream has read it yet —
+      // integration moves a task to `integrating` and batching to `batched`, neither of which is
+      // accepted here — so the only thing a refusal protects is the worker's own earlier list of
+      // commits. Refusing it made "I need one more commit" unrecoverable: the sole remaining lever
+      // was `cancel`, which is terminal and drops the lease, so a one-commit follow-up cost a whole
+      // new branch. A worker holding the lease may revise its own unread work.
+      const resubmitted = current.status === "submitted";
       current.commits = resolvedCommits;
       current.actualPaths = actualPaths;
       current.warnings =
@@ -530,7 +609,7 @@ export class MergeBroker {
       audit("task.submitted", {
         ...(current.lease?.holder ? { actor: current.lease.holder } : {}),
         taskId,
-        details: { commits: resolvedCommits, actualPaths, warnings: current.warnings },
+        details: { commits: resolvedCommits, actualPaths, warnings: current.warnings, ...(resubmitted ? { resubmitted: true } : {}) },
       });
       return structuredClone(current);
     });
@@ -564,6 +643,77 @@ export class MergeBroker {
       throw new BrokerError("INVALID_LIMIT", "maxTasks must be a positive integer.");
     }
     return scheduleTasks(await this.store.read(), this.config, options);
+  }
+
+  /**
+   * Run the configured validators against a working tree, before anything is submitted.
+   *
+   * Integration is the only thing that knew what "ready" meant, so every adopter rewrote a cheaper
+   * approximation of it for workers to run first -- and an approximation is exactly the thing that
+   * passes locally and fails at integration. This runs the same validators from the same
+   * configuration, so there is one definition and the pre-flight answer is the real one.
+   *
+   * Reads state; never writes it. No lease is required, because checking your own work is not a
+   * claim on anything.
+   */
+  async validateWorkingTree(
+    options: {
+      taskId?: string;
+      scope?: "focused" | "authoritative" | "all";
+      base?: string;
+      files?: string[];
+      cwd?: string;
+    } = {},
+  ): Promise<LocalValidationResult> {
+    const scope = options.scope ?? "all";
+    const cwd = options.cwd ? path.resolve(options.cwd) : this.repo.root;
+    const baseRef = options.base ?? this.config.baseRef;
+    const baseSha = await this.repo.resolveCommit(baseRef);
+    const headSha = await this.repo.currentHead(cwd);
+    const files =
+      options.files && options.files.length > 0
+        ? [...new Set(options.files)].sort()
+        : await this.repo.changedFilesInWorkingTree(baseSha, cwd);
+
+    const validations: ValidationResult[] = [];
+    try {
+      if (scope !== "authoritative") {
+        validations.push(
+          ...(await runValidators({
+            validators: this.config.validation.focused,
+            scope: "focused",
+            cwd,
+            ...(options.taskId ? { taskId: options.taskId } : {}),
+            files,
+            baseSha,
+            headSha,
+            batchId: LOCAL_VALIDATION_BATCH_ID,
+            ...(this.config.validation.shell ? { shell: this.config.validation.shell } : {}),
+          })),
+        );
+      }
+      if (scope !== "focused") {
+        validations.push(
+          ...(await runValidators({
+            validators: this.config.validation.authoritative,
+            scope: "authoritative",
+            cwd,
+            files,
+            baseSha,
+            headSha,
+            batchId: LOCAL_VALIDATION_BATCH_ID,
+            ...(this.config.validation.shell ? { shell: this.config.validation.shell } : {}),
+          })),
+        );
+      }
+    } catch (error) {
+      // Report the run rather than throwing it away: the worker needs the validator that failed and
+      // its output, which is precisely what the exception is carrying.
+      const completed = validationResultsFromError(error);
+      const merged = [...validations, ...completed.filter((item) => !validations.includes(item))];
+      return { ok: false, baseRef, baseSha, headSha, files, validations: merged, error: errorMessage(error) };
+    }
+    return { ok: true, baseRef, baseSha, headSha, files, validations };
   }
 
   async integrate(options: IntegrationOptions = {}): Promise<IntegrationResult> {
@@ -760,6 +910,14 @@ export class MergeBroker {
             const task = requireTask(state, taskId);
             delete task.batchId;
             task.updatedAt = now();
+            // A dry run reports; it does not decide. Leaving a task `failed` here would empty the
+            // queue on a rehearsal, so the next real integrate finds nothing to do and says
+            // EMPTY_BATCH — with no hint that a dry run consumed the work. The success path already
+            // restores `submitted` for the same reason.
+            if (options.dryRun) {
+              task.status = "submitted";
+              continue;
+            }
             // Only the task that actually broke stays failed. Its batch-mates are returned to the
             // queue so a single conflicting commit cannot stall every other agent's work.
             if (culpritTaskId && taskId !== culpritTaskId && (task.attempts ?? 0) + 1 < this.config.integration.maxAttempts) {
@@ -773,7 +931,12 @@ export class MergeBroker {
           }
           audit("batch.failed", {
             batchId: id,
-            details: { error: batch.error, ...(culpritTaskId ? { culpritTaskId } : {}), requeued },
+            details: {
+              error: batch.error,
+              ...(culpritTaskId ? { culpritTaskId } : {}),
+              requeued,
+              ...(options.dryRun ? { dryRun: true } : {}),
+            },
           });
         });
         await this.store.writeBatchManifest(id, { batch, error: batch.error });

@@ -556,3 +556,132 @@ test("retires completed records but keeps dependencies of active work", async (c
   // A pruned dependency would strand its dependents, so the surviving one still plans.
   assert.deepEqual((await broker.plan()).selected.map((task) => task.id), ["ACTIVE"]);
 });
+
+test("a failing dry run leaves the queue exactly as it found it", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const config = await loadConfig(repo);
+  config.validation.authoritative.push({
+    name: "reject marker",
+    command: "test ! -f fail.txt",
+    timeoutSeconds: 5,
+  });
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "REHEARSE", holder: "agent", expectedPaths: ["fail.txt"] });
+  const commit = await commitFile(repo, "rehearse", "fail.txt", "fail\n");
+  await broker.submitTask("REHEARSE", [commit], claim.token);
+
+  await assert.rejects(broker.integrate({ dryRun: true }), (error: unknown) => error instanceof BrokerError);
+
+  // The rehearsal reports; it does not consume the work. Marking the task failed here emptied the
+  // queue, so the next integrate found nothing and reported EMPTY_BATCH instead of the real failure.
+  assert.equal((await broker.task("REHEARSE")).status, "submitted");
+  assert.deepEqual((await broker.plan()).selected.map((task) => task.id), ["REHEARSE"]);
+
+  // And the real run still fails it, so the dry run has not made anything permissive.
+  await assert.rejects(broker.integrate(), (error: unknown) => error instanceof BrokerError);
+  assert.equal((await broker.task("REHEARSE")).status, "failed");
+});
+
+test("a submitted task can be resubmitted until its batch is assembled", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "AMEND", holder: "agent", expectedPaths: ["src/amend/**"] });
+  const first = await commitFile(repo, "amend", "src/amend/one.ts", "export const one = 1;\n");
+  await broker.submitTask("AMEND", [first], claim.token);
+
+  // The follow-up commit every review produces. Before this was allowed the only lever was `cancel`,
+  // which is terminal and drops the lease, so one extra commit cost a whole new branch.
+  await git(repo, "switch", "amend");
+  await writeFile(path.join(repo, "src/amend/two.ts"), "export const two = 2;\n", "utf8");
+  await git(repo, "add", "src/amend/two.ts");
+  await git(repo, "commit", "-m", "second");
+  const second = await git(repo, "rev-parse", "HEAD");
+  await git(repo, "switch", "main");
+
+  const amended = await broker.submitTask("AMEND", [first, second], claim.token);
+  assert.deepEqual(amended.task.commits, [first, second]);
+  assert.deepEqual(amended.task.actualPaths, ["src/amend/one.ts", "src/amend/two.ts"]);
+
+  const integrated = await broker.integrate();
+  assert.equal(integrated.batch.status, "prepared");
+  assert.equal((await broker.task("AMEND")).status, "batched");
+
+  // Once assembled the receipt is no longer the worker's to revise, and the refusal says so.
+  await assert.rejects(
+    broker.submitTask("AMEND", [first], claim.token),
+    (error: unknown) =>
+      error instanceof BrokerError &&
+      error.code === "TASK_NOT_SUBMITTABLE" &&
+      /already assembled/u.test(error.message),
+  );
+});
+
+test("a failed task can widen its scope to fix what validation caught", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const config = await loadConfig(repo);
+  config.validation.authoritative.push({
+    name: "reject marker",
+    command: "test ! -f fail.txt",
+    timeoutSeconds: 5,
+  });
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "WIDEN", holder: "agent", expectedPaths: ["fail.txt"] });
+  const commit = await commitFile(repo, "widen", "fail.txt", "fail\n");
+  await broker.submitTask("WIDEN", [commit], claim.token);
+  await assert.rejects(broker.integrate(), (error: unknown) => error instanceof BrokerError);
+  assert.equal((await broker.task("WIDEN")).status, "failed");
+
+  // Fixing a validation failure routinely means touching a file the original scope never covered.
+  // `claim` already accepted `failed`; `extend` refusing it left rebuilding the task as the only way.
+  const widened = await broker.extendTask("WIDEN", ["src/fix/**"], claim.token);
+  assert.ok(widened.expectedPaths.includes("src/fix/**"));
+});
+
+test("validates a working tree against the configured validators before anything is submitted", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const config = await loadConfig(repo);
+  config.validation.authoritative.push({
+    name: "reject marker",
+    command: "test ! -f fail.txt",
+    timeoutSeconds: 5,
+  });
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  // An adopter commits its broker configuration; the fixture has to as well, or the working-tree
+  // diff legitimately reports it as new work.
+  await git(repo, "add", ".merge-broker");
+  await git(repo, "commit", "-m", "configure merge broker");
+  const broker = await MergeBroker.open(repo);
+
+  const clean = await broker.validateWorkingTree();
+  assert.equal(clean.ok, true);
+  assert.deepEqual(clean.files, []);
+
+  // Uncommitted and untracked, which is the state a worker is actually in when it wants to know
+  // whether its work would survive integration.
+  await writeFile(path.join(repo, "fail.txt"), "fail\n", "utf8");
+  const failing = await broker.validateWorkingTree();
+  assert.equal(failing.ok, false);
+  assert.deepEqual(failing.files, ["fail.txt"]);
+  assert.match(failing.error ?? "", /reject marker/u);
+  assert.equal(failing.validations.at(-1)?.name, "reject marker");
+  assert.notEqual(failing.validations.at(-1)?.exitCode, 0);
+
+  // Reporting a failure is not deciding anything: no task, batch, or state was touched.
+  const state = await broker.state();
+  assert.deepEqual(Object.keys(state.tasks), []);
+  assert.deepEqual(Object.keys(state.batches), []);
+});

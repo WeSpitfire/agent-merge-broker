@@ -95,6 +95,20 @@ export class GitRepository {
   }
 
   /**
+   * Everything that differs from `base` in a working tree, committed or not, including files Git
+   * does not track yet.
+   *
+   * Pre-flight validation runs while the work is still in progress, so a diff limited to `base..HEAD`
+   * would miss uncommitted edits, and one limited to tracked files would miss a new module -- which
+   * is exactly what a new surface adds.
+   */
+  async changedFilesInWorkingTree(base: string, cwd = this.root): Promise<string[]> {
+    const tracked = await this.git(["diff", "--name-only", "-z", base], cwd);
+    const untracked = await this.git(["ls-files", "--others", "--exclude-standard", "-z"], cwd);
+    return [...new Set([...splitNull(tracked.stdout), ...splitNull(untracked.stdout)])].sort();
+  }
+
+  /**
    * Linear commits on HEAD after `base`, oldest first. `git cherry` compares patch identities, so a
    * change already contained in the base under a different SHA -- the ordinary result of a rebase --
    * is not submitted a second time.
