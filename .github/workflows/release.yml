@@ -20,15 +20,16 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
           cache: npm
+      # Trusted publishing needs a newer npm than the one bundled with Node 22. Without this the
+      # publish falls back to looking for a token and fails with a 401 that does not mention OIDC.
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm run verify
       - name: Verify tag matches package version
         run: |
           package_version=$(node -p "require('./package.json').version")
           test "$GITHUB_REF_NAME" = "v$package_version"
-      # setup-node writes an .npmrc that reads NODE_AUTH_TOKEN. Without it the publish fails with a
-      # 401 after every other step has passed. Create an automation token on npmjs.com and store it
-      # as the NPM_TOKEN repository secret.
+      # Authentication is the id-token permission above: npm exchanges the workflow's OIDC token for
+      # a short-lived publish credential. There is deliberately no NODE_AUTH_TOKEN here, so a leaked
+      # repository secret cannot publish this package.
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
