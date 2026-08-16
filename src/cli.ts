@@ -8,7 +8,13 @@ import { BrokerError, CommandError } from "./errors.js";
 import { MergeBroker } from "./broker.js";
 import { GitRepository } from "./git.js";
 import { policyFromBase, verifyProvenance } from "./verify.js";
-import type { BatchRecord, BrokerState, SchedulePlan, TaskRecord } from "./types.js";
+import type {
+  BatchRecord,
+  BrokerState,
+  LocalValidationResult,
+  SchedulePlan,
+  TaskRecord,
+} from "./types.js";
 
 const program = new Command();
 const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
@@ -136,6 +142,27 @@ function batchHuman(batch: BatchRecord): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function localValidationHuman(result: LocalValidationResult): string {
+  const lines = [
+    result.ok ? "Validation passed." : "Validation failed.",
+    `Base: ${result.baseRef} @ ${result.baseSha}`,
+    `Files: ${result.files.length}`,
+  ];
+  for (const validation of result.validations) {
+    lines.push(`  ${validation.exitCode === 0 ? "ok  " : "FAIL"} ${validation.name} (${validation.scope})`);
+  }
+  if (result.validations.length === 0) {
+    lines.push("  no validators matched — check validation.focused and validation.authoritative");
+  }
+  const failed = result.validations.find((validation) => validation.exitCode !== 0);
+  if (failed) {
+    // The point of running this locally is to read the failure, so print it rather than making the
+    // worker re-run the command by hand to see what broke.
+    lines.push("", `--- ${failed.name} ---`, [failed.stdout, failed.stderr].filter(Boolean).join("\n").trimEnd());
+  }
+  return lines.filter((line) => line !== undefined).join("\n");
 }
 
 async function openBroker(): Promise<MergeBroker> {
@@ -411,6 +438,33 @@ program
         publish: options.publish ?? false,
       });
       output(result, batchHuman(result.batch));
+    },
+  );
+
+program
+  .command("validate")
+  .description("run the configured validators against the working tree, before submitting")
+  .option("--task <id>", "task ID to expose to validators as {taskId}")
+  .option("--scope <scope>", "focused, authoritative, or all", "all")
+  .option("--base <ref>", "compare against this revision instead of the configured base")
+  .option("--file <path>", "validate these files instead of the working-tree diff; repeatable", collect, [])
+  .option("--cwd <path>", "validate this worktree instead of the repository root")
+  .action(
+    async (options: { task?: string; scope: string; base?: string; file: string[]; cwd?: string }) => {
+      if (!["focused", "authoritative", "all"].includes(options.scope)) {
+        throw new BrokerError("INVALID_ARGUMENTS", "--scope must be focused, authoritative, or all.");
+      }
+      const result = await (await openBroker()).validateWorkingTree({
+        ...(options.task ? { taskId: options.task } : {}),
+        scope: options.scope as "focused" | "authoritative" | "all",
+        ...(options.base ? { base: options.base } : {}),
+        ...(options.file.length > 0 ? { files: options.file } : {}),
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+      });
+      output(result, localValidationHuman(result));
+      // A failing pre-flight must fail the command, or a worker script that runs it before
+      // submitting would sail straight past the answer it asked for.
+      if (!result.ok) process.exitCode = 1;
     },
   );
 

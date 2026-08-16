@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+Recovery. Everything here came out of one repository's week of fighting the lifecycle rather than the
+merge: the broker was strict in places where strictness protected nothing, and the way out of an
+ordinary mistake was to rebuild the task.
+
+### Added
+
+- `merge-broker validate` runs the configured validators against a working tree, before anything is
+  submitted. Integration was previously the only thing that knew what "ready" meant, so adopters
+  wrote a cheaper approximation for workers to run first — and an approximation is exactly the thing
+  that passes locally and fails at integration. This runs the same validators from the same
+  configuration, covers uncommitted and untracked files, writes no state, requires no lease, and
+  exits non-zero on failure so a worker script can gate on it. Validators see
+  `MERGE_BROKER_BATCH_ID=local`.
+
+### Fixed
+
+- `integrate --dry-run` no longer marks tasks `failed` when validation fails. A rehearsal consumed
+  the queue: the next integrate found nothing to do and reported `EMPTY_BATCH`, with no indication
+  that the dry run had emptied it. The success path already restored `submitted` for this reason;
+  the failure path did not.
+- A task may be submitted again while `submitted`, replacing its receipt, until its batch is
+  assembled. Nothing downstream has read it yet, so the refusal protected only the worker's own
+  earlier list of commits — while making "I need one more commit" unrecoverable, since the sole
+  remaining lever was `cancel`, which is final and ends the lease.
+- `task extend` accepts a `failed` task, as `task claim` already did. Fixing what validation caught
+  routinely means touching a file the original scope did not cover, and refusing to widen scope at
+  exactly that moment left rebuilding the task as the only way forward.
+- Lifecycle refusals name the command that moves the task instead of only reporting its status. The
+  state machine is invisible from outside, so `cannot be submitted while batched` was a riddle.
+  Submission checks status before the lease for the same reason: batching ends the lease, so the
+  honest answer was "its batch is assembled", not "you hold no lease".
+
 ## 0.3.0 — 2026-08-15
 
 First public release. The versions below are development history and were never published to npm.

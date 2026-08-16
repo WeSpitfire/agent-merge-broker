@@ -108,12 +108,26 @@ merge-broker task heartbeat CRM-142
 Pass `--token`, `--token-file`, or `MERGE_BROKER_TOKEN` when the worker runs somewhere else, or
 claim with `--no-store-token` to handle custody yourself.
 
+Before handing anything over, the worker can check its own work against the same validators
+integration will run:
+
+```bash
+merge-broker validate
+```
+
+This is the answer integration would give, not an approximation of it, because it reads the same
+`validation` configuration. It includes uncommitted and untracked files, writes no state, needs no
+lease, and exits non-zero when a validator fails — so a worker script can gate on it.
+
 The worker commits its change and submits a receipt. It does not merge or push:
 
 ```bash
 git commit -m 'Add customer search filters'
 merge-broker task submit CRM-142 --since-base
 ```
+
+Submitting again before the batch is assembled replaces the receipt, which is how a follow-up commit
+from review reaches integration without rebuilding the task.
 
 `--since-base` submits the linear commits made after the base the broker handed out, skipping any
 whose change is already upstream. Pass explicit `--commit` revisions instead when a worker wants to
@@ -204,6 +218,14 @@ Integration failures are attributed as narrowly as the evidence allows:
 - A pull request closed without merging moves the batch to `closed` and returns its tasks to the queue. Leaving such a batch `published` strands the work and reads like success.
 
 `integration.maxAttempts` bounds automatic re-queueing so a task that never integrates eventually stops consuming CI capacity and waits for a human. `task retry` resets that budget.
+
+A `failed` task is still the worker's to fix in place: `task extend` can widen its scope, since
+fixing what validation caught often means touching a file the original claim did not cover, and
+`task submit` replaces its commits. Rebuilding the task is not required, and `task cancel` — which is
+final and ends the lease — is not the way back.
+
+`integrate --dry-run` is a rehearsal in both directions: it retains no branch when it succeeds, and
+returns every task to the queue when it fails, so verifying costs nothing.
 
 A process that dies mid-integration leaves its lock behind. A holder on this machine is reclaimed automatically once its process is gone, but a holder on another machine cannot be probed at all and would otherwise block integration for the full stale window. `merge-broker unlock` reports lock state and releases a lock whose owner is provably gone; `--force` overrides that check and should follow confirming that no integration is running.
 
@@ -298,6 +320,11 @@ Validators receive these environment variables:
 
 Commands may also use the shell-safe placeholders `{taskId}` and `{files}`. Validator output retained in state is capped to prevent unbounded growth.
 
+`merge-broker validate` runs these same validators against a working tree, so a worker can get the
+integration answer before submitting rather than a weaker local approximation of it. It reports
+`MERGE_BROKER_BATCH_ID=local`, which a validator can branch on if it needs to behave differently
+outside a batch.
+
 The JSON schemas in [`schemas/`](schemas/) can be used by editors, adapters, and independent receipt producers.
 
 ### One authoritative CI pass
@@ -316,6 +343,7 @@ merge-broker init
 merge-broker doctor
 merge-broker install-hooks [--force] [--uninstall]
 merge-broker verify-provenance --branch <ref> --head <sha> --base <sha>
+merge-broker validate [--task <id>] [--scope focused|authoritative|all] [--base <ref>] [--cwd <path>]
 merge-broker task register|claim|extend|heartbeat|submit|retry|release|cancel|show
 merge-broker status
 merge-broker plan

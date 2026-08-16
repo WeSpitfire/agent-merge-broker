@@ -228,6 +228,20 @@ export interface IntegrationResult {
   dryRun: boolean;
 }
 
+/**
+ * The outcome of running configured validators against a working tree. `ok` is the whole answer a
+ * worker needs; the rest is what to read when it is false.
+ */
+export interface LocalValidationResult {
+  ok: boolean;
+  baseRef: string;
+  baseSha: string;
+  headSha: string;
+  files: string[];
+  validations: ValidationResult[];
+  error?: string;
+}
+
 export interface PruneOptions {
   olderThanDays?: number;
   dryRun?: boolean;
