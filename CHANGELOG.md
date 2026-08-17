@@ -5,6 +5,19 @@
 Surviving a bad afternoon at the forge. A GitHub outage interrupted a publication midway, and the
 broker turned a transient 503 into a batch that could not be landed at all.
 
+### Added
+
+- `merge-broker batch refresh <id>` re-cuts a batch the base branch moved past, so it can merge
+  again. Previously there was no way back: the operator closed the pull request by hand, reconciled
+  state by hand, and integrated again. It re-cuts the same tasks from the current tip and
+  re-validates them, which is the point — a stale batch was only ever checked against a base nobody
+  merges into any more. Re-cutting rather than merging the base into the branch keeps every batch an
+  immutable artifact whose manifest describes exactly the base it was assembled on. The superseded
+  pull request is closed first, so nobody can still merge the batch being replaced. Attempts are not
+  incremented: nothing about the work failed, the world moved, and charging it against
+  `maxAttempts` would eventually retire a task for being unlucky about merge order. A batch that is
+  already current is a no-op.
+
 ### Fixed
 
 - **Publication records the pull request before attempting auto-merge.** It used to create the pull

@@ -8,6 +8,7 @@ import { scheduleTasks } from "./scheduler.js";
 import { StateStore, type LockStatus } from "./store.js";
 import { runValidators } from "./validation.js";
 import {
+  closePullRequest,
   enableAutoMerge,
   inspectPullRequest,
   publishBatch as publishPreparedBatch,
@@ -22,6 +23,7 @@ import type {
   IntegrationOptions,
   IntegrationResult,
   LocalValidationResult,
+  RefreshResult,
   PruneOptions,
   PruneResult,
   SchedulePlan,
@@ -1151,6 +1153,97 @@ export class MergeBroker {
       audit("batch.closed", { batchId: id, details: { reason, requeued, exhausted } });
       return structuredClone(batch);
     });
+  }
+
+  /**
+   * Replaces a batch that can no longer merge because the base branch moved under it.
+   *
+   * A batch is cut from the base tip so it is born mergeable. When something else lands first, a
+   * base that requires branches to be up to date will refuse it, and there was previously no way
+   * back: the operator closed the pull request by hand, reconciled state by hand, and integrated
+   * again. This re-cuts the same tasks from the current tip and re-validates them, which is the
+   * point — a stale batch was only ever checked against a base nobody is merging into any more.
+   *
+   * Re-cutting rather than merging the base into the branch keeps every batch an immutable artifact
+   * whose manifest describes exactly the base it was assembled on.
+   *
+   * Attempts are deliberately not incremented. Nothing about the work failed; the world moved.
+   * Charging it against `maxAttempts` would eventually retire a task for being unlucky.
+   */
+  async refreshBatch(
+    id: string,
+    options: { publish?: boolean } = {},
+  ): Promise<RefreshResult> {
+    const state = await this.store.read();
+    const batch = requireBatch(state, id);
+    if (batch.status !== "prepared" && batch.status !== "published") {
+      throw new BrokerError(
+        "BATCH_NOT_REFRESHABLE",
+        `Batch ${id} cannot be refreshed while ${batch.status}. Only a batch still waiting to merge can be re-cut.`,
+      );
+    }
+
+    if (this.config.integration.refreshBase) {
+      await this.repo.fetchBranch(this.config.remote, this.config.baseBranch);
+    }
+    const currentBase = await this.repo.resolveCommit(this.config.baseRef);
+    if (currentBase === batch.baseSha) {
+      return {
+        refreshed: false,
+        reason: "already_current",
+        baseSha: currentBase,
+        closed: structuredClone(batch),
+      };
+    }
+
+    // Closed before the tasks are requeued: a superseded pull request left open is one a human can
+    // still merge, which would land the batch this call is replacing.
+    let pullRequestClosed: boolean | undefined;
+    if (batch.pullRequestUrl) {
+      pullRequestClosed = await closePullRequest(
+        this.repo.root,
+        batch.pullRequestUrl,
+        `Superseded: the base branch moved to ${currentBase.slice(0, 7)}, so this batch was re-cut from the current tip.`,
+      );
+    }
+    if (batch.branchName) await this.repo.deleteBranch(batch.branchName);
+
+    const closed = await this.store.transaction((current, audit) => {
+      const stored = requireBatch(current, id);
+      stored.status = "closed";
+      stored.closedAt = now();
+      stored.finishedAt = stored.closedAt;
+      stored.error = `Superseded: base moved from ${stored.baseSha.slice(0, 7)} to ${currentBase.slice(0, 7)}.`;
+      delete stored.branchName;
+      const requeued: string[] = [];
+      for (const taskId of stored.taskIds) {
+        const task = requireTask(current, taskId);
+        if (task.status === "merged") continue;
+        delete task.batchId;
+        delete task.publishedAt;
+        delete task.lastError;
+        task.status = "submitted";
+        task.updatedAt = now();
+        requeued.push(taskId);
+      }
+      audit("batch.refreshed", {
+        batchId: id,
+        details: { fromBase: stored.baseSha, toBase: currentBase, requeued, pullRequestClosed },
+      });
+      return structuredClone(stored);
+    });
+
+    const integration = await this.integrate({
+      taskIds: closed.taskIds,
+      publish: options.publish ?? false,
+    });
+    return {
+      refreshed: true,
+      baseSha: currentBase,
+      closed,
+      integration,
+      ...(pullRequestClosed === undefined ? {} : { pullRequestClosed }),
+    };
   }
 
   async markBatchMerged(id: string, mergedAt = now(), mergeCommitSha?: string): Promise<BatchRecord> {

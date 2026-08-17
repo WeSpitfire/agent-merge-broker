@@ -514,6 +514,28 @@ batch
   });
 
 batch
+  .command("refresh <id>")
+  .description("re-cut a batch the base branch moved past, so it can merge again")
+  .option("--publish", "publish the replacement according to the configured publishing mode")
+  .action(async (id: string, options: { publish?: boolean }) => {
+    const result = await (await openBroker()).refreshBatch(id, {
+      publish: options.publish ?? false,
+    });
+    if (!result.refreshed) {
+      output(result, `Batch ${id} is already cut from the current base (${result.baseSha}). Nothing to do.`);
+      return;
+    }
+    const lines = [
+      `Batch ${id} superseded; its tasks were re-cut from ${result.baseSha}.`,
+      result.pullRequestClosed === false
+        ? `Its pull request could not be closed and is still open: ${result.closed.pullRequestUrl}`
+        : undefined,
+      result.integration ? batchHuman(result.integration.batch) : undefined,
+    ].filter(Boolean);
+    output(result, lines.join("\n"));
+  });
+
+batch
   .command("sync [id]")
   .description("reconcile one or all published batches with GitHub or the remote base branch")
   .option("--all", "sync every published batch")

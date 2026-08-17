@@ -106,6 +106,24 @@ export async function publishBatch(options: {
 }
 
 /**
+ * Closes a superseded pull request. Best effort by design: the batch it belonged to has already been
+ * replaced locally, and a forge that cannot be reached must not block that. The caller reports what
+ * was left open.
+ */
+export async function closePullRequest(
+  repoRoot: string,
+  pullRequestUrl: string,
+  comment: string,
+): Promise<boolean> {
+  const result = await runCommand(
+    "gh",
+    ["pr", "close", pullRequestUrl, "--comment", comment],
+    { cwd: repoRoot, allowFailure: true },
+  );
+  return result.exitCode === 0;
+}
+
+/**
  * The open pull request for this branch, or null when there is provably none.
  *
  * Throws when the forge cannot answer. "I do not know" must not read as "there is none", because

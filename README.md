@@ -232,6 +232,17 @@ mergeable, and cutting a second while the first is still open makes that expire 
 first leaves the other behind a base that requires branches to be up to date. `integrate` refuses
 with `BATCH_OUTSTANDING` and names the batch to land first; `--force` overrides it.
 
+When a batch does end up behind — something landed on the base by another route, or `--force` was
+used — re-cut it:
+
+```bash
+merge-broker batch refresh <batch-id>
+```
+
+That closes the superseded pull request, returns the tasks to the queue without spending their retry
+budget, and integrates them again from the current tip, re-validating against the base that is
+actually being merged into. A batch already cut from the current tip is left alone.
+
 Publication is safe to retry. The pull request is recorded before auto-merge is attempted, so a
 forge that fails halfway leaves a published batch carrying a `publishWarning` rather than a batch
 whose pull request exists but whose state does not admit it. Running `batch publish` again finds the
@@ -357,8 +368,8 @@ merge-broker validate [--task <id>] [--scope focused|authoritative|all] [--base 
 merge-broker task register|claim|extend|heartbeat|submit|retry|release|cancel|show
 merge-broker status
 merge-broker plan
-merge-broker integrate [--dry-run] [--publish]
-merge-broker batch list|show|publish|sync|complete
+merge-broker integrate [--dry-run] [--publish] [--force]
+merge-broker batch list|show|publish|refresh|sync|complete
 merge-broker audit
 merge-broker metrics
 merge-broker events

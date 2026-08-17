@@ -249,6 +249,20 @@ export interface LocalValidationResult {
   error?: string;
 }
 
+/**
+ * The outcome of re-cutting a batch the base branch moved out from under. `refreshed: false` with
+ * `reason: "already_current"` means the batch was never stale and nothing was touched.
+ */
+export interface RefreshResult {
+  refreshed: boolean;
+  reason?: "already_current";
+  baseSha: string;
+  closed: BatchRecord;
+  integration?: IntegrationResult;
+  /** False when the superseded pull request could not be closed and is still open. */
+  pullRequestClosed?: boolean;
+}
+
 export interface PruneOptions {
   olderThanDays?: number;
   dryRun?: boolean;
