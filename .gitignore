@@ -6,3 +6,8 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Documentation site build output
+site/.vitepress/dist/
+site/.vitepress/cache/
+site/docs/

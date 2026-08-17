@@ -1,0 +1,16 @@
+{
+  "name": "agent-merge-broker-site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Documentation site. Deliberately a separate workspace: nothing here belongs to the published package's dependency tree.",
+  "scripts": {
+    "sync": "node sync-docs.mjs",
+    "dev": "npm run sync && vitepress dev",
+    "build": "npm run sync && vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  }
+}
