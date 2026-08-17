@@ -1,6 +1,34 @@
 import { defineConfig } from "vitepress";
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const REPO = "https://github.com/WeSpitfire/agent-merge-broker";
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * Figures the landing page states about the package are read from the package itself, so a release
+ * cannot leave the site claiming a version or a test count that is no longer true.
+ */
+function projectFacts(): { version: string; tests: number } {
+  const manifest = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8")) as {
+    version: string;
+  };
+
+  const src = path.join(repoRoot, "src");
+  const tests = readdirSync(src)
+    .filter((file) => file.endsWith(".test.ts"))
+    .reduce((total, file) => {
+      const contents = readFileSync(path.join(src, file), "utf8");
+      return total + (contents.match(/^test\(/gmu)?.length ?? 0);
+    }, 0);
+
+  if (tests === 0) throw new Error("Counted no tests: the declaration pattern has drifted.");
+
+  return { version: manifest.version, tests };
+}
+
+const project = projectFacts();
 
 export default defineConfig({
   title: "Agent Merge Broker",
@@ -23,6 +51,7 @@ export default defineConfig({
     ],
   ],
   themeConfig: {
+    project,
     nav: [
       { text: "Docs", link: "/docs/architecture", activeMatch: "/docs/" },
       { text: "npm", link: "https://www.npmjs.com/package/agent-merge-broker" },

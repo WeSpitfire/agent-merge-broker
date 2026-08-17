@@ -9,7 +9,7 @@
           <path d="M3 5h7c3 0 3 7 6 7M3 12h7M3 19h7c3 0 3-7 6-7" stroke="var(--rail)" stroke-width="1.6" stroke-linecap="round"/>
           <circle cx="19.5" cy="12" r="2.5" fill="var(--signal)"/>
         </svg>
-        <span>Agent Merge Broker <span class="ver">v0.4.1</span></span>
+        <span>Agent Merge Broker <span class="ver">v{{ project.version }}</span></span>
       </a>
       <nav>
         <a class="opt" href="#how">How it works</a>
@@ -133,7 +133,7 @@ with no agent pushing anything.</span></pre>
     <h2>Built to be checked, not trusted</h2>
     <p class="col">A published batch carries a provenance manifest binding it to its base commit, its task receipts, and the validators that passed. <code>verify-provenance</code> is the read-only inverse: it proves a pull request head is an unaltered broker batch, and rejects a commit pushed onto the branch afterwards.</p>
     <dl class="facts">
-      <div class="fact"><dt>Tests</dt><dd>50 passing</dd></div>
+      <div class="fact"><dt>Tests</dt><dd>{{ project.tests }} passing</dd></div>
       <div class="fact"><dt>Supply chain</dt><dd>SLSA provenance</dd></div>
       <div class="fact"><dt>Runtime deps</dt><dd>1</dd></div>
       <div class="fact"><dt>License</dt><dd>Apache-2.0</dd></div>
@@ -199,7 +199,12 @@ with no agent pushing anything.</span></pre>
 </template>
 
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted } from "vue";
+import { useData } from "vitepress";
+
+// Read from package.json and the test sources at build time; see projectFacts in config.mts.
+const { theme } = useData();
+const project = computed(() => theme.value.project as { version: string; tests: number });
 
 /**
  * The markup above is authored in its finished state, so a reader without JavaScript still sees the
