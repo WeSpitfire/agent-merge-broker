@@ -685,3 +685,174 @@ test("validates a working tree against the configured validators before anything
   assert.deepEqual(Object.keys(state.tasks), []);
   assert.deepEqual(Object.keys(state.batches), []);
 });
+
+test("refuses to cut a second batch while the first has not merged", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+
+  const claimA = await broker.claimTask({ id: "FIRST", holder: "agent-a", expectedPaths: ["src/a/**"] });
+  const commitA = await commitFile(repo, "first", "src/a/one.ts", "export const a = 1;\n");
+  await broker.submitTask("FIRST", [commitA], claimA.token);
+  const first = await broker.integrate();
+  assert.equal(first.batch.status, "prepared");
+
+  const claimB = await broker.claimTask({ id: "SECOND", holder: "agent-b", expectedPaths: ["src/b/**"] });
+  const commitB = await commitFile(repo, "second", "src/b/one.ts", "export const b = 2;\n");
+  await broker.submitTask("SECOND", [commitB], claimB.token);
+
+  // A batch is cut from the base tip so it is born mergeable. Cutting another while the first is
+  // open makes that expire: whichever merges first strands the other behind a base that requires
+  // branches to be up to date.
+  await assert.rejects(
+    broker.integrate(),
+    (error: unknown) =>
+      error instanceof BrokerError &&
+      error.code === "BATCH_OUTSTANDING" &&
+      (error.details?.outstanding as string[]).includes(first.batch.id),
+  );
+
+  // The second task is untouched by the refusal and still queued.
+  assert.equal((await broker.task("SECOND")).status, "submitted");
+
+  // Verifying is still free: a rehearsal retains nothing, so it cannot strand anything.
+  const rehearsal = await broker.integrate({ dryRun: true });
+  assert.equal(rehearsal.batch.status, "verified");
+
+  // And the operator can still override deliberately.
+  const forced = await broker.integrate({ force: true });
+  assert.equal(forced.batch.status, "prepared");
+});
+
+test("a batch whose auto-merge fails is published, not lost", {
+  // Same reason as the publisher fixtures: the fake forge is a POSIX shell script.
+  skip: process.platform === "win32" ? "POSIX shell fixture" : false,
+}, async (context) => {
+  const repo = await createRepository();
+  const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
+  const remote = path.join(remoteParent, "origin.git");
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+    await rm(remoteParent, { recursive: true, force: true });
+  });
+  await runCommand("git", ["init", "--bare", remote], { cwd: repo });
+  await git(repo, "remote", "add", "origin", remote);
+  await git(repo, "push", "-u", "origin", "main");
+
+  // `gh` opens the pull request and then refuses every auto-merge route, which is what a forge
+  // outage looked like in practice: the pull request is real, the queueing is not.
+  const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-bin-"));
+  await writeFile(
+    path.join(bin, "gh"),
+    [
+      "#!/bin/sh",
+      'case "$*" in',
+      '  *"pr list"*) echo "[]" ;;',
+      // Drain the body from stdin; exiting without reading it is an EPIPE for the writer.
+      '  *"pr create"*) cat >/dev/null; echo "https://forge.invalid/owner/repo/pull/7" ;;',
+      '  *) echo "the forge is unavailable" >&2; exit 1 ;;',
+      "esac",
+      "",
+    ].join("\n"),
+    { encoding: "utf8", mode: 0o755 },
+  );
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+  context.after(async () => {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    await rm(bin, { recursive: true, force: true });
+  });
+
+  const config = await loadConfig(repo);
+  config.baseRef = "origin/main";
+  config.publish.mode = "pull-request";
+  config.publish.autoMerge = true;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "PARTIAL", holder: "agent", expectedPaths: ["src/partial.ts"] });
+  const commit = await commitFile(repo, "partial", "src/partial.ts", "export const partial = true;\n");
+  await broker.submitTask("PARTIAL", [commit], claim.token);
+  const integrated = await broker.integrate();
+
+  const published = await broker.publishBatch(integrated.batch.id);
+
+  // The pull request exists, so the state has to say so. Left `prepared`, the batch is invisible to
+  // `batch sync` -- the one command built to notice it merged -- and the operator is reconciling by
+  // hand against a record that disagrees with the forge.
+  assert.equal(published.status, "published");
+  assert.equal(published.pullRequestUrl, "https://forge.invalid/owner/repo/pull/7");
+  assert.equal(published.autoMergeEnabled, false);
+  assert.match(published.publishWarning ?? "", /forge is unavailable|auto-merge/iu);
+  assert.equal((await broker.task("PARTIAL")).status, "published");
+});
+
+test("re-cuts a batch the base branch moved past", async (context) => {
+  const repo = await createRepository();
+  const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
+  const remote = path.join(remoteParent, "origin.git");
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+    await rm(remoteParent, { recursive: true, force: true });
+  });
+  await runCommand("git", ["init", "--bare", remote], { cwd: repo });
+  await git(repo, "remote", "add", "origin", remote);
+  await git(repo, "push", "-u", "origin", "main");
+
+  const config = await loadConfig(repo);
+  config.baseRef = "origin/main";
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const broker = await MergeBroker.open(repo);
+
+  const claim = await broker.claimTask({ id: "STALE", holder: "agent", expectedPaths: ["src/stale.ts"] });
+  const commit = await commitFile(repo, "stale-task", "src/stale.ts", "export const stale = 1;\n");
+  await broker.submitTask("STALE", [commit], claim.token);
+  const original = await broker.integrate();
+  assert.equal(original.batch.status, "prepared");
+
+  // Nothing is stale yet, so refreshing is a no-op rather than pointless churn.
+  const noop = await broker.refreshBatch(original.batch.id);
+  assert.equal(noop.refreshed, false);
+  assert.equal(noop.reason, "already_current");
+  assert.equal((await broker.state()).batches[original.batch.id]?.status, "prepared");
+
+  // Somebody else lands on the base branch. This is what leaves a batch behind a base that requires
+  // branches to be up to date, and what previously had no way back.
+  await writeFile(path.join(repo, "OTHER.md"), "landed elsewhere\n", "utf8");
+  await git(repo, "add", "OTHER.md");
+  await git(repo, "commit", "-m", "someone else landed first");
+  await git(repo, "push", "origin", "main");
+  const movedBase = await git(repo, "rev-parse", "origin/main");
+
+  const refreshed = await broker.refreshBatch(original.batch.id);
+
+  assert.equal(refreshed.refreshed, true);
+  assert.equal(refreshed.baseSha, movedBase);
+  assert.equal(refreshed.closed.status, "closed");
+  assert.match(refreshed.closed.error ?? "", /Superseded/u);
+
+  // The replacement is a genuine batch cut from the current tip, carrying the same work.
+  const replacement = refreshed.integration?.batch;
+  assert.ok(replacement);
+  assert.equal(replacement.status, "prepared");
+  assert.equal(replacement.baseSha, movedBase);
+  assert.notEqual(replacement.id, original.batch.id);
+  assert.deepEqual(replacement.taskIds, ["STALE"]);
+  assert.equal(await git(repo, "show", `${replacement.branchName}:src/stale.ts`), "export const stale = 1;");
+  assert.equal(await git(repo, "show", `${replacement.branchName}:OTHER.md`), "landed elsewhere");
+
+  // The work was never at fault, so refreshing must not spend the task's retry budget. Charging it
+  // would eventually retire a task for being unlucky about merge order.
+  const task = await broker.task("STALE");
+  assert.equal(task.status, "batched");
+  assert.equal(task.attempts ?? 0, 0);
+
+  // A merged batch has nothing to re-cut.
+  await broker.markBatchMerged(replacement.id);
+  await assert.rejects(
+    broker.refreshBatch(replacement.id),
+    (error: unknown) => error instanceof BrokerError && error.code === "BATCH_NOT_REFRESHABLE",
+  );
+});

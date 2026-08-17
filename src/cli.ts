@@ -138,6 +138,8 @@ function batchHuman(batch: BatchRecord): string {
     batch.headSha ? `Head: ${batch.headSha}` : undefined,
     batch.pullRequestUrl ? `Pull request: ${batch.pullRequestUrl}` : undefined,
     batch.autoMergeEnabled ? "Auto-merge: enabled" : undefined,
+    // The batch is published either way; this says what still needs a hand.
+    batch.publishWarning ? `Auto-merge not queued: ${batch.publishWarning}` : undefined,
     batch.error ? `Error: ${batch.error}` : undefined,
   ]
     .filter(Boolean)
@@ -429,13 +431,21 @@ program
   .option("--max-tasks <number>")
   .option("--dry-run", "verify without retaining an integration branch")
   .option("--publish", "publish according to the configured publishing mode")
+  .option("--force", "integrate even though an earlier batch has not merged yet")
   .action(
-    async (options: { task: string[]; maxTasks?: string; dryRun?: boolean; publish?: boolean }) => {
+    async (options: {
+      task: string[];
+      maxTasks?: string;
+      dryRun?: boolean;
+      publish?: boolean;
+      force?: boolean;
+    }) => {
       const result = await (await openBroker()).integrate({
         ...(options.task.length > 0 ? { taskIds: options.task } : {}),
         ...(options.maxTasks ? { maxTasks: Number(options.maxTasks) } : {}),
         dryRun: options.dryRun ?? false,
         publish: options.publish ?? false,
+        force: options.force ?? false,
       });
       output(result, batchHuman(result.batch));
     },
@@ -501,6 +511,28 @@ batch
   .action(async (id: string) => {
     const result = await (await openBroker()).publishBatch(id);
     output(result, batchHuman(result));
+  });
+
+batch
+  .command("refresh <id>")
+  .description("re-cut a batch the base branch moved past, so it can merge again")
+  .option("--publish", "publish the replacement according to the configured publishing mode")
+  .action(async (id: string, options: { publish?: boolean }) => {
+    const result = await (await openBroker()).refreshBatch(id, {
+      publish: options.publish ?? false,
+    });
+    if (!result.refreshed) {
+      output(result, `Batch ${id} is already cut from the current base (${result.baseSha}). Nothing to do.`);
+      return;
+    }
+    const lines = [
+      `Batch ${id} superseded; its tasks were re-cut from ${result.baseSha}.`,
+      result.pullRequestClosed === false
+        ? `Its pull request could not be closed and is still open: ${result.closed.pullRequestUrl}`
+        : undefined,
+      result.integration ? batchHuman(result.integration.batch) : undefined,
+    ].filter(Boolean);
+    output(result, lines.join("\n"));
   });
 
 batch

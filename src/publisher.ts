@@ -8,7 +8,8 @@ export interface PublicationResult {
   mode: "branch" | "pull-request";
   branchName: string;
   pullRequestUrl?: string;
-  autoMergeEnabled?: boolean;
+  /** True when an earlier attempt had already opened this batch's pull request. */
+  reusedPullRequest?: boolean;
 }
 
 function renderTitle(template: string, batch: BatchRecord): string {
@@ -54,6 +55,20 @@ export async function publishBatch(options: {
     return { mode: "branch", branchName: batch.branchName };
   }
 
+  // Publication is retried after any partial failure, so it must not open a second pull request for
+  // a branch that already has one. A lookup that *fails* is not an answer: creating one anyway is
+  // how a retry during a forge outage ends up with duplicates, so refuse instead and let the
+  // operator retry when the forge can answer.
+  const existing = await findOpenPullRequest(repo.root, config, batch.branchName);
+  if (existing) {
+    return {
+      mode: "pull-request",
+      branchName: batch.branchName,
+      pullRequestUrl: existing,
+      reusedPullRequest: true,
+    };
+  }
+
   const title = renderTitle(config.publish.titleTemplate, batch);
   const args = [
     "pr",
@@ -83,8 +98,71 @@ export async function publishBatch(options: {
       stderr: result.stderr,
     });
   }
-  const autoMergeEnabled = config.publish.autoMerge ? await enableAutoMerge(repo.root, url, config) : false;
-  return { mode: "pull-request", branchName: batch.branchName, pullRequestUrl: url, autoMergeEnabled };
+  // Auto-merge is deliberately *not* attempted here. It used to be, and a failed attempt threw away
+  // the pull request this function had just created: the caller recorded nothing, `batch sync` could
+  // not see a batch still marked `prepared`, and retrying risked a duplicate. Enabling it is the
+  // caller's separate, recoverable step.
+  return { mode: "pull-request", branchName: batch.branchName, pullRequestUrl: url, reusedPullRequest: false };
+}
+
+/**
+ * Closes a superseded pull request. Best effort by design: the batch it belonged to has already been
+ * replaced locally, and a forge that cannot be reached must not block that. The caller reports what
+ * was left open.
+ */
+export async function closePullRequest(
+  repoRoot: string,
+  pullRequestUrl: string,
+  comment: string,
+): Promise<boolean> {
+  const result = await runCommand(
+    "gh",
+    ["pr", "close", pullRequestUrl, "--comment", comment],
+    { cwd: repoRoot, allowFailure: true },
+  );
+  return result.exitCode === 0;
+}
+
+/**
+ * The open pull request for this branch, or null when there is provably none.
+ *
+ * Throws when the forge cannot answer. "I do not know" must not read as "there is none", because
+ * the caller's response to null is to create one.
+ */
+async function findOpenPullRequest(
+  repoRoot: string,
+  config: BrokerConfig,
+  branchName: string,
+): Promise<string | null> {
+  const result = await runCommand(
+    "gh",
+    [
+      "pr", "list",
+      "--head", branchName,
+      "--base", config.baseBranch,
+      "--state", "open",
+      "--json", "url",
+      "--limit", "1",
+    ],
+    { cwd: repoRoot, allowFailure: true },
+  );
+  if (result.exitCode !== 0) {
+    throw new BrokerError(
+      "PULL_REQUEST_LOOKUP_FAILED",
+      `Could not determine whether ${branchName} already has an open pull request, so publication stopped rather than risk opening a second one. The branch is pushed; retry when the forge responds.`,
+      { branchName, stdout: result.stdout, stderr: result.stderr },
+    );
+  }
+  try {
+    const rows = JSON.parse(result.stdout) as Array<{ url?: string }>;
+    return rows[0]?.url ?? null;
+  } catch {
+    throw new BrokerError(
+      "PULL_REQUEST_LOOKUP_FAILED",
+      `Could not read the pull request list for ${branchName}.`,
+      { branchName, stdout: result.stdout },
+    );
+  }
 }
 
 export interface PullRequestMergeState {
