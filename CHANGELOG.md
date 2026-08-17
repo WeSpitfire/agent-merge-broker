@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-08-17
 
 Surviving a bad afternoon at the forge. A GitHub outage interrupted a publication midway, and the
 broker turned a transient 503 into a batch that could not be landed at all.

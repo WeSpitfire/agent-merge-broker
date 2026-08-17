@@ -43,7 +43,9 @@ It is deliberately **not** an agent framework and **not** a replacement for prot
 
 ## Status
 
-`0.3.0` is the first public release. It contains the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
+`0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
+
+`0.5.0` is current. Since the first release the lifecycle has been made recoverable — work can be resubmitted and rescoped after a failure, pre-flight validation runs the same validators integration does, and a publication interrupted partway through can be retried rather than reconciled by hand.
 
 The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
