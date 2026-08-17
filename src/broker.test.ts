@@ -726,7 +726,10 @@ test("refuses to cut a second batch while the first has not merged", async (cont
   assert.equal(forced.batch.status, "prepared");
 });
 
-test("a batch whose auto-merge fails is published, not lost", async (context) => {
+test("a batch whose auto-merge fails is published, not lost", {
+  // Same reason as the publisher fixtures: the fake forge is a POSIX shell script.
+  skip: process.platform === "win32" ? "POSIX shell fixture" : false,
+}, async (context) => {
   const repo = await createRepository();
   const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
   const remote = path.join(remoteParent, "origin.git");
@@ -747,7 +750,8 @@ test("a batch whose auto-merge fails is published, not lost", async (context) =>
       "#!/bin/sh",
       'case "$*" in',
       '  *"pr list"*) echo "[]" ;;',
-      '  *"pr create"*) echo "https://forge.invalid/owner/repo/pull/7" ;;',
+      // Drain the body from stdin; exiting without reading it is an EPIPE for the writer.
+      '  *"pr create"*) cat >/dev/null; echo "https://forge.invalid/owner/repo/pull/7" ;;',
       '  *) echo "the forge is unavailable" >&2; exit 1 ;;',
       "esac",
       "",

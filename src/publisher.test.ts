@@ -84,7 +84,9 @@ async function fakeGhForPublish(
       options.listExitCode
         ? `  *"pr list"*) echo "the forge is unavailable" >&2; exit ${options.listExitCode} ;;`
         : `  *"pr list"*) echo '${listBody}' ;;`,
-      `  *"pr create"*) echo "${PULL_REQUEST}" ;;`,
+      // The body arrives on stdin. Exiting without draining it makes the writer see EPIPE on Linux,
+      // where the pipe is torn down promptly; macOS hid this.
+      `  *"pr create"*) cat >/dev/null; echo "${PULL_REQUEST}" ;;`,
       '  *--auto*) echo "queued" ;;',
       "  *) exit 1 ;;",
       "esac",
