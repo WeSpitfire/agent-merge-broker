@@ -7,7 +7,11 @@ import { patternSetsMayOverlap, unexpectedPaths } from "./patterns.js";
 import { scheduleTasks } from "./scheduler.js";
 import { StateStore, type LockStatus } from "./store.js";
 import { runValidators } from "./validation.js";
-import { inspectPullRequest, publishBatch as publishPreparedBatch } from "./publisher.js";
+import {
+  enableAutoMerge,
+  inspectPullRequest,
+  publishBatch as publishPreparedBatch,
+} from "./publisher.js";
 import { buildBatchProvenance, provenancePath } from "./provenance.js";
 import { installHooks, uninstallHooks, type HookInstallation } from "./hooks.js";
 import type {
@@ -718,6 +722,29 @@ export class MergeBroker {
 
   async integrate(options: IntegrationOptions = {}): Promise<IntegrationResult> {
     return await this.store.withIntegrationLock(async () => {
+      // One batch in flight at a time.
+      //
+      // A batch is cut from the base branch tip so it is born mergeable. Cutting a second one while
+      // the first is still open makes that guarantee expire: whichever merges first leaves the other
+      // behind the base, and a repository that requires branches to be up to date will then refuse
+      // it. Serialized merge is the whole promise, and it has to hold across batches, not only
+      // within one.
+      //
+      // The lock above does not cover this. It serializes the act of integrating, which finishes
+      // long before the pull request merges.
+      if (!options.dryRun && !options.force) {
+        const outstanding = Object.values((await this.store.read()).batches).filter(
+          (candidate) => candidate.status === "prepared" || candidate.status === "published",
+        );
+        if (outstanding.length > 0) {
+          const names = outstanding.map((candidate) => candidate.id).join(", ");
+          throw new BrokerError(
+            "BATCH_OUTSTANDING",
+            `Batch ${names} has not merged yet. Land it, or run \`batch sync\` if it already merged, before integrating another. Pass --force to cut anyway and accept that one of them will need updating.`,
+            { outstanding: outstanding.map((candidate) => candidate.id) },
+          );
+        }
+      }
       const plan = await this.plan({
         ...(options.taskIds ? { taskIds: options.taskIds } : {}),
         ...(options.maxTasks ? { maxTasks: options.maxTasks } : {}),
@@ -961,7 +988,10 @@ export class MergeBroker {
   async publishBatch(id: string): Promise<BatchRecord> {
     const state = await this.store.read();
     const batch = requireBatch(state, id);
-    if (batch.status !== "prepared") {
+    // `published` is accepted so publication can be retried. A batch whose pull request opened but
+    // whose auto-merge did not is published and incomplete, and the way to finish it is to run this
+    // again -- which now finds the existing pull request instead of opening a second one.
+    if (batch.status !== "prepared" && batch.status !== "published") {
       throw new BrokerError("BATCH_NOT_PUBLISHABLE", `Batch ${id} cannot be published while ${batch.status}.`);
     }
     const tasks = batch.taskIds.map((taskId) => requireTask(state, taskId));
@@ -976,26 +1006,57 @@ export class MergeBroker {
       });
       throw error;
     }
-    return await this.store.transaction((current, audit) => {
+
+    // Recorded before auto-merge is attempted. The pull request exists from this point on, and a
+    // state that does not say so is worse than one that does: `batch sync` only reconciles
+    // `published` batches, so a batch left `prepared` holding a real pull request is invisible to
+    // the one command built to notice it merged.
+    const published = await this.store.transaction((current, audit) => {
       const stored = requireBatch(current, id);
+      const first = stored.status !== "published";
       stored.status = "published";
-      stored.publishedAt = now();
+      stored.publishedAt = stored.publishedAt ?? now();
       delete stored.error;
+      delete stored.publishWarning;
       if (publication.pullRequestUrl) stored.pullRequestUrl = publication.pullRequestUrl;
-      if (publication.autoMergeEnabled !== undefined) stored.autoMergeEnabled = publication.autoMergeEnabled;
       for (const taskId of stored.taskIds) {
         const task = requireTask(current, taskId);
         task.status = "published";
         task.publishedAt = stored.publishedAt;
         task.updatedAt = now();
       }
-      audit("batch.published", {
+      if (first) {
+        audit("batch.published", {
+          batchId: id,
+          details: {
+            branchName: stored.branchName,
+            pullRequestUrl: stored.pullRequestUrl,
+            reusedPullRequest: publication.reusedPullRequest ?? false,
+          },
+        });
+      }
+      return structuredClone(stored);
+    });
+
+    if (!this.config.publish.autoMerge || !publication.pullRequestUrl) return published;
+
+    // A separate step with its own outcome. Failing to queue auto-merge is a published batch that
+    // needs a hand, not a publication that did not happen.
+    let autoMergeEnabled = false;
+    let warning: string | undefined;
+    try {
+      autoMergeEnabled = await enableAutoMerge(this.repo.root, publication.pullRequestUrl, this.config);
+    } catch (error) {
+      warning = errorMessage(error);
+    }
+    return await this.store.transaction((current, audit) => {
+      const stored = requireBatch(current, id);
+      stored.autoMergeEnabled = autoMergeEnabled;
+      if (warning) stored.publishWarning = warning;
+      else delete stored.publishWarning;
+      audit(autoMergeEnabled ? "batch.auto_merge_enabled" : "batch.auto_merge_pending", {
         batchId: id,
-        details: {
-          branchName: stored.branchName,
-          pullRequestUrl: stored.pullRequestUrl,
-          autoMergeEnabled: stored.autoMergeEnabled,
-        },
+        details: { pullRequestUrl: stored.pullRequestUrl, ...(warning ? { warning } : {}) },
       });
       return structuredClone(stored);
     });

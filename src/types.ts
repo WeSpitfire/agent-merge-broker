@@ -137,6 +137,11 @@ export interface BatchRecord {
   publishedAt?: string;
   pullRequestUrl?: string;
   autoMergeEnabled?: boolean;
+  /**
+   * Something after the pull request went wrong -- auto-merge, usually. The batch is published and
+   * real; this says what still needs a hand. Distinct from `error`, which means the batch failed.
+   */
+  publishWarning?: string;
   closedAt?: string;
   error?: string;
 }
@@ -219,6 +224,8 @@ export interface IntegrationOptions {
   publish?: boolean;
   taskIds?: string[];
   maxTasks?: number;
+  /** Integrate even though an earlier batch is still unmerged. See `integrate`. */
+  force?: boolean;
 }
 
 export interface IntegrationResult {

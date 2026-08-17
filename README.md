@@ -227,6 +227,16 @@ final and ends the lease — is not the way back.
 `integrate --dry-run` is a rehearsal in both directions: it retains no branch when it succeeds, and
 returns every task to the queue when it fails, so verifying costs nothing.
 
+Only one batch is in flight at a time. A batch is cut from the base branch tip so it is born
+mergeable, and cutting a second while the first is still open makes that expire — whichever merges
+first leaves the other behind a base that requires branches to be up to date. `integrate` refuses
+with `BATCH_OUTSTANDING` and names the batch to land first; `--force` overrides it.
+
+Publication is safe to retry. The pull request is recorded before auto-merge is attempted, so a
+forge that fails halfway leaves a published batch carrying a `publishWarning` rather than a batch
+whose pull request exists but whose state does not admit it. Running `batch publish` again finds the
+existing pull request and retries what is left.
+
 A process that dies mid-integration leaves its lock behind. A holder on this machine is reclaimed automatically once its process is gone, but a holder on another machine cannot be probed at all and would otherwise block integration for the full stale window. `merge-broker unlock` reports lock state and releases a lock whose owner is provably gone; `--force` overrides that check and should follow confirming that no integration is running.
 
 ## Housekeeping

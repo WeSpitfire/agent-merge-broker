@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+Surviving a bad afternoon at the forge. A GitHub outage interrupted a publication midway, and the
+broker turned a transient 503 into a batch that could not be landed at all.
+
+### Fixed
+
+- **Publication records the pull request before attempting auto-merge.** It used to create the pull
+  request and enable auto-merge as one step, so a failure at the second threw away the first: the
+  batch stayed `prepared` while its pull request existed on the forge. `batch sync` only reconciles
+  `published` batches, so the one command built to notice the merge could not see it. Auto-merge is
+  now its own step, and failing it leaves a published batch carrying `publishWarning` — something
+  that needs a hand, not a publication that did not happen.
+- **Publication is idempotent.** It looks for the branch's open pull request before opening one, so
+  retrying after a partial failure finishes the job instead of opening a duplicate. A lookup that
+  *fails* is not treated as "there is none" — publication stops with `PULL_REQUEST_LOOKUP_FAILED`,
+  because the response to none is to create one, and that is how retrying during an outage produces
+  duplicates. `batch publish` accepts an already-`published` batch so it can be used to retry.
+- **One batch in flight at a time.** `integrate` cut a new batch whenever tasks were queued, even
+  with an earlier batch still open. A batch is cut from the base tip so it is born mergeable;
+  cutting another while the first is unmerged makes that expire, and whichever merges first strands
+  the other behind a base that requires branches to be up to date. Integration now refuses with
+  `BATCH_OUTSTANDING` and names the batch to land first. `--force` overrides, and `--dry-run` is
+  unaffected — a rehearsal retains nothing, so it can strand nothing.
+
 ## 0.4.1 — 2026-08-17
 
 Toolchain maintenance. No behaviour changes.
