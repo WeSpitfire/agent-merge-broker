@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.1 — 2026-08-17
+
+Toolchain maintenance. No behaviour changes.
+
+### Fixed
+
+- Named the node types explicitly in `tsconfig.json`. TypeScript 7 stopped inferring ambient node
+  types from `NodeNext` module resolution alone, so every `node:` import failed to resolve and the
+  compiler read the specifiers as bare names. The build would have broken on the compiler upgrade
+  whether or not the dependency bump arrived with it.
+
+### Changed
+
+- Moved to TypeScript 7.0.2 and `@types/node` 26, the current stable line.
+- Updated `commander` to 15. This is the one runtime dependency, so consumers resolving it
+  transitively will see the major change.
+
 ## 0.4.0 — 2026-08-15
 
 Recovery. Everything here came out of one repository's week of fighting the lifecycle rather than the
