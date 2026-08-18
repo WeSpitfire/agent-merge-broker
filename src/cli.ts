@@ -5,6 +5,13 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Command, Option } from "commander";
 import { BrokerError, CommandError } from "./errors.js";
+import {
+  formatServeEvent,
+  isErrorEvent,
+  serveEventJson,
+  shouldReportIdle,
+  type ServeEvent,
+} from "./serve-log.js";
 import { MergeBroker } from "./broker.js";
 import { GitRepository } from "./git.js";
 import { policyFromBase, verifyProvenance } from "./verify.js";
@@ -761,23 +768,42 @@ program
   .action(
     async (options: { interval: string; publish?: boolean; eager?: boolean; once?: boolean }) => {
       let stopping = false;
-      process.once("SIGINT", () => {
+      const json = program.opts<{ json?: boolean }>().json ?? false;
+      let lastOutputAt = Date.now();
+      const say = (event: ServeEvent): void => {
+        const now = new Date();
+        const line = json ? serveEventJson(event, now) : formatServeEvent(event, now);
+        if (isErrorEvent(event)) console.error(line);
+        else console.log(line);
+        lastOutputAt = now.getTime();
+      };
+      const stop = (signal: string) => () => {
         stopping = true;
-      });
-      process.once("SIGTERM", () => {
-        stopping = true;
-      });
+        say({ kind: "stopped", signal });
+      };
+      process.once("SIGINT", stop("SIGINT"));
+      process.once("SIGTERM", stop("SIGTERM"));
+      if (!options.once) {
+        say({
+          kind: "started",
+          version: program.version() ?? "unknown",
+          repository: (await openBroker()).repo.root,
+          intervalSeconds: Number(options.interval),
+          publish: options.publish ?? false,
+          eager: options.eager ?? false,
+        });
+      }
       do {
         const broker = await openBroker();
         const reconciliation = await broker.syncPublishedBatches();
         for (const failure of reconciliation.errors) {
-          console.error(`Could not sync batch ${failure.batchId}: ${failure.error}`);
+          say({ kind: "sync-failed", batchId: failure.batchId, message: String(failure.error) });
         }
         for (const merged of reconciliation.synced) {
-          console.log(`Batch ${merged.id} merged.`);
+          say({ kind: "merged", batchId: merged.id });
         }
         for (const abandoned of reconciliation.closed) {
-          console.error(`Batch ${abandoned.id} was closed without merging; its tasks returned to the queue.`);
+          say({ kind: "closed", batchId: abandoned.id });
         }
         const plan = await broker.plan();
         const oldest = plan.selected.reduce(
@@ -787,13 +813,26 @@ program
         const aged = Date.now() - oldest >= broker.config.scheduling.maxWaitSeconds * 1_000;
         const full = plan.selected.length >= broker.config.scheduling.maxTasks;
         if (plan.selected.length > 0 && (options.eager || options.once || aged || full)) {
+          // Announced before the work, not after it. Validators can run for
+          // minutes, and the silence was the whole problem.
+          if (!options.once) say({ kind: "integrating", tasks: plan.selected.map((item) => item.id) });
           try {
             const result = await broker.integrate({ publish: options.publish ?? false });
-            output(result, batchHuman(result.batch));
+            if (options.once) output(result, batchHuman(result.batch));
+            else {
+              say({
+                kind: "integrated",
+                batchId: result.batch.id,
+                state: result.batch.status,
+                published: options.publish ?? false,
+              });
+            }
           } catch (error) {
             if (options.once) throw error;
-            console.error(`Integration attempt failed: ${error instanceof Error ? error.message : String(error)}`);
+            say({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
           }
+        } else if (!options.once && shouldReportIdle(lastOutputAt, Date.now())) {
+          say({ kind: "idle", waiting: plan.selected.length, quietSeconds: (Date.now() - lastOutputAt) / 1_000 });
         }
         if (options.once || stopping) break;
         await new Promise<void>((resolve) => setTimeout(resolve, Number(options.interval) * 1_000));

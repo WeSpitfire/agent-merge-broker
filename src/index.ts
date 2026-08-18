@@ -3,6 +3,13 @@ export { GitRepository, type WorktreeInfo } from "./git.js";
 export { StateStore, type LockStatus } from "./store.js";
 export { installHooks, prePushHook, uninstallHooks, type HookInstallation } from "./hooks.js";
 export {
+  describeServeEvent,
+  formatServeEvent,
+  serveEventJson,
+  shouldReportIdle,
+  type ServeEvent,
+} from "./serve-log.js";
+export {
   currentServicePlatform,
   installService,
   launchdPlist,

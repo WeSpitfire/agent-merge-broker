@@ -15,6 +15,15 @@
   credentials. On macOS the agent carries an explicit `PATH` — a launchd job inherits almost none,
   and without it the loop starts, cannot see `git`, and does nothing, which looks exactly like
   having nothing to do.
+- `serve` now reports what it is doing. It previously wrote only on a merge, a closure, an error, or
+  a *completed* integration — so a batch spending minutes in validators produced an empty log, and a
+  healthy busy service could not be told apart from a dead one. That was survivable while the loop
+  lived in a terminal and fatal once `install-service` moved it into the background, where the log
+  file is the only window on it. It now announces startup and its settings, announces a batch
+  *before* the work rather than after, reports idleness on a slower clock than the poll so a quiet
+  loop still proves it is alive without writing thousands of lines a day, and says it is stopping
+  instead of vanishing. Failures and batches returned to the queue go to stderr, progress to stdout,
+  and `--json` emits one object per line. `--once` keeps its original single-result output.
 
 ## 0.5.0 — 2026-08-17
 
