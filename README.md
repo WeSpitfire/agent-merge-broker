@@ -178,6 +178,22 @@ This sets `core.hooksPath`, so it refuses to run when the repository already has
 stop working, and `--uninstall` puts everything back. `MERGE_BROKER_ALLOW_DIRECT_PUSH=1` is the
 deliberate emergency bypass.
 
+### Publishing without a terminal
+
+`serve` polls for verified batches and publishes them, but only while somebody keeps it running in a
+terminal. When nobody does, a submitted task sits in `submitted` indefinitely — and to the agent
+that submitted it, waiting forever is indistinguishable from being rejected. Install the loop as a
+per-user service instead:
+
+```bash
+merge-broker install-service
+```
+
+This writes a launchd agent on macOS or a systemd user unit on Linux, one per repository, and starts
+it. It is deliberately a *user* service on both platforms: a system daemon would need root and would
+run as the wrong user for the repository's SSH and forge credentials. `--uninstall` removes it, and
+the service writes to `.git/merge-broker/serve.log`.
+
 A remote gate proves a pull request really is an unaltered broker batch. It reads only Git, so it
 can run before any dependency is installed and reject bypassed work for almost nothing:
 
@@ -365,6 +381,7 @@ the already-checked revision without repeating the whole suite.
 merge-broker init
 merge-broker doctor
 merge-broker install-hooks [--force] [--uninstall]
+merge-broker install-service [--uninstall] [--interval <seconds>] [--no-eager]
 merge-broker verify-provenance --branch <ref> --head <sha> --base <sha>
 merge-broker validate [--task <id>] [--scope focused|authoritative|all] [--base <ref>] [--cwd <path>]
 merge-broker task register|claim|extend|heartbeat|submit|retry|release|cancel|show

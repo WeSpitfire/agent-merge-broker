@@ -15,6 +15,11 @@ import {
 } from "./publisher.js";
 import { buildBatchProvenance, provenancePath } from "./provenance.js";
 import { installHooks, uninstallHooks, type HookInstallation } from "./hooks.js";
+import {
+  installService,
+  uninstallService,
+  type ServiceInstallation,
+} from "./service.js";
 import type {
   BatchRecord,
   BrokerConfig,
@@ -1354,6 +1359,52 @@ export class MergeBroker {
       repo: this.repo,
       branchPrefix: this.config.integration.branchPrefix,
       force: options.force ?? false,
+    });
+  }
+
+  /**
+   * Installs the integration loop as a per-user service.
+   *
+   * Without it `serve` only runs while a terminal is open, so a submitted task
+   * waits for a human to notice — indistinguishable, to the agent that
+   * submitted it, from the broker rejecting the work.
+   */
+  async installService(options: {
+    uninstall?: boolean;
+    intervalSeconds?: number;
+    eager?: boolean;
+    nodePath?: string;
+    cliPath?: string;
+    pathEntries?: string[];
+    logFile?: string;
+  } = {}): Promise<ServiceInstallation | { name: string; file: string; removed: boolean }> {
+    if (options.uninstall) return await uninstallService(this.repo.root);
+    const nodePath = options.nodePath ?? process.execPath;
+    const cliPath = options.cliPath ?? process.argv[1] ?? "";
+    if (!path.isAbsolute(cliPath)) {
+      throw new BrokerError(
+        "SERVICE_CLI_PATH",
+        "Could not determine an absolute path to the broker CLI. Pass --cli-path.",
+      );
+    }
+    return await installService({
+      repositoryRoot: this.repo.root,
+      nodePath,
+      cliPath,
+      intervalSeconds: options.intervalSeconds ?? 15,
+      eager: options.eager ?? true,
+      // node's own directory is included because a version-managed node is not
+      // on the default PATH a login-less agent receives.
+      pathEntries: options.pathEntries ?? [
+        path.dirname(nodePath),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+      ],
+      logFile: options.logFile ?? path.join(this.repo.root, ".git", "merge-broker", "serve.log"),
     });
   }
 

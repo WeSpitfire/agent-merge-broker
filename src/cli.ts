@@ -608,6 +608,44 @@ program
   });
 
 program
+  .command("install-service")
+  .description("run the integration loop as a background service, so submitted work publishes without a terminal")
+  .option("--uninstall", "remove the service")
+  .option("--interval <seconds>", "poll interval", "15")
+  .option("--no-eager", "wait for a full or aged batch instead of integrating immediately")
+  .option("--cli-path <path>", "absolute path to the broker CLI the service should run")
+  .option("--log-file <path>", "where the service writes its output")
+  .action(async (options: {
+    uninstall?: boolean;
+    interval: string;
+    eager: boolean;
+    cliPath?: string;
+    logFile?: string;
+  }) => {
+    const result = await (await openBroker()).installService({
+      uninstall: options.uninstall ?? false,
+      intervalSeconds: Number.parseInt(options.interval, 10),
+      eager: options.eager,
+      ...(options.cliPath ? { cliPath: options.cliPath } : {}),
+      ...(options.logFile ? { logFile: options.logFile } : {}),
+    });
+    if ("removed" in result) {
+      output(result, result.removed ? `Removed ${result.file}.` : "No service was installed.");
+      return;
+    }
+    output(
+      result,
+      [
+        `Installed ${result.name} at ${result.file}.`,
+        result.loaded
+          ? "The integration loop is running and will publish verified batches on its own."
+          : `Written, but the loader refused it: ${result.loaderMessage ?? "unknown error"}`,
+        `Output: ${result.logFile}`,
+      ].join("\n"),
+    );
+  });
+
+program
   .command("verify-provenance")
   .description("prove a pull request head is an unaltered broker batch, before installing anything")
   .requiredOption("--branch <ref>", "head branch of the pull request")

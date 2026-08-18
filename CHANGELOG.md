@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `merge-broker install-service` runs the integration loop as a per-user background service — a
+  launchd agent on macOS, a systemd user unit on Linux. `serve` already did the work, but only
+  while somebody kept a terminal open, so a submitted task could sit in `submitted` for as long as
+  nobody happened to look. An agent cannot tell that state apart from having its work rejected, and
+  the repository this was written against had a verified batch waiting with nothing driving it. The
+  service is scoped per repository, because two checkouts of one project sharing a label would
+  leave one of them silently unserved. It is a user service on both platforms: a system daemon
+  would need root and would publish as a user who holds neither the SSH key nor the forge
+  credentials. On macOS the agent carries an explicit `PATH` — a launchd job inherits almost none,
+  and without it the loop starts, cannot see `git`, and does nothing, which looks exactly like
+  having nothing to do.
+
 ## 0.5.0 — 2026-08-17
 
 Surviving a bad afternoon at the forge. A GitHub outage interrupted a publication midway, and the
