@@ -20,7 +20,7 @@ async function commit(repo: string, file: string, contents: string, message: str
 test("collects commits after a base without resubmitting work already upstream", async (context) => {
   const repo = await mkdtemp(path.join(tmpdir(), "merge-broker-git-"));
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   await git(repo, "init", "-b", "main");
   await git(repo, "config", "user.name", "Merge Broker Test");

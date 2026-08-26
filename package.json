@@ -56,7 +56,7 @@
   },
   "homepage": "https://github.com/WeSpitfire/agent-merge-broker#readme",
   "dependencies": {
-    "commander": "^15.0.0",
+    "commander": "^14.0.3",
     "picomatch": "^4.0.2"
   },
   "devDependencies": {

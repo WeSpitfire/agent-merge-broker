@@ -25,7 +25,7 @@ interface Fixture {
 async function integrated(context: TestContext): Promise<Fixture> {
   const repo = await mkdtemp(path.join(tmpdir(), "merge-broker-verify-"));
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   await git(repo, "init", "-b", "main");
   await git(repo, "config", "user.name", "Merge Broker Test");

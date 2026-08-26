@@ -43,7 +43,7 @@ async function commitFile(repo: string, branch: string, file: string, contents: 
 test("claims, submits, verifies, and transactionally batches independent commits", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
 
@@ -104,7 +104,7 @@ test("claims, submits, verifies, and transactionally batches independent commits
 test("recovers an abandoned integration transaction and cleans its retained Git artifacts", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
   const claim = await broker.claimTask({ id: "RECOVER", holder: "agent", expectedPaths: ["src/recover.ts"] });
@@ -155,14 +155,14 @@ test("recovers an abandoned integration transaction and cleans its retained Git 
 test("a missing signing key blocks integration without failing tasks and can be reprovisioned", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
   const claim = await broker.claimTask({ id: "SIGNING", holder: "agent", expectedPaths: ["src/signing.ts"] });
   const commit = await commitFile(repo, "signing-task", "src/signing.ts", "export const signed = true;\n");
   await broker.submitTask("SIGNING", [commit], claim.token);
   await rm(broker.store.provenanceSigningKeyFile);
-  await rm(broker.store.provenanceKeysDirectory, { recursive: true, force: true });
+  await rm(broker.store.provenanceKeysDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 
   await assert.rejects(
     broker.integrate(),
@@ -180,7 +180,7 @@ test("a missing signing key blocks integration without failing tasks and can be 
 test("attests the final net diff when a corrective commit cancels an earlier path", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
   const claim = await broker.claimTask({
@@ -218,7 +218,7 @@ test("attests the final net diff when a corrective commit cancels an earlier pat
 test("rejects overlapping active leases and out-of-scope receipts", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
   await assert.rejects(
@@ -250,7 +250,7 @@ test("rejects overlapping active leases and out-of-scope receipts", async (conte
 test("reclaims a lease whose one-time token is gone", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
   await broker.claimTask({ id: "ORPHANED", holder: "departed-agent", expectedPaths: ["src/orphan/**"] });
@@ -281,7 +281,7 @@ test("reclaims a lease whose one-time token is gone", async (context) => {
 test("returns tasks to the queue when authoritative validation fails", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
@@ -310,7 +310,7 @@ test("returns tasks to the queue when authoritative validation fails", async (co
 test("fails only the conflicting task and returns its batch-mates to the queue", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
 
@@ -360,7 +360,7 @@ test("fails only the conflicting task and returns its batch-mates to the queue",
 test("returns tasks to the queue when a published pull request is closed without merging", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
   const claim = await broker.claimTask({ id: "CLOSED", holder: "agent", expectedPaths: ["src/closed.ts"] });
@@ -384,7 +384,7 @@ test("returns tasks to the queue when a published pull request is closed without
 test("stops re-queueing a task once its attempt budget is exhausted", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const config = await loadConfig(repo);
   config.integration.maxAttempts = 2;
@@ -411,8 +411,8 @@ test("publishes one integration branch and reconciles it after merge", async (co
   const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
   const remote = path.join(remoteParent, "origin.git");
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
-    await rm(remoteParent, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   await runCommand("git", ["init", "--bare", remote], { cwd: repo });
   await git(repo, "remote", "add", "origin", remote);
@@ -446,7 +446,7 @@ test("publishes one integration branch and reconciles it after merge", async (co
 test("requeues tasks when a published batch closes without merging", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
   const claim = await broker.claimTask({
@@ -498,7 +498,7 @@ test(
       else process.env.MERGE_BROKER_SIGNING_KEY = previousSigningKey;
       if (previousSigningKeyFile === undefined) delete process.env.MERGE_BROKER_SIGNING_KEY_FILE;
       else process.env.MERGE_BROKER_SIGNING_KEY_FILE = previousSigningKeyFile;
-      await rm(repo, { recursive: true, force: true });
+      await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     });
 
     const config = await loadConfig(repo);
@@ -527,7 +527,7 @@ test(
 test("submits every linear commit made after the recorded base", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
   const claim = await broker.claimTask({
@@ -567,7 +567,7 @@ test("submits every linear commit made after the recorded base", async (context)
 test("holds the lease token for the worker instead of printing it once", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
 
@@ -600,7 +600,7 @@ test("holds the lease token for the worker instead of printing it once", async (
 test("retires completed records but keeps dependencies of active work", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
 
@@ -655,7 +655,7 @@ test("retires completed records but keeps dependencies of active work", async (c
 test("a failing dry run leaves the queue exactly as it found it", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
@@ -684,7 +684,7 @@ test("a failing dry run leaves the queue exactly as it found it", async (context
 test("a submitted task can be resubmitted until its batch is assembled", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
   const claim = await broker.claimTask({ id: "AMEND", holder: "agent", expectedPaths: ["src/amend/**"] });
@@ -721,7 +721,7 @@ test("a submitted task can be resubmitted until its batch is assembled", async (
 test("a failed task can widen its scope to fix what validation caught", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
@@ -746,7 +746,7 @@ test("a failed task can widen its scope to fix what validation caught", async (c
 test("validates a working tree against the configured validators before anything is submitted", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
@@ -784,7 +784,7 @@ test("validates a working tree against the configured validators before anything
 test("refuses to cut a second batch while the first has not merged", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const broker = await MergeBroker.open(repo);
 
@@ -829,8 +829,8 @@ test("a batch whose auto-merge fails is published, not lost", {
   const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
   const remote = path.join(remoteParent, "origin.git");
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
-    await rm(remoteParent, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   await runCommand("git", ["init", "--bare", remote], { cwd: repo });
   await git(repo, "remote", "add", "origin", remote);
@@ -858,7 +858,7 @@ test("a batch whose auto-merge fails is published, not lost", {
   context.after(async () => {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
-    await rm(bin, { recursive: true, force: true });
+    await rm(bin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   const config = await loadConfig(repo);
@@ -901,8 +901,8 @@ test("re-cuts a batch the base branch moved past", async (context) => {
   const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
   const remote = path.join(remoteParent, "origin.git");
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
-    await rm(remoteParent, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   await runCommand("git", ["init", "--bare", remote], { cwd: repo });
   await git(repo, "remote", "add", "origin", remote);

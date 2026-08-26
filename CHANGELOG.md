@@ -57,6 +57,8 @@
 - `batch refresh` now refuses to requeue or create a replacement when the superseded pull request
   could not be closed. The previous best-effort close could leave two remotely mergeable copies of
   the same tasks after a forge failure.
+- Runtime dependencies now honor the documented Node 20 minimum instead of installing a Commander
+  release whose engine declaration requires Node 22.
 
 ## 0.5.0 — 2026-08-17
 
