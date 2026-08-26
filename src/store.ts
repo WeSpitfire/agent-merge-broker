@@ -15,6 +15,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
+import {
+  generateProvenanceSigningIdentity,
+  provenanceKeyId,
+  publicKeyFromPrivate,
+  type ProvenanceSigningIdentity,
+} from "./provenance.js";
 import { STATE_VERSION, type AuditEvent, type BrokerState, type CommitReceipt } from "./types.js";
 
 /** Most recent audit bytes scanned by a read. Older events remain in the rotated segments. */
@@ -56,6 +62,8 @@ export class StateStore {
   readonly worktreesDirectory: string;
   readonly archiveDirectory: string;
   readonly tokensDirectory: string;
+  readonly provenanceSigningKeyFile: string;
+  readonly provenanceKeysDirectory: string;
   private readonly stateFile: string;
   private readonly auditFile: string;
   private readonly receiptsDirectory: string;
@@ -67,6 +75,8 @@ export class StateStore {
     this.worktreesDirectory = path.join(this.directory, "worktrees");
     this.archiveDirectory = path.join(this.directory, "archive");
     this.tokensDirectory = path.join(this.directory, "tokens");
+    this.provenanceSigningKeyFile = path.join(this.directory, "provenance-signing-key.pem");
+    this.provenanceKeysDirectory = path.join(this.directory, "provenance-keys");
     this.stateFile = path.join(this.directory, "state.json");
     this.auditFile = path.join(this.directory, "audit.jsonl");
     this.receiptsDirectory = path.join(this.directory, "receipts");
@@ -82,6 +92,7 @@ export class StateStore {
       mkdir(this.batchesDirectory, { recursive: true }),
       mkdir(this.archiveDirectory, { recursive: true }),
       mkdir(this.tokensDirectory, { recursive: true, mode: 0o700 }),
+      mkdir(this.provenanceKeysDirectory, { recursive: true, mode: 0o700 }),
     ]);
     if (!(await exists(this.stateFile))) {
       try {
@@ -177,6 +188,80 @@ export class StateStore {
 
   async deleteToken(taskId: string): Promise<void> {
     await rm(this.tokenPath(taskId), { force: true });
+  }
+
+  async readProvenanceSigningKey(trustedPublicKey?: string): Promise<string | undefined> {
+    if (trustedPublicKey) {
+      const keyId = provenanceKeyId(trustedPublicKey);
+      try {
+        return (await readFile(path.join(this.provenanceKeysDirectory, `${keyId}.pem`), "utf8")).trim() || undefined;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    try {
+      return (await readFile(this.provenanceSigningKeyFile, "utf8")).trim() || undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  /**
+   * Creates or imports the private half of the repository's provenance identity. It lives beside
+   * runtime state, never in the working tree; only its public half is committed as verification
+   * policy. Existing key material is reused unless rotation is explicit.
+   */
+  async provisionProvenanceSigningKey(options: {
+    privateKey?: string;
+    rotate?: boolean;
+  } = {}): Promise<Omit<ProvenanceSigningIdentity, "privateKey"> & { keyPath: string }> {
+    return await this.transaction(async () => {
+      const existing = await this.readProvenanceSigningKey();
+      if (existing && !options.rotate) {
+        if (options.privateKey) {
+          const existingId = provenanceKeyId(publicKeyFromPrivate(existing));
+          const suppliedId = provenanceKeyId(publicKeyFromPrivate(options.privateKey));
+          if (existingId !== suppliedId) {
+            throw new BrokerError(
+              "SIGNING_KEY_EXISTS",
+              `A different provenance key already exists at ${this.provenanceSigningKeyFile}. Pass rotate explicitly to replace it.`,
+              { existingKeyId: existingId, suppliedKeyId: suppliedId },
+            );
+          }
+        }
+        const publicKey = publicKeyFromPrivate(existing);
+        await this.writePrivateKey(path.join(this.provenanceKeysDirectory, `${provenanceKeyId(publicKey)}.pem`), existing);
+        return { publicKey, keyId: provenanceKeyId(publicKey), keyPath: this.provenanceSigningKeyFile };
+      }
+
+      const identity = options.privateKey
+        ? {
+            privateKey: options.privateKey,
+            publicKey: publicKeyFromPrivate(options.privateKey),
+            keyId: provenanceKeyId(publicKeyFromPrivate(options.privateKey)),
+          }
+        : generateProvenanceSigningIdentity();
+      // Keyed copies are retained across rotation. If a process stops between replacing the local
+      // current key and committing the new public-key policy, either policy can still find its
+      // matching private key rather than leaving integration bricked halfway through rotation.
+      await this.writePrivateKey(path.join(this.provenanceKeysDirectory, `${identity.keyId}.pem`), identity.privateKey);
+      await this.writePrivateKey(this.provenanceSigningKeyFile, identity.privateKey);
+      return {
+        publicKey: identity.publicKey,
+        keyId: identity.keyId,
+        keyPath: this.provenanceSigningKeyFile,
+      };
+    });
+  }
+
+  private async writePrivateKey(target: string, privateKey: string): Promise<void> {
+    await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    await chmod(path.dirname(target), 0o700).catch(() => undefined);
+    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(temporary, privateKey, { encoding: "utf8", mode: 0o600 });
+    await chmod(temporary, 0o600).catch(() => undefined);
+    await rename(temporary, target);
   }
 
   async writeBatchManifest(batchId: string, manifest: unknown): Promise<string> {

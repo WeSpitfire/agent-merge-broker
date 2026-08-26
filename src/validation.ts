@@ -29,7 +29,12 @@ function renderCommand(
  * cancel on that worker's behalf.
  */
 function validatorEnvironment(overrides: Record<string, string> | undefined): NodeJS.ProcessEnv {
-  const { MERGE_BROKER_TOKEN: _token, ...inherited } = process.env;
+  const {
+    MERGE_BROKER_TOKEN: _token,
+    MERGE_BROKER_SIGNING_KEY: _signingKey,
+    MERGE_BROKER_SIGNING_KEY_FILE: _signingKeyFile,
+    ...inherited
+  } = process.env;
   return { ...inherited, ...overrides };
 }
 

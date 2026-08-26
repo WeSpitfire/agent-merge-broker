@@ -56,6 +56,10 @@ export interface BrokerConfig {
     provenance?: {
       enabled: boolean;
       directory: string;
+      /** Require every retained batch manifest to carry a valid Ed25519 signature. */
+      requireSignature?: boolean;
+      /** Ed25519 public key trusted by remote verification. The private key never enters Git. */
+      publicKey?: string;
     };
   };
   validation: {
@@ -174,6 +178,11 @@ export interface BatchProvenance {
     durationMs: number;
   }>;
   createdAt: string;
+  signature?: {
+    algorithm: "ed25519";
+    keyId: string;
+    value: string;
+  };
 }
 
 export interface AuditEvent {
@@ -276,4 +285,14 @@ export interface PruneResult {
   cutoff: string;
   archivePath?: string;
   dryRun: boolean;
+}
+
+export interface RecoveryResult {
+  /** Running batches marked failed because no integration process still owned them. */
+  batches: string[];
+  /** Tasks returned to the submitted queue without spending their attempt budget. */
+  tasks: string[];
+  worktreesRemoved: string[];
+  branchesRemoved: string[];
+  cleanupWarnings: string[];
 }

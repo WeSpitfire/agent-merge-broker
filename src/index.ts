@@ -21,9 +21,19 @@ export {
   type ServiceInstallation,
   type ServiceOptions,
 } from "./service.js";
-export { defaultConfig, initializeConfig, loadConfig, validateConfig } from "./config.js";
+export { defaultConfig, initializeConfig, loadConfig, validateConfig, writeConfig } from "./config.js";
 export { scheduleTasks } from "./scheduler.js";
-export { buildBatchProvenance, provenancePath } from "./provenance.js";
+export {
+  buildBatchProvenance,
+  generateProvenanceSigningIdentity,
+  provenanceKeyId,
+  provenancePath,
+  publicKeyFromPrivate,
+  signBatchProvenance,
+  validateProvenancePublicKey,
+  verifyBatchProvenanceSignature,
+  type ProvenanceSigningIdentity,
+} from "./provenance.js";
 export {
   batchIdFromBranch,
   policyFromBase,

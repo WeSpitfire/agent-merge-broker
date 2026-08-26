@@ -14,7 +14,12 @@ The core depends on Git rather than a particular agent SDK. CLI JSON output and 
 4. The retained branch is created only after every configured validator succeeds.
 5. A task is `merged` only after reconciliation or an explicit operator completion.
 6. State changes are atomic and serialized across linked Git worktrees.
-7. The lease token itself is never persisted; only its SHA-256 digest is stored.
+7. Broker state persists only a lease-token digest; the optional local token vault is a separate
+   owner-readable convenience store and is never committed.
+8. When signature policy is enabled, every retained provenance manifest is signed by the repository
+   Ed25519 identity whose public key is committed on the protected base.
+9. The provenance commit is the immutable integration-branch head; stale batches are re-cut, never
+   updated with a merge commit after validation.
 
 ## Portable and runtime state
 
@@ -28,6 +33,9 @@ $(git rev-parse --git-common-dir)/merge-broker/
 ├── audit.jsonl
 ├── receipts/<task-id>.json
 ├── batches/<batch-id>.json
+├── tokens/<task-id>.token
+├── provenance-signing-key.pem
+├── provenance-keys/<key-id>.pem
 ├── state.lock/
 ├── integration.lock/
 ├── archive/
@@ -47,6 +55,11 @@ Audit reads are tolerant by design: they scan a bounded tail and skip records th
 ## Lock recovery
 
 A lock owner records its process ID, hostname, and creation time. A holder on this machine whose process is gone is provably abandoned and is reclaimed after a short grace period. A holder on another machine cannot be probed — the state directory is shared, process IDs are not — so it waits out the full stale window rather than risking two integrations at once. `unlock` exposes that same decision to an operator, and `--force` is the deliberate override for a holder that cannot be proven dead.
+
+The lock is not the transaction record. If a process stops after tasks move to `integrating`, the
+next process that safely acquires the integration lock marks the incomplete batch failed, returns its
+tasks to `submitted` without charging an attempt, and removes only broker-owned worktree and branch
+artifacts. `serve`, `integrate`, and the explicit `recover` command all use the same recovery path.
 
 ## Task lifecycle
 
@@ -97,7 +110,8 @@ For a selected batch the broker:
 5. Runs applicable focused validators after each task, in a fixed non-login shell.
 6. Runs all authoritative validators over the complete batch.
 7. Optionally squashes the batch while preserving task IDs in the message.
-8. Optionally commits a provenance manifest whose parent is the integrated task head.
+8. Optionally builds a provenance manifest, signs it when protected-base policy requires it, and
+   commits it with the integrated task head as its parent.
 9. Creates a uniquely named local branch at the resulting head.
 10. Removes the disposable worktree.
 11. Optionally pushes the branch and opens one GitHub PR.
@@ -112,11 +126,12 @@ Publication supports three modes:
 - `branch`: push one branch.
 - `pull-request`: push and invoke `gh pr create`.
 
-When provenance is enabled, the final generated commit records the base SHA,
-integrated parent, task receipts, paths, and completed broker validators. A
-remote workflow can validate this structure before dependency installation and
-then either trust broker-authoritative validation or run the single
-authoritative suite itself.
+When provenance is enabled, the final generated commit records the base SHA, integrated parent,
+task receipts, paths, and completed broker validators. New repositories also require its Ed25519
+signature, verified against the public key in protected-base configuration. The signature
+authenticates which broker identity created the record; it does not make the recorded validations
+semantically sufficient, so repositories still choose broker-authoritative checks or a required
+remote authoritative suite.
 
 PR reconciliation queries GitHub for merged state. Branch reconciliation fetches the configured base and checks that the batch head is an ancestor. Squash and rebase workflows may require the explicit `batch complete` escape hatch because the local batch head can disappear from final ancestry.
 
@@ -127,10 +142,10 @@ it re-derives what the broker must have done and rejects anything else. It uses 
 on any forge, in any language ecosystem, before dependencies are installed — which is what makes it
 cheap enough to require on every pull request.
 
-It is deliberately tolerant of one thing: the merges a forge creates when a protected base requires
-branches to be up to date. Such a merge is accepted only when its merged side is already contained
-in the base and it changed nothing the base did not; the manifest commit is then located behind it.
-Every other commit added to an integration branch fails verification.
+No commit may be added after the provenance commit. A former path-only allowance for forge
+base-update merges could not authenticate conflict-resolution contents in a path also changed by the
+base. A stale batch is instead closed, re-cut from the current base, revalidated, and re-signed with
+`batch refresh`.
 
 Squashed batches cannot be traced commit by commit, because squashing discards the cherry-pick
 trail. The manifest records which mode produced it so a verifier knows which guarantees apply.

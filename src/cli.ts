@@ -214,10 +214,32 @@ program
     output(
       result,
       [
-        "Merge Broker is ready.",
+        result.ok === false ? "Merge Broker needs attention." : "Merge Broker is ready.",
         `Repository: ${String(result.repository)}`,
         `State: ${String(result.stateDirectory)}`,
         ...warnings.map((warning) => `Warning: ${warning}`),
+      ].join("\n"),
+    );
+  });
+
+const provenance = program.command("provenance").description("configure authenticated batch provenance");
+
+provenance
+  .command("setup-signing")
+  .description("generate or import the Ed25519 identity used to sign batch manifests")
+  .option("--private-key <path>", "import an existing Ed25519 private key instead of generating one")
+  .option("--rotate", "replace the current repository signing identity")
+  .action(async (options: { privateKey?: string; rotate?: boolean }) => {
+    const result = await (await openBroker()).setupProvenanceSigning({
+      ...(options.privateKey ? { privateKeyFile: options.privateKey } : {}),
+      rotate: options.rotate ?? false,
+    });
+    output(
+      result,
+      [
+        `Authenticated provenance enabled with key ${result.keyId}.`,
+        `Private key: ${result.keyPath}`,
+        "Commit .merge-broker/config.json so remote verification trusts the public key.",
       ].join("\n"),
     );
   });
@@ -654,7 +676,7 @@ program
 
 program
   .command("verify-provenance")
-  .description("prove a pull request head is an unaltered broker batch, before installing anything")
+  .description("verify a batch's immutable structure and protected-base provenance signature")
   .requiredOption("--branch <ref>", "head branch of the pull request")
   .requiredOption("--head <sha>", "head commit of the pull request")
   .requiredOption("--base <sha>", "current tip of the target branch")
@@ -682,14 +704,19 @@ program
         branchPrefix: options.branchPrefix ?? policy.branchPrefix ?? "merge-broker/",
         provenanceDirectory:
           options.provenanceDirectory ?? policy.provenanceDirectory ?? ".merge-broker/attestations",
+        ...(policy.publicKey ? { publicKey: policy.publicKey } : {}),
+        requireSignature: policy.requireSignature ?? false,
       });
       output(
         result,
         [
-          `Verified broker batch ${result.batchId}.`,
+          `${result.authenticated ? "Authenticated" : "Structurally verified"} broker batch ${result.batchId}.`,
           `Tasks: ${result.taskIds.join(", ")}`,
           `Integrated head: ${result.parentSha}`,
           `Validations recorded: ${result.manifest.validations.length}`,
+          ...(result.authenticated
+            ? [`Signature key: ${result.signatureKeyId}`]
+            : ["Warning: no protected-base signature policy authenticated this manifest."]),
         ].join("\n"),
       );
     },
@@ -717,6 +744,25 @@ program
           : []),
         ...(result.archivePath ? [`Archive: ${result.archivePath}`] : []),
       ].join("\n"),
+    );
+  });
+
+program
+  .command("recover")
+  .description("recover tasks left integrating after a broker process stopped unexpectedly")
+  .action(async () => {
+    const result = await (await openBroker()).recoverAbandonedIntegrations();
+    output(
+      result,
+      result.batches.length > 0
+        ? [
+            `Recovered ${result.batches.length} abandoned batch(es).`,
+            `Requeued tasks: ${result.tasks.join(", ") || "none"}`,
+            ...(result.cleanupWarnings.length > 0
+              ? result.cleanupWarnings.map((warning) => `Cleanup warning: ${warning}`)
+              : []),
+          ].join("\n")
+        : "No abandoned integration transactions.",
     );
   });
 
@@ -792,6 +838,10 @@ program
           publish: options.publish ?? false,
           eager: options.eager ?? false,
         });
+      }
+      const recovery = await (await openBroker()).recoverAbandonedIntegrations();
+      if (!options.once && recovery.batches.length > 0) {
+        say({ kind: "recovered", batches: recovery.batches, tasks: recovery.tasks });
       }
       do {
         const broker = await openBroker();

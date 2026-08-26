@@ -20,6 +20,13 @@ test("announces that a batch is starting, not only that one finished", () => {
   assert.match(line, /agent\/a, agent\/b/);
 });
 
+test("reports abandoned integration recovery", () => {
+  assert.equal(
+    describeServeEvent({ kind: "recovered", batches: ["old-batch"], tasks: ["TASK-1", "TASK-2"] }),
+    "recovered 1 abandoned batch(es); requeued 2 task(s)",
+  );
+});
+
 test("every line carries a timestamp", () => {
   const line = formatServeEvent({ kind: "merged", batchId: "20260818T040141471Z-ff92fd" }, NOW);
   assert.ok(line.startsWith("2026-08-18T04:30:00.000Z "));

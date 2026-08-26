@@ -60,12 +60,16 @@ async function integrated(context: TestContext): Promise<Fixture> {
 }
 
 async function verify(fixture: Fixture, overrides: Partial<Fixture> = {}): Promise<unknown> {
+  const base = overrides.base ?? fixture.base;
+  const policy = await policyFromBase(fixture.repository, base);
   return await verifyProvenance({
     repo: fixture.repository,
     branch: overrides.branch ?? fixture.branch,
     headSha: overrides.head ?? fixture.head,
-    baseSha: overrides.base ?? fixture.base,
+    baseSha: base,
     baseBranch: "main",
+    ...(policy.publicKey ? { publicKey: policy.publicKey } : {}),
+    requireSignature: policy.requireSignature ?? false,
   });
 }
 
@@ -74,21 +78,17 @@ const rejected = (pattern: RegExp) => (error: unknown) =>
 
 test("accepts an unaltered integration branch", async (context) => {
   const fixture = await integrated(context);
-  const result = await verifyProvenance({
-    repo: fixture.repository,
-    branch: fixture.branch,
-    headSha: fixture.head,
-    baseSha: fixture.base,
-    baseBranch: "main",
-  });
-  assert.deepEqual((result as { taskIds: string[] }).taskIds, ["FEATURE"]);
+  const result = await verify(fixture) as { taskIds: string[]; authenticated: boolean };
+  assert.deepEqual(result.taskIds, ["FEATURE"]);
+  assert.equal(result.authenticated, true);
 
   // Policy is read from the base branch, not from the change under review.
-  assert.deepEqual(await policyFromBase(fixture.repository, fixture.base), {
-    baseBranch: "main",
-    branchPrefix: "merge-broker/",
-    provenanceDirectory: ".merge-broker/attestations",
-  });
+  const policy = await policyFromBase(fixture.repository, fixture.base);
+  assert.equal(policy.baseBranch, "main");
+  assert.equal(policy.branchPrefix, "merge-broker/");
+  assert.equal(policy.provenanceDirectory, ".merge-broker/attestations");
+  assert.equal(policy.requireSignature, true);
+  assert.match(policy.publicKey ?? "", /BEGIN PUBLIC KEY/u);
 });
 
 test("rejects a branch that never went through the broker", async (context) => {
@@ -123,7 +123,7 @@ test("rejects a change smuggled into the provenance commit itself", async (conte
   await assert.rejects(verify(fixture, { head }), rejected(/must change only its provenance manifest/u));
 });
 
-test("rejects a tampered manifest", async (context) => {
+test("rejects a tampered signed manifest", async (context) => {
   const fixture = await integrated(context);
   await git(fixture.repo, "switch", fixture.branch);
   const manifestPath = (await git(fixture.repo, "show", "--name-only", "--format=", "HEAD")).trim();
@@ -138,10 +138,10 @@ test("rejects a tampered manifest", async (context) => {
   const head = await git(fixture.repo, "rev-parse", "HEAD");
   await git(fixture.repo, "switch", "main");
 
-  await assert.rejects(verify(fixture, { head }), rejected(/paths do not match the integrated diff/u));
+  await assert.rejects(verify(fixture, { head }), rejected(/signature is invalid/u));
 });
 
-test("accepts a base-branch update merge but not a smuggled one", async (context) => {
+test("rejects every base-branch update merge and requires a re-cut", async (context) => {
   const fixture = await integrated(context);
 
   // What GitHub creates when a protected base requires branches to be up to date.
@@ -154,8 +154,10 @@ test("accepts a base-branch update merge but not a smuggled one", async (context
   const updatedHead = await git(fixture.repo, "rev-parse", "HEAD");
   await git(fixture.repo, "switch", "main");
 
-  const result = await verify(fixture, { head: updatedHead, base: movedBase });
-  assert.deepEqual((result as { taskIds: string[] }).taskIds, ["FEATURE"]);
+  await assert.rejects(
+    verify(fixture, { head: updatedHead, base: movedBase }),
+    rejected(/No merge may be added.*batch refresh/u),
+  );
 
   // A merge of anything that is not already in the base branch is not a branch update.
   await git(fixture.repo, "switch", "-c", "rogue", movedBase);
@@ -168,10 +170,87 @@ test("accepts a base-branch update merge but not a smuggled one", async (context
   const smuggledHead = await git(fixture.repo, "rev-parse", "HEAD");
   await git(fixture.repo, "switch", "main");
 
-  await assert.rejects(
-    verify(fixture, { head: smuggledHead, base: movedBase }),
-    rejected(/which is not part of/u),
+  await assert.rejects(verify(fixture, { head: smuggledHead, base: movedBase }), rejected(/No merge may be added/u));
+});
+
+test("rejects malicious conflict resolution in a path also changed by the base", async (context) => {
+  const fixture = await integrated(context);
+
+  // This was the dangerous edge case in the former path-only update-merge allowance: because both
+  // sides changed src/feature.ts, arbitrary conflict resolution in that same path looked explained.
+  await mkdir(path.join(fixture.repo, "src"), { recursive: true });
+  await writeFile(path.join(fixture.repo, "src", "feature.ts"), "export const base = true;\n", "utf8");
+  await git(fixture.repo, "add", "src/feature.ts");
+  await git(fixture.repo, "commit", "-m", "base changes the broker path too");
+  const movedBase = await git(fixture.repo, "rev-parse", "main");
+
+  await git(fixture.repo, "switch", fixture.branch);
+  await runCommand("git", ["merge", "--no-edit", "main"], { cwd: fixture.repo, allowFailure: true });
+  await writeFile(
+    path.join(fixture.repo, "src", "feature.ts"),
+    "export const backdoor = 'conflict resolution';\n",
+    "utf8",
   );
+  await git(fixture.repo, "add", "src/feature.ts");
+  await git(fixture.repo, "commit", "--no-edit");
+  const maliciousHead = await git(fixture.repo, "rev-parse", "HEAD");
+  await git(fixture.repo, "switch", "main");
+
+  await assert.rejects(
+    verify(fixture, { head: maliciousHead, base: movedBase }),
+    rejected(/No merge may be added.*batch refresh/u),
+  );
+});
+
+test("rejects an unsigned manifest when protected-base policy requires authentication", async (context) => {
+  const fixture = await integrated(context);
+  await git(fixture.repo, "switch", fixture.branch);
+  const manifestPath = (await git(fixture.repo, "show", "--name-only", "--format=", "HEAD")).trim();
+  const manifest = JSON.parse(await readFile(path.join(fixture.repo, manifestPath), "utf8")) as {
+    signature?: unknown;
+  };
+  delete manifest.signature;
+  await writeFile(path.join(fixture.repo, manifestPath), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await git(fixture.repo, "add", manifestPath);
+  await git(fixture.repo, "commit", "--amend", "--no-edit");
+  const unsignedHead = await git(fixture.repo, "rev-parse", "HEAD");
+  await git(fixture.repo, "switch", "main");
+
+  await assert.rejects(
+    verify(fixture, { head: unsignedHead }),
+    rejected(/requires an authenticated provenance signature/u),
+  );
+});
+
+test("labels a deliberately unsigned legacy batch as structural-only", async (context) => {
+  const fixture = await integrated(context);
+
+  // Protected-base policy explicitly opts into the legacy mode.
+  const configPath = path.join(fixture.repo, ".merge-broker", "config.json");
+  const config = JSON.parse(await readFile(configPath, "utf8")) as {
+    integration: { provenance: { requireSignature?: boolean; publicKey?: string } };
+  };
+  config.integration.provenance.requireSignature = false;
+  delete config.integration.provenance.publicKey;
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await git(fixture.repo, "add", ".merge-broker/config.json");
+  await git(fixture.repo, "commit", "-m", "explicitly allow legacy unsigned provenance");
+  const legacyBase = await git(fixture.repo, "rev-parse", "main");
+
+  await git(fixture.repo, "switch", fixture.branch);
+  const manifestPath = (await git(fixture.repo, "show", "--name-only", "--format=", "HEAD")).trim();
+  const manifest = JSON.parse(await readFile(path.join(fixture.repo, manifestPath), "utf8")) as {
+    signature?: unknown;
+  };
+  delete manifest.signature;
+  await writeFile(path.join(fixture.repo, manifestPath), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await git(fixture.repo, "add", manifestPath);
+  await git(fixture.repo, "commit", "--amend", "--no-edit");
+  const legacyHead = await git(fixture.repo, "rev-parse", "HEAD");
+  await git(fixture.repo, "switch", "main");
+
+  const result = await verify(fixture, { base: legacyBase, head: legacyHead }) as { authenticated: boolean };
+  assert.equal(result.authenticated, false);
 });
 
 test("rejects a batch assembled on history the base branch does not contain", async (context) => {
@@ -184,5 +263,8 @@ test("rejects a batch assembled on history the base branch does not contain", as
   const unrelatedBase = await git(fixture.repo, "rev-parse", "HEAD");
   await git(fixture.repo, "switch", "main");
 
-  await assert.rejects(verify(fixture, { base: unrelatedBase }), rejected(/Re-integrate the batch/u));
+  await assert.rejects(
+    verify(fixture, { base: unrelatedBase }),
+    rejected(/Re-integrate the batch|does not trust a public key/u),
+  );
 });

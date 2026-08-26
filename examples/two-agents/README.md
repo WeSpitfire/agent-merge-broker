@@ -25,8 +25,9 @@ then runs two workers in their own linked worktrees:
 4. **The broker decides what can go together.** `plan` selects a non-conflicting batch;
    `integrate` cherry-picks it into a disposable worktree, runs the repository's validators, and
    retains one branch only if they pass.
-5. **The result carries its own provenance.** The final commit records the base, the integrated
-   parent, every task receipt, and the validators that ran.
+5. **The result carries authenticated provenance.** The final commit records the base, integrated
+   parent, every task receipt, and validators, then signs that manifest with the private key kept in
+   Git runtime state.
 
 Four commits from two agents become one validated branch.
 

@@ -23,6 +23,7 @@ export type ServeEvent =
       eager: boolean;
     }
   | { kind: "integrating"; tasks: string[] }
+  | { kind: "recovered"; batches: string[]; tasks: string[] }
   | { kind: "integrated"; batchId: string; state: string; published: boolean }
   | { kind: "merged"; batchId: string }
   | { kind: "closed"; batchId: string }
@@ -46,6 +47,8 @@ export function describeServeEvent(event: ServeEvent): string {
     case "integrating":
       // The line whose absence made a working service look dead.
       return `integrating ${event.tasks.length} task(s): ${event.tasks.join(", ")}`;
+    case "recovered":
+      return `recovered ${event.batches.length} abandoned batch(es); requeued ${event.tasks.length} task(s)`;
     case "integrated":
       return `batch ${event.batchId} ${event.state}${event.published ? " and published" : ""}`;
     case "merged":

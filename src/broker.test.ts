@@ -79,10 +79,15 @@ test("claims, submits, verifies, and transactionally batches independent commits
     batchId: string;
     integratedHeadSha: string;
     taskIds: string[];
+    signature?: { algorithm: string; keyId: string; value: string };
   };
   assert.equal(provenance.batchId, integrated.batch.id);
   assert.equal(provenance.integratedHeadSha, await git(repo, "rev-parse", `${integrated.batch.branchName}^`));
   assert.deepEqual(provenance.taskIds, ["TASK-A", "TASK-B"]);
+  assert.equal(provenance.signature?.algorithm, "ed25519");
+  assert.match(provenance.signature?.keyId ?? "", /^[0-9a-f]{64}$/u);
+  assert.match(provenance.signature?.value ?? "", /^[A-Za-z0-9_-]+$/u);
+  assert.equal((await stat(broker.store.provenanceSigningKeyFile)).mode & 0o777, 0o600);
 
   await broker.markBatchMerged(integrated.batch.id);
   assert.equal((await broker.task("TASK-A")).status, "merged");
@@ -90,6 +95,82 @@ test("claims, submits, verifies, and transactionally batches independent commits
   const audit = await broker.store.readAudit();
   assert.ok(audit.some((event) => event.event === "batch.prepared"));
   assert.ok(audit.some((event) => event.event === "batch.merged"));
+});
+
+test("recovers an abandoned integration transaction and cleans its retained Git artifacts", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "RECOVER", holder: "agent", expectedPaths: ["src/recover.ts"] });
+  const commit = await commitFile(repo, "recover-task", "src/recover.ts", "export const recovered = true;\n");
+  await broker.submitTask("RECOVER", [commit], claim.token);
+
+  const id = "abandoned-test";
+  const baseSha = await git(repo, "rev-parse", "main");
+  const worktree = path.join(broker.store.worktreesDirectory, id);
+  const branchName = `merge-broker/${id}`;
+  await broker.repo.addDetachedWorktree(worktree, baseSha);
+  await broker.repo.createBranch(branchName, baseSha);
+  await broker.store.transaction((state) => {
+    const task = state.tasks.RECOVER;
+    assert.ok(task);
+    task.status = "integrating";
+    task.batchId = id;
+    state.batches[id] = {
+      id,
+      status: "running",
+      taskIds: [task.id],
+      baseBranch: "main",
+      baseSha,
+      worktree,
+      validations: [],
+      createdAt: new Date().toISOString(),
+    };
+  });
+
+  const recovered = await broker.recoverAbandonedIntegrations();
+  assert.deepEqual(recovered.batches, [id]);
+  assert.deepEqual(recovered.tasks, ["RECOVER"]);
+  assert.deepEqual(recovered.worktreesRemoved, [worktree]);
+  assert.deepEqual(recovered.branchesRemoved, [branchName]);
+  assert.equal(recovered.cleanupWarnings.length, 0);
+  assert.equal((await broker.task("RECOVER")).status, "submitted");
+  assert.equal((await broker.state()).batches[id]?.status, "failed");
+  assert.notEqual((await broker.repo.git(["show-ref", "--verify", `refs/heads/${branchName}`], repo, true)).exitCode, 0);
+  assert.equal((await broker.repo.listWorktrees()).some((item) => path.resolve(item.path) === worktree), false);
+  assert.ok((await broker.store.readAudit()).some((event) => event.event === "batch.recovered"));
+
+  // Recovery does not consume a task attempt; the same receipt can be integrated immediately.
+  const integrated = await broker.integrate();
+  assert.equal(integrated.batch.status, "prepared");
+  assert.equal((await broker.task("RECOVER")).attempts ?? 0, 0);
+});
+
+test("a missing signing key blocks integration without failing tasks and can be reprovisioned", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "SIGNING", holder: "agent", expectedPaths: ["src/signing.ts"] });
+  const commit = await commitFile(repo, "signing-task", "src/signing.ts", "export const signed = true;\n");
+  await broker.submitTask("SIGNING", [commit], claim.token);
+  await rm(broker.store.provenanceSigningKeyFile);
+  await rm(broker.store.provenanceKeysDirectory, { recursive: true, force: true });
+
+  await assert.rejects(
+    broker.integrate(),
+    (error: unknown) => error instanceof BrokerError && error.code === "SIGNING_KEY_REQUIRED",
+  );
+  assert.equal((await broker.task("SIGNING")).status, "submitted");
+  assert.equal((await broker.doctor()).ok, false);
+
+  const identity = await broker.setupProvenanceSigning();
+  assert.match(identity.keyId, /^[0-9a-f]{64}$/u);
+  assert.equal((await broker.doctor()).ok, true);
+  assert.equal((await broker.integrate()).batch.status, "prepared");
 });
 
 test("attests the final net diff when a corrective commit cancels an earlier path", async (context) => {
@@ -389,7 +470,7 @@ test("requeues tasks when a published batch closes without merging", async (cont
 });
 
 test(
-  "runs validators in a fixed shell and keeps the lease token out of them",
+  "runs validators in a fixed shell and keeps worker and signing credentials out of them",
   { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     const repo = await createRepository();
@@ -397,20 +478,30 @@ test(
     // broke integration outright and personal dotfiles could reshape the result.
     const previousShell = process.env.SHELL;
     const previousToken = process.env.MERGE_BROKER_TOKEN;
+    const previousSigningKey = process.env.MERGE_BROKER_SIGNING_KEY;
+    const previousSigningKeyFile = process.env.MERGE_BROKER_SIGNING_KEY_FILE;
+    const initializedBroker = await MergeBroker.open(repo);
     process.env.SHELL = "/nonexistent/shell-that-cannot-run";
     process.env.MERGE_BROKER_TOKEN = "lease-token-that-must-not-leak";
+    process.env.MERGE_BROKER_SIGNING_KEY = await readFile(initializedBroker.store.provenanceSigningKeyFile, "utf8");
+    process.env.MERGE_BROKER_SIGNING_KEY_FILE = initializedBroker.store.provenanceSigningKeyFile;
     context.after(async () => {
       if (previousShell === undefined) delete process.env.SHELL;
       else process.env.SHELL = previousShell;
       if (previousToken === undefined) delete process.env.MERGE_BROKER_TOKEN;
       else process.env.MERGE_BROKER_TOKEN = previousToken;
+      if (previousSigningKey === undefined) delete process.env.MERGE_BROKER_SIGNING_KEY;
+      else process.env.MERGE_BROKER_SIGNING_KEY = previousSigningKey;
+      if (previousSigningKeyFile === undefined) delete process.env.MERGE_BROKER_SIGNING_KEY_FILE;
+      else process.env.MERGE_BROKER_SIGNING_KEY_FILE = previousSigningKeyFile;
       await rm(repo, { recursive: true, force: true });
     });
 
     const config = await loadConfig(repo);
     config.validation.authoritative.push({
-      name: "lease token is not visible to validators",
-      command: 'test -z "$MERGE_BROKER_TOKEN"',
+      name: "broker credentials are not visible to validators",
+      command:
+        'test -z "$MERGE_BROKER_TOKEN" && test -z "$MERGE_BROKER_SIGNING_KEY" && test -z "$MERGE_BROKER_SIGNING_KEY_FILE"',
       timeoutSeconds: 30,
     });
     await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -786,6 +877,18 @@ test("a batch whose auto-merge fails is published, not lost", {
   assert.equal(published.pullRequestUrl, "https://forge.invalid/owner/repo/pull/7");
   assert.equal(published.autoMergeEnabled, false);
   assert.match(published.publishWarning ?? "", /forge is unavailable|auto-merge/iu);
+  assert.equal((await broker.task("PARTIAL")).status, "published");
+
+  // Refresh must not create a replacement while the superseded pull request is still mergeable.
+  await writeFile(path.join(repo, "BASE-MOVED.md"), "new base\n", "utf8");
+  await git(repo, "add", "BASE-MOVED.md");
+  await git(repo, "commit", "-m", "move base after publication");
+  await git(repo, "push", "origin", "main");
+  await assert.rejects(
+    broker.refreshBatch(integrated.batch.id),
+    (error: unknown) => error instanceof BrokerError && error.code === "PULL_REQUEST_CLOSE_FAILED",
+  );
+  assert.equal((await broker.state()).batches[integrated.batch.id]?.status, "published");
   assert.equal((await broker.task("PARTIAL")).status, "published");
 });
 

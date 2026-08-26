@@ -82,3 +82,19 @@ test("rejects provenance directories that escape the repository", () => {
     (error: unknown) => error instanceof BrokerError && error.code === "INVALID_CONFIG",
   );
 });
+
+test("requires an Ed25519 public key when signed provenance is mandatory", () => {
+  const config = defaultConfig();
+  if (!config.integration.provenance) throw new Error("default provenance missing");
+  config.integration.provenance.requireSignature = true;
+  assert.throws(
+    () => validateConfig(config),
+    (error: unknown) => error instanceof BrokerError && /publicKey/u.test(error.message),
+  );
+
+  config.integration.provenance.publicKey = "not a public key";
+  assert.throws(
+    () => validateConfig(config),
+    (error: unknown) => error instanceof BrokerError && /Ed25519/u.test(error.message),
+  );
+});

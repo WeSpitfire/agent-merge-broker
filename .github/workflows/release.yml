@@ -17,12 +17,12 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
-      # Trusted publishing needs a newer npm than the one bundled with Node 22. Without this the
-      # publish falls back to looking for a token and fails with a 401 that does not mention OIDC.
-      - run: npm install -g npm@latest
+      # Trusted publishing needs a recent npm. Pin it so a release cannot change underneath us
+      # between verification and publication.
+      - run: npm install -g npm@12.0.2
       - run: npm ci
       - run: npm run verify
       - name: Verify tag matches package version

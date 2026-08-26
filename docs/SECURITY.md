@@ -21,6 +21,14 @@ Do not run the broker automatically on untrusted fork configuration. A safe forg
 - Do not place tokens in commits, task titles, validator commands, or logs.
 - Git and GitHub credentials remain owned by the host's normal credential helpers.
 - Validator stdout and stderr are retained locally and may contain accidental secrets. Output is capped, not redacted.
+- New repositories receive an Ed25519 provenance private key under Git's common runtime directory,
+  mode 0600. Only the public key is committed. `MERGE_BROKER_SIGNING_KEY` and
+  `MERGE_BROKER_SIGNING_KEY_FILE` support supervised hosts and are removed from validator
+  environments. Back up the private key as an operational credential; losing it blocks signed
+  integration until the public-key policy is deliberately rotated.
+- Rotation retains mode-0600 private keys by public-key ID. This makes a crash between local key
+  rotation and committing new public-key policy recoverable and lets in-flight protected-base policy
+  select its matching key. Retire old keys deliberately only after no supported base trusts them.
 
 Runtime state is stored inside Git's common directory and inherits its filesystem permissions. Anyone who can modify the repository's Git directory can modify broker state or audit records. The audit stream is append-only by convention, not cryptographically tamper-evident.
 
@@ -31,6 +39,11 @@ The broker does not force-push, reset the user's base worktree, merge into the b
 Failed integration worktrees are removed by default. Enabling `keepFailedWorktrees` can retain source content, generated artifacts, and secrets written by validators; operators must clean these worktrees deliberately after diagnosis.
 
 Commit receipts are immutable IDs, but their objects can disappear after aggressive source-repository garbage collection if no ref retains them. Integrate or otherwise retain submitted commits before pruning unreachable branches.
+
+The final provenance commit is immutable. Do not use a forge's update-branch button on an integration
+branch. Even when the merged side is the real base, conflict resolution can introduce content that a
+path-only check cannot distinguish from the base change. Close and re-cut stale work with `batch
+refresh`, which reruns validation and produces a new signed manifest.
 
 ## Command construction
 
@@ -46,12 +59,24 @@ Task and batch metadata must still be treated as untrusted display text by exter
 any worker can bypass it. It exists to make the intended path the easy one and to catch mistakes
 early.
 
-`verify-provenance` is the enforceable boundary, and only when the forge requires it on a protected
-branch. It reads verification policy from the configuration committed on the base branch, because
-the checked-out tree belongs to the change being judged. It proves that a head is an unaltered
-broker batch; it does not prove that the batch's contents are good, which is what the repository's
-own validation is for.
+`verify-provenance` is an enforceable boundary only when all of the following are true:
+
+- the forge requires it on the protected base branch;
+- protected-base policy sets `integration.provenance.requireSignature` and trusts an Ed25519 public
+  key;
+- the corresponding private key and integration push credentials are unavailable to untrusted
+  workers; and
+- the repository requires either broker-authoritative validation or its own authoritative CI suite.
+
+The verifier reads policy from the protected base, never the change being judged. A valid signature
+authenticates the broker identity and the immutable manifest contents. It does not prove those
+contents are good, and it cannot protect a key exposed to the same worker it is meant to constrain.
+Legacy unsigned manifests receive structural verification only and must not be treated as proof that
+the broker created them.
 
 ## Reporting vulnerabilities
 
-Before a public security address is established, report vulnerabilities privately to the repository owner. Do not open a public issue containing exploitable details or credentials.
+Use [GitHub private vulnerability reporting](https://github.com/WeSpitfire/agent-merge-broker/security/advisories/new)
+to report vulnerabilities to the maintainers. Do not open a public issue containing exploitable
+details or credentials. If the private-reporting form is unavailable, contact the repository owner
+through a private channel and disclose only enough publicly to arrange secure follow-up.

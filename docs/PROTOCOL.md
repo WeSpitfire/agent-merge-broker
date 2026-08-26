@@ -24,7 +24,9 @@ merge-broker --json task claim TASK-123 \
   --priority 20
 ```
 
-The response contains a one-time `token`. Adapters should hold it in process memory or an appropriate secret store. The persisted state contains only a digest.
+The response contains a lease `token`. The state record contains only its digest. By default the
+broker keeps a separate mode-0600 copy in its runtime token vault so local adapters do not invent a
+working-tree credential store; `--no-store-token` leaves custody entirely to the adapter.
 
 ## Heartbeat
 
@@ -70,9 +72,16 @@ task IDs, submitted commits, changed paths, dependencies, and any broker-side
 validators. It conforms to
 [`../schemas/provenance.schema.json`](../schemas/provenance.schema.json).
 
+When protected-base policy requires signatures, the manifest carries an Ed25519 signature over a
+canonical representation of every other manifest field. The trusted public key comes from the base
+configuration; the private key remains in broker runtime state or an operator secret channel. The
+signing payload is UTF-8 JSON with object keys sorted lexically at every depth, array order retained,
+no insignificant whitespace, and the root `signature` field omitted.
+
 Remote policy should verify the branch prefix, manifest path, batch ID, base
-SHA, final-commit parent, and one-file provenance commit before spending time
-on dependency installation or authoritative CI.
+SHA, final-commit parent, one-file provenance commit, and protected-base signature before spending
+time on dependency installation or authoritative CI. The provenance commit must be the branch head;
+post-assembly update merges are not part of the protocol.
 
 ## Path semantics
 
@@ -106,7 +115,8 @@ Adapters should primarily branch on these codes:
 - `VALIDATION_FAILED`
 - `EMPTY_BATCH`
 - `LOCK_TIMEOUT`, `LOCK_HELD`
-- `PUBLISH_DISABLED`, `PUBLISH_FAILED`, `AUTO_MERGE_FAILED`
+- `SIGNING_KEY_REQUIRED`, `SIGNING_KEY_MISMATCH`, `SIGNING_KEY_EXISTS`
+- `PUBLISH_DISABLED`, `PUBLISH_FAILED`, `AUTO_MERGE_FAILED`, `PULL_REQUEST_CLOSE_FAILED`
 - `PROVENANCE_INVALID`
 - `HOOKS_PATH_CONFLICT`
 

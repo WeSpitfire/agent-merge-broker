@@ -87,8 +87,24 @@
           "required": ["enabled", "directory"],
           "properties": {
             "enabled": { "type": "boolean" },
-            "directory": { "type": "string", "minLength": 1 }
-          }
+            "directory": { "type": "string", "minLength": 1 },
+            "requireSignature": {
+              "type": "boolean",
+              "default": false,
+              "description": "Require manifests signed by the Ed25519 public key committed on the protected base."
+            },
+            "publicKey": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Trusted Ed25519 public key in PEM form. The private key stays in Git runtime state."
+            }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "requireSignature": { "const": true } }, "required": ["requireSignature"] },
+              "then": { "required": ["publicKey"], "properties": { "enabled": { "const": true } } }
+            }
+          ]
         }
       }
     },

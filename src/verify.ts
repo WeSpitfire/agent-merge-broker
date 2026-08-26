@@ -1,9 +1,11 @@
 import { BrokerError } from "./errors.js";
-import { provenancePath } from "./provenance.js";
+import {
+  provenanceKeyId,
+  provenancePath,
+  verifyBatchProvenanceSignature,
+} from "./provenance.js";
 import type { GitRepository } from "./git.js";
 import type { BatchProvenance, BrokerConfig } from "./types.js";
-
-const MAX_BRANCH_UPDATE_MERGES = 50;
 
 export interface VerifyProvenanceOptions {
   repo: GitRepository;
@@ -15,6 +17,9 @@ export interface VerifyProvenanceOptions {
   baseBranch: string;
   branchPrefix?: string;
   provenanceDirectory?: string;
+  /** Public key read from protected-base policy, never from the pull request. */
+  publicKey?: string;
+  requireSignature?: boolean;
 }
 
 export interface ProvenanceVerification {
@@ -25,6 +30,9 @@ export interface ProvenanceVerification {
   provenanceSha: string;
   parentSha: string;
   taskIds: string[];
+  /** True only when the manifest is signed by the key trusted on the protected base. */
+  authenticated: boolean;
+  signatureKeyId?: string;
 }
 
 function invalid(message: string, details?: Record<string, unknown>): BrokerError {
@@ -39,7 +47,13 @@ function invalid(message: string, details?: Record<string, unknown>): BrokerErro
 export async function policyFromBase(
   repo: GitRepository,
   baseSha: string,
-): Promise<{ baseBranch?: string; branchPrefix?: string; provenanceDirectory?: string }> {
+): Promise<{
+  baseBranch?: string;
+  branchPrefix?: string;
+  provenanceDirectory?: string;
+  publicKey?: string;
+  requireSignature?: boolean;
+}> {
   const shown = await repo.git(["show", `${baseSha}:.merge-broker/config.json`], repo.root, true);
   if (shown.exitCode !== 0) return {};
   try {
@@ -51,6 +65,12 @@ export async function policyFromBase(
         : {}),
       ...(typeof config.integration?.provenance?.directory === "string"
         ? { provenanceDirectory: config.integration.provenance.directory }
+        : {}),
+      ...(typeof config.integration?.provenance?.publicKey === "string"
+        ? { publicKey: config.integration.provenance.publicKey }
+        : {}),
+      ...(typeof config.integration?.provenance?.requireSignature === "boolean"
+        ? { requireSignature: config.integration.provenance.requireSignature }
         : {}),
     };
   } catch {
@@ -77,43 +97,103 @@ async function isAncestor(repo: GitRepository, ancestor: string, descendant: str
   return result.exitCode === 0;
 }
 
-/**
- * Finds the commit that introduced the manifest, stepping over the merges GitHub creates when a
- * protected base requires branches to be up to date. Such a merge is accepted only when its merged
- * side is already contained in the base and it changed nothing the base did not: anything else is a
- * commit somebody pushed onto the branch after the broker assembled it.
- */
-async function findProvenanceCommit(repo: GitRepository, headSha: string, baseSha: string): Promise<string> {
-  let current = headSha;
-  for (let depth = 0; depth < MAX_BRANCH_UPDATE_MERGES; depth += 1) {
-    const listed = await repo.git(["rev-list", "--parents", "-n", "1", current]);
-    const parents = listed.stdout.trim().split(/\s+/u).slice(1);
-    if (parents.length < 2) return current;
-    if (parents.length > 2) throw invalid(`Octopus merge ${current} is not a recognised branch update.`);
-    const [firstParent, secondParent] = parents as [string, string];
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
 
-    if (!(await isAncestor(repo, secondParent, baseSha))) {
-      throw invalid(
-        `Merge ${current} brings in ${secondParent}, which is not part of ${baseSha}. Only base-branch updates may be added to an integration branch.`,
-      );
-    }
-    const conflictEdits = (await repo.git(["diff", "--name-only", firstParent, current])).stdout
-      .split("\n")
-      .filter(Boolean);
-    const baseChanges = new Set(
-      (await repo.git(["diff", "--name-only", `${firstParent}...${secondParent}`])).stdout
-        .split("\n")
-        .filter(Boolean),
-    );
-    const unexplained = conflictEdits.filter((file) => !baseChanges.has(file));
-    if (unexplained.length > 0) {
-      throw invalid(`Branch update ${current} changed files the base branch did not: ${unexplained.join(", ")}.`, {
-        files: unexplained,
-      });
-    }
-    current = firstParent;
+function assertAllowedRecordKeys(value: object, allowed: string[], label: string): void {
+  const unexpected = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unexpected.length > 0) throw invalid(`${label} contains unknown fields: ${unexpected.join(", ")}.`);
+}
+
+function assertManifestShape(value: unknown): asserts value is BatchProvenance {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid("Manifest must be a JSON object.");
+  const manifest = value as Partial<BatchProvenance> & Record<string, unknown>;
+  const allowed = new Set([
+    "version", "generator", "batchId", "baseBranch", "history", "baseSha", "integratedHeadSha",
+    "taskIds", "tasks", "validations", "createdAt", "signature",
+  ]);
+  const unexpected = Object.keys(manifest).filter((key) => !allowed.has(key));
+  if (unexpected.length > 0) throw invalid(`Manifest contains unknown fields: ${unexpected.join(", ")}.`);
+  if (manifest.version !== 1 || manifest.generator !== "agent-merge-broker") {
+    throw invalid("Unsupported provenance manifest.");
   }
-  throw invalid("Integration branch has too many merge commits to verify.");
+  if (typeof manifest.batchId !== "string" || typeof manifest.baseBranch !== "string") {
+    throw invalid("Manifest batchId and baseBranch must be strings.");
+  }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(manifest.batchId)) throw invalid("Manifest batchId is unsafe.");
+  if (manifest.history !== undefined && manifest.history !== "preserve" && manifest.history !== "squash") {
+    throw invalid("Manifest history must be preserve or squash.");
+  }
+  if (
+    typeof manifest.baseSha !== "string" ||
+    typeof manifest.integratedHeadSha !== "string" ||
+    !/^[0-9a-f]{40,64}$/u.test(manifest.baseSha) ||
+    !/^[0-9a-f]{40,64}$/u.test(manifest.integratedHeadSha)
+  ) {
+    throw invalid("Manifest commit IDs are invalid.");
+  }
+  if (!stringArray(manifest.taskIds) || manifest.taskIds.length === 0 || !Array.isArray(manifest.tasks)) {
+    throw invalid("Manifest contains no valid task records.");
+  }
+  if (new Set(manifest.taskIds).size !== manifest.taskIds.length) throw invalid("Manifest taskIds must be unique.");
+  for (const task of manifest.tasks) {
+    if (
+      !task ||
+      typeof task !== "object" ||
+      typeof task.id !== "string" ||
+      !stringArray(task.commits) ||
+      task.commits.length === 0 ||
+      task.commits.some((commit) => !/^[0-9a-f]{40,64}$/u.test(commit)) ||
+      !stringArray(task.actualPaths) ||
+      !stringArray(task.dependsOn)
+    ) {
+      throw invalid("Manifest contains a malformed task record.");
+    }
+    assertAllowedRecordKeys(task, ["id", "commits", "actualPaths", "dependsOn"], `Task ${task.id}`);
+  }
+  if (new Set(manifest.tasks.map((task) => task.id)).size !== manifest.tasks.length) {
+    throw invalid("Manifest task records must have unique IDs.");
+  }
+  if (!Array.isArray(manifest.validations)) throw invalid("Manifest validations must be an array.");
+  for (const validation of manifest.validations) {
+    if (
+      !validation ||
+      typeof validation !== "object" ||
+      typeof validation.name !== "string" ||
+      (validation.scope !== "focused" && validation.scope !== "authoritative") ||
+      validation.exitCode !== 0 ||
+      !Number.isInteger(validation.durationMs) ||
+      validation.durationMs < 0
+    ) {
+      throw invalid("Manifest contains a malformed or failed validation.");
+    }
+    if (validation.taskId !== undefined && typeof validation.taskId !== "string") {
+      throw invalid("Manifest validation taskId must be a string.");
+    }
+    assertAllowedRecordKeys(
+      validation,
+      ["name", "scope", "taskId", "exitCode", "durationMs"],
+      `Validation ${validation.name}`,
+    );
+  }
+  if (typeof manifest.createdAt !== "string" || !Number.isFinite(Date.parse(manifest.createdAt))) {
+    throw invalid("Manifest createdAt must be a valid timestamp.");
+  }
+  if (manifest.signature !== undefined) {
+    if (
+      !manifest.signature ||
+      typeof manifest.signature !== "object" ||
+      manifest.signature.algorithm !== "ed25519" ||
+      typeof manifest.signature.keyId !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(manifest.signature.keyId) ||
+      typeof manifest.signature.value !== "string" ||
+      !/^[A-Za-z0-9_-]+$/u.test(manifest.signature.value)
+    ) {
+      throw invalid("Manifest signature is malformed.");
+    }
+    assertAllowedRecordKeys(manifest.signature, ["algorithm", "keyId", "value"], "Manifest signature");
+  }
 }
 
 /**
@@ -130,6 +210,8 @@ export async function verifyProvenance(options: VerifyProvenanceOptions): Promis
     baseBranch,
     branchPrefix = "merge-broker/",
     provenanceDirectory = ".merge-broker/attestations",
+    publicKey,
+    requireSignature = false,
   } = options;
 
   const batchId = batchIdFromBranch(branch, branchPrefix);
@@ -138,21 +220,33 @@ export async function verifyProvenance(options: VerifyProvenanceOptions): Promis
   if (shown.exitCode !== 0) {
     throw invalid(`Integration branch ${branch} does not contain ${manifestPath}.`, { manifestPath });
   }
-  let manifest: BatchProvenance;
+  let parsed: unknown;
   try {
-    manifest = JSON.parse(shown.stdout) as BatchProvenance;
+    parsed = JSON.parse(shown.stdout) as unknown;
   } catch (error) {
     throw invalid(`${manifestPath} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-
-  if (manifest.version !== 1 || manifest.generator !== "agent-merge-broker") {
-    throw invalid(`Unsupported provenance manifest in ${manifestPath}.`);
-  }
+  assertManifestShape(parsed);
+  const manifest = parsed;
   if (manifest.batchId !== batchId) {
     throw invalid(`Manifest batch ${manifest.batchId} does not match branch ${batchId}.`);
   }
   if (manifest.baseBranch !== baseBranch) {
     throw invalid(`Batch targets ${manifest.baseBranch}, not ${baseBranch}.`);
+  }
+
+  let authenticated = false;
+  if (manifest.signature) {
+    if (!publicKey) {
+      throw invalid("Manifest is signed, but the protected base policy does not trust a public key.");
+    }
+    if (!verifyBatchProvenanceSignature(manifest, publicKey)) {
+      throw invalid("Manifest signature is invalid or was produced by an untrusted key.");
+    }
+    authenticated = true;
+  }
+  if (requireSignature && !authenticated) {
+    throw invalid("Protected-base policy requires an authenticated provenance signature.");
   }
   // The batch must sit on real base history, but not necessarily on its current tip. Requiring
   // equality would deadlock every batch: the base advances between integration and this check, and
@@ -163,8 +257,16 @@ export async function verifyProvenance(options: VerifyProvenanceOptions): Promis
     );
   }
 
-  const provenanceSha = await findProvenanceCommit(repo, headSha, baseSha);
-  const parentSha = (await repo.git(["rev-parse", `${provenanceSha}^`])).stdout.trim();
+  // The provenance commit is immutable. Even a legitimate base-update merge can carry arbitrary
+  // conflict resolution in a path the base also changed, so path-only inspection cannot prove its
+  // contents. A stale batch must be re-cut and revalidated instead of mutated after assembly.
+  const provenanceSha = headSha;
+  const listed = await repo.git(["rev-list", "--parents", "-n", "1", provenanceSha]);
+  const parents = listed.stdout.trim().split(/\s+/u).slice(1);
+  if (parents.length !== 1) {
+    throw invalid("No merge may be added after broker assembly. Re-cut the batch with `batch refresh`.");
+  }
+  const parentSha = parents[0]!;
   if (manifest.integratedHeadSha !== parentSha) {
     throw invalid("The manifest is not the final provenance-only commit on this branch.", {
       recorded: manifest.integratedHeadSha,
@@ -230,5 +332,14 @@ export async function verifyProvenance(options: VerifyProvenanceOptions): Promis
     throw invalid("Manifest records a failed validation.");
   }
 
-  return { batchId, manifestPath, manifest, provenanceSha, parentSha, taskIds };
+  return {
+    batchId,
+    manifestPath,
+    manifest,
+    provenanceSha,
+    parentSha,
+    taskIds,
+    authenticated,
+    ...(authenticated && publicKey ? { signatureKeyId: provenanceKeyId(publicKey) } : {}),
+  };
 }
