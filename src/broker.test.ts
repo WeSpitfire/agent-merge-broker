@@ -87,7 +87,11 @@ test("claims, submits, verifies, and transactionally batches independent commits
   assert.equal(provenance.signature?.algorithm, "ed25519");
   assert.match(provenance.signature?.keyId ?? "", /^[0-9a-f]{64}$/u);
   assert.match(provenance.signature?.value ?? "", /^[A-Za-z0-9_-]+$/u);
-  assert.equal((await stat(broker.store.provenanceSigningKeyFile)).mode & 0o777, 0o600);
+  // Windows does not expose POSIX permission bits even though the key remains under Git's private
+  // runtime directory. Assert the owner-only mode on platforms where chmod has those semantics.
+  if (process.platform !== "win32") {
+    assert.equal((await stat(broker.store.provenanceSigningKeyFile)).mode & 0o777, 0o600);
+  }
 
   await broker.markBatchMerged(integrated.batch.id);
   assert.equal((await broker.task("TASK-A")).status, "merged");
