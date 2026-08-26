@@ -48,7 +48,17 @@
         }
       }
     },
-    "createdAt": { "type": "string", "format": "date-time" }
+    "createdAt": { "type": "string", "format": "date-time" },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "keyId", "value"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "keyId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "value": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
+      }
+    }
   },
   "$defs": {
     "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }

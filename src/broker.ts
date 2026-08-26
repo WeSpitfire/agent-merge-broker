@@ -1,8 +1,9 @@
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { BrokerError, CommandError, ValidationError } from "./errors.js";
 import { GitRepository } from "./git.js";
-import { initializeConfig, loadConfig } from "./config.js";
+import { initializeConfig, loadConfig, writeConfig } from "./config.js";
 import { patternSetsMayOverlap, unexpectedPaths } from "./patterns.js";
 import { scheduleTasks } from "./scheduler.js";
 import { StateStore, type LockStatus } from "./store.js";
@@ -13,8 +14,19 @@ import {
   inspectPullRequest,
   publishBatch as publishPreparedBatch,
 } from "./publisher.js";
-import { buildBatchProvenance, provenancePath } from "./provenance.js";
+import {
+  buildBatchProvenance,
+  provenanceKeyId,
+  provenancePath,
+  publicKeyFromPrivate,
+  signBatchProvenance,
+} from "./provenance.js";
 import { installHooks, uninstallHooks, type HookInstallation } from "./hooks.js";
+import {
+  installService,
+  uninstallService,
+  type ServiceInstallation,
+} from "./service.js";
 import type {
   BatchRecord,
   BrokerConfig,
@@ -24,6 +36,7 @@ import type {
   IntegrationResult,
   LocalValidationResult,
   RefreshResult,
+  RecoveryResult,
   PruneOptions,
   PruneResult,
   SchedulePlan,
@@ -274,7 +287,77 @@ export class MergeBroker {
       initialized.config.leases.lockTimeoutSeconds,
     );
     await store.initialize();
+    const provenance = initialized.config.integration.provenance;
+    if (initialized.created && provenance?.enabled) {
+      const identity = await store.provisionProvenanceSigningKey();
+      provenance.requireSignature = true;
+      provenance.publicKey = identity.publicKey;
+      await writeConfig(repo.root, initialized.config);
+    }
     return { repoRoot: repo.root, configPath: initialized.path, created: initialized.created };
+  }
+
+  /**
+   * Enables authenticated provenance for an existing repository or rotates/imports its identity.
+   * The private key stays in Git's runtime state; configuration receives only the public key.
+   */
+  async setupProvenanceSigning(options: {
+    privateKeyFile?: string;
+    rotate?: boolean;
+  } = {}): Promise<{ publicKey: string; keyId: string; keyPath: string }> {
+    const privateKey = options.privateKeyFile
+      ? await readFile(path.resolve(options.privateKeyFile), "utf8")
+      : undefined;
+    const identity = await this.store.provisionProvenanceSigningKey({
+      ...(privateKey ? { privateKey } : {}),
+      rotate: options.rotate ?? false,
+    });
+    this.config.integration.provenance ??= {
+      enabled: true,
+      directory: ".merge-broker/attestations",
+    };
+    this.config.integration.provenance.enabled = true;
+    this.config.integration.provenance.requireSignature = true;
+    this.config.integration.provenance.publicKey = identity.publicKey;
+    await writeConfig(this.repo.root, this.config);
+    return identity;
+  }
+
+  private async provenanceSigningPrivateKey(): Promise<string | undefined> {
+    const provenance = this.config.integration.provenance;
+    if (!provenance?.enabled || !provenance.publicKey) {
+      if (provenance?.requireSignature) {
+        throw new BrokerError(
+          "SIGNING_KEY_REQUIRED",
+          "Signed provenance is required, but configuration has no trusted public key. Run `merge-broker provenance setup-signing`.",
+        );
+      }
+      return undefined;
+    }
+
+    const fromEnvironment = process.env.MERGE_BROKER_SIGNING_KEY;
+    const fromFile = process.env.MERGE_BROKER_SIGNING_KEY_FILE
+      ? await readFile(path.resolve(process.env.MERGE_BROKER_SIGNING_KEY_FILE), "utf8")
+      : undefined;
+    const privateKey =
+      fromEnvironment ?? fromFile ?? (await this.store.readProvenanceSigningKey(provenance.publicKey));
+    if (!privateKey) {
+      if (!provenance.requireSignature) return undefined;
+      throw new BrokerError(
+        "SIGNING_KEY_REQUIRED",
+        `Signed provenance is required, but the private key is unavailable. Restore ${this.store.provenanceSigningKeyFile}, set MERGE_BROKER_SIGNING_KEY_FILE, or import it with \`merge-broker provenance setup-signing --private-key <path>\`.`,
+      );
+    }
+    const expectedKeyId = provenanceKeyId(provenance.publicKey);
+    const actualKeyId = provenanceKeyId(publicKeyFromPrivate(privateKey));
+    if (expectedKeyId !== actualKeyId) {
+      throw new BrokerError(
+        "SIGNING_KEY_MISMATCH",
+        "The available provenance private key does not match the public key committed in configuration.",
+        { expectedKeyId, actualKeyId },
+      );
+    }
+    return privateKey;
   }
 
   async registerTask(input: RegisterTaskInput): Promise<TaskRecord> {
@@ -724,6 +807,13 @@ export class MergeBroker {
 
   async integrate(options: IntegrationOptions = {}): Promise<IntegrationResult> {
     return await this.store.withIntegrationLock(async () => {
+      // A killed process can leave durable state at `running`/`integrating` after its lock is gone.
+      // Owning the integration lock proves nobody else can still be advancing that transaction, so
+      // recover it before planning. This also lets the recovered tasks participate immediately.
+      await this.recoverAbandonedIntegrationsLocked();
+      // Key problems are operator/configuration failures, not task failures. Resolve them before
+      // tasks move to `integrating`, so a missing key cannot spend a worker's retry budget.
+      const signingPrivateKey = await this.provenanceSigningPrivateKey();
       // One batch in flight at a time.
       //
       // A batch is cut from the base branch tip so it is born mergeable. Cutting a second one while
@@ -855,13 +945,18 @@ export class MergeBroker {
             integratedHeadSha,
           );
           const relativePath = provenancePath(provenance.directory, id);
-          const record = buildBatchProvenance({
+          let record = buildBatchProvenance({
             batch,
             tasks: plan.selected,
             integratedHeadSha,
             integratedPaths,
             history: this.config.integration.history,
           });
+          if (signingPrivateKey && provenance.publicKey) {
+            record = signBatchProvenance(record, signingPrivateKey, provenance.publicKey);
+          } else if (provenance.requireSignature) {
+            throw new BrokerError("SIGNING_KEY_REQUIRED", "Signed provenance is required for this batch.");
+          }
           headSha = await this.repo.commitGeneratedFile(
             worktree,
             relativePath,
@@ -985,6 +1080,103 @@ export class MergeBroker {
         dryRun: options.dryRun ?? false,
       };
     });
+  }
+
+  private async recoverAbandonedIntegrationsLocked(): Promise<RecoveryResult> {
+    const snapshot = await this.store.read();
+    const running = Object.values(snapshot.batches).filter((batch) => batch.status === "running");
+    if (running.length === 0) {
+      return {
+        batches: [],
+        tasks: [],
+        worktreesRemoved: [],
+        branchesRemoved: [],
+        cleanupWarnings: [],
+      };
+    }
+
+    const recovered = await this.store.transaction((state, audit) => {
+      const batches: string[] = [];
+      const tasks: string[] = [];
+      for (const candidate of running) {
+        const batch = state.batches[candidate.id];
+        if (!batch || batch.status !== "running") continue;
+        batch.status = "failed";
+        batch.error = "Integration process stopped before the transaction completed; tasks were recovered for retry.";
+        batch.finishedAt = now();
+        batches.push(batch.id);
+        const requeued: string[] = [];
+        for (const taskId of batch.taskIds) {
+          const task = state.tasks[taskId];
+          if (!task || task.status !== "integrating" || task.batchId !== batch.id) continue;
+          task.status = "submitted";
+          task.updatedAt = now();
+          delete task.batchId;
+          delete task.lastError;
+          tasks.push(taskId);
+          requeued.push(taskId);
+        }
+        audit("batch.recovered", {
+          batchId: batch.id,
+          details: { requeued, reason: "abandoned integration transaction" },
+        });
+      }
+      return { batches, tasks };
+    });
+
+    const worktreesRemoved: string[] = [];
+    const branchesRemoved: string[] = [];
+    const cleanupWarnings: string[] = [];
+    const registeredWorktrees = new Set((await this.repo.listWorktrees()).map((worktree) => path.resolve(worktree.path)));
+    const worktreeRoot = `${path.resolve(this.store.worktreesDirectory)}${path.sep}`;
+    for (const batchId of recovered.batches) {
+      const candidate = running.find((batch) => batch.id === batchId);
+      const worktree = candidate?.worktree ? path.resolve(candidate.worktree) : undefined;
+      if (worktree && registeredWorktrees.has(worktree)) {
+        if (!worktree.startsWith(worktreeRoot)) {
+          cleanupWarnings.push(`Refused to remove recovery worktree outside broker state: ${worktree}`);
+        } else {
+          try {
+            await this.repo.removeWorktree(worktree);
+            worktreesRemoved.push(worktree);
+          } catch (error) {
+            cleanupWarnings.push(errorMessage(error));
+          }
+        }
+      }
+
+      const branchName = cleanBranchFragment(`${this.config.integration.branchPrefix}${batchId}`);
+      const branch = await this.repo.git(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], this.repo.root, true);
+      if (branch.exitCode === 0) {
+        const deleted = await this.repo.git(["branch", "-D", "--", branchName], this.repo.root, true);
+        if (deleted.exitCode === 0) branchesRemoved.push(branchName);
+        else cleanupWarnings.push(`Could not remove recovery branch ${branchName}: ${deleted.stderr.trim()}`);
+      }
+    }
+
+    await this.store.transaction((state, audit) => {
+      for (const batchId of recovered.batches) {
+        const batch = state.batches[batchId];
+        if (!batch) continue;
+        if (worktreesRemoved.includes(path.resolve(batch.worktree ?? ""))) delete batch.worktree;
+        if (cleanupWarnings.length > 0) {
+          batch.error = `${batch.error ?? "Integration was recovered."} Cleanup: ${cleanupWarnings.join("; ")}`;
+        }
+      }
+      audit("integration.recovery_completed", {
+        details: { ...recovered, worktreesRemoved, branchesRemoved, cleanupWarnings },
+      });
+    });
+
+    return { ...recovered, worktreesRemoved, branchesRemoved, cleanupWarnings };
+  }
+
+  /**
+   * Recovers durable `running` state left by a killed integration process. Acquiring the integration
+   * lock is the proof that the former process is no longer allowed to make progress.
+   */
+  async recoverAbandonedIntegrations(): Promise<RecoveryResult> {
+    return await this.store.withIntegrationLock(async () => await this.recoverAbandonedIntegrationsLocked());
   }
 
   async publishBatch(id: string): Promise<BatchRecord> {
@@ -1205,6 +1397,13 @@ export class MergeBroker {
         batch.pullRequestUrl,
         `Superseded: the base branch moved to ${currentBase.slice(0, 7)}, so this batch was re-cut from the current tip.`,
       );
+      if (!pullRequestClosed) {
+        throw new BrokerError(
+          "PULL_REQUEST_CLOSE_FAILED",
+          `Could not close superseded pull request ${batch.pullRequestUrl}. The existing batch and its tasks were left unchanged so two mergeable copies cannot exist. Retry when the forge responds.`,
+          { batchId: id, pullRequestUrl: batch.pullRequestUrl },
+        );
+      }
     }
     if (batch.branchName) await this.repo.deleteBranch(batch.branchName);
 
@@ -1357,6 +1556,54 @@ export class MergeBroker {
     });
   }
 
+  /**
+   * Installs the integration loop as a per-user service.
+   *
+   * Without it `serve` only runs while a terminal is open, so a submitted task
+   * waits for a human to notice — indistinguishable, to the agent that
+   * submitted it, from the broker rejecting the work.
+   */
+  async installService(options: {
+    uninstall?: boolean;
+    intervalSeconds?: number;
+    eager?: boolean;
+    nodePath?: string;
+    cliPath?: string;
+    pathEntries?: string[];
+    logFile?: string;
+  } = {}): Promise<ServiceInstallation | { name: string; file: string; removed: boolean }> {
+    if (options.uninstall) return await uninstallService(this.repo.root);
+    const nodePath = options.nodePath ?? process.execPath;
+    const cliPath = options.cliPath ?? process.argv[1] ?? "";
+    if (!path.isAbsolute(cliPath)) {
+      throw new BrokerError(
+        "SERVICE_CLI_PATH",
+        "Could not determine an absolute path to the broker CLI. Pass --cli-path.",
+      );
+    }
+    return await installService({
+      repositoryRoot: this.repo.root,
+      nodePath,
+      cliPath,
+      intervalSeconds: options.intervalSeconds ?? 15,
+      eager: options.eager ?? true,
+      // node's own directory is included because a version-managed node is not
+      // on the default PATH a login-less agent receives.
+      pathEntries: options.pathEntries ?? [
+        path.dirname(nodePath),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+      ],
+      // `.git` is a file in linked worktrees. Runtime state already resolves Git's common directory,
+      // which is the one log location every checkout can safely create and inspect.
+      logFile: options.logFile ?? path.join(this.store.directory, "serve.log"),
+    });
+  }
+
   async inspectLocks(): Promise<LockStatus[]> {
     return await Promise.all(["state", "integration"].map(async (name) => await this.store.inspectLock(name)));
   }
@@ -1416,16 +1663,42 @@ export class MergeBroker {
   }
 
   async doctor(): Promise<Record<string, unknown>> {
-    const [baseSha, clean, worktrees, locks] = await Promise.all([
+    const [baseSha, clean, worktrees, locks, state] = await Promise.all([
       this.repo.resolveCommit(this.config.baseRef),
       this.repo.isClean(),
       this.repo.listWorktrees(),
       this.inspectLocks(),
+      this.store.read(),
     ]);
     const warnings: string[] = [];
+    let ok = true;
+    const provenance = this.config.integration.provenance;
+    let signingKeyId: string | undefined;
+    if (provenance?.enabled && provenance.requireSignature) {
+      try {
+        await this.provenanceSigningPrivateKey();
+        if (provenance.publicKey) signingKeyId = provenanceKeyId(provenance.publicKey);
+      } catch (error) {
+        ok = false;
+        warnings.push(errorMessage(error));
+      }
+    } else if (provenance?.enabled) {
+      warnings.push(
+        "Provenance signatures are not required, so remote verification can confirm structure but cannot authenticate which broker created it. Run `merge-broker provenance setup-signing`.",
+      );
+    }
     if (this.config.validation.focused.length === 0 && this.config.validation.authoritative.length === 0) {
       warnings.push(
-        "No validators are configured, so batches are assembled without being checked. Configure validation.authoritative, or rely on a remote gate that verifies broker provenance.",
+        "No validators are configured, so batches are assembled without being checked. Configure validation.authoritative or require an authoritative remote CI suite on every batch PR.",
+      );
+    }
+    const runningBatches = Object.values(state.batches)
+      .filter((batch) => batch.status === "running")
+      .map((batch) => batch.id);
+    if (runningBatches.length > 0) {
+      ok = false;
+      warnings.push(
+        `Integration state is incomplete for ${runningBatches.join(", ")}. Run \`merge-broker recover\` after confirming no broker process is active.`,
       );
     }
     for (const lock of locks) {
@@ -1437,7 +1710,7 @@ export class MergeBroker {
       );
     }
     return {
-      ok: true,
+      ok,
       warnings,
       locks,
       repository: this.repo.root,
@@ -1452,6 +1725,9 @@ export class MergeBroker {
       publishMode: this.config.publish.mode,
       focusedValidators: this.config.validation.focused.map((validator) => validator.name),
       authoritativeValidators: this.config.validation.authoritative.map((validator) => validator.name),
+      provenanceAuthenticated: Boolean(provenance?.enabled && provenance.requireSignature && signingKeyId),
+      provenanceKeyId: signingKeyId,
+      runningBatches,
     };
   }
 }

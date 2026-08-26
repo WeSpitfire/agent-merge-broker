@@ -30,8 +30,8 @@ test(
     const repo = await repository();
     const remote = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
     context.after(async () => {
-      await rm(repo, { recursive: true, force: true });
-      await rm(remote, { recursive: true, force: true });
+      await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      await rm(remote, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     });
     await git(remote, "init", "--bare", "-b", "main");
     await git(repo, "remote", "add", "origin", remote);
@@ -74,7 +74,7 @@ test(
 test("refuses to silently disable hooks a repository already has", async (context) => {
   const repo = await repository();
   context.after(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const hookFile = path.join(repo, ".git", "hooks", "pre-commit");
   await mkdir(path.dirname(hookFile), { recursive: true });

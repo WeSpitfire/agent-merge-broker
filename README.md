@@ -45,7 +45,7 @@ It is deliberately **not** an agent framework and **not** a replacement for prot
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.5.0` is current. Since the first release the lifecycle has been made recoverable — work can be resubmitted and rescoped after a failure, pre-flight validation runs the same validators integration does, and a publication interrupted partway through can be retried rather than reconciled by hand.
+`0.6.0` is current. Batch manifests are authenticated with a repository Ed25519 identity, post-assembly branch mutation is rejected, interrupted integration state recovers without rebuilding tasks, and the integration loop can run as a supervised per-user service.
 
 The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
@@ -80,7 +80,10 @@ npm link
 - `.merge-broker/config.json` — repository policy and commands
 - `.merge-broker/agent-instructions.md` — a reusable worker contract
 
-Runtime state, receipt records, manifests, locks, and integration worktrees live under Git's common directory. Every linked worktree therefore sees the same broker state, while runtime artifacts do not pollute commits.
+It also creates an Ed25519 provenance private key, mode `0600`, under Git's common runtime directory.
+Only its public key is written to the committed configuration. Runtime state, receipt records,
+manifests, keys, locks, and integration worktrees therefore stay outside commits while every linked
+worktree sees the same broker authority.
 
 ## Quick start
 
@@ -88,6 +91,7 @@ Initialize an existing Git repository and edit its generated configuration:
 
 ```bash
 merge-broker init --base main --base-ref origin/main --remote origin
+git add .merge-broker && git commit -m 'Configure authenticated merge brokerage'
 merge-broker doctor
 ```
 
@@ -178,29 +182,49 @@ This sets `core.hooksPath`, so it refuses to run when the repository already has
 stop working, and `--uninstall` puts everything back. `MERGE_BROKER_ALLOW_DIRECT_PUSH=1` is the
 deliberate emergency bypass.
 
-A remote gate proves a pull request really is an unaltered broker batch. It reads only Git, so it
-can run before any dependency is installed and reject bypassed work for almost nothing:
+### Publishing without a terminal
+
+`serve` polls for verified batches and publishes them, but only while somebody keeps it running in a
+terminal. When nobody does, a submitted task sits in `submitted` indefinitely — and to the agent
+that submitted it, waiting forever is indistinguishable from being rejected. Install the loop as a
+per-user service instead:
+
+```bash
+merge-broker install-service
+```
+
+This writes a launchd agent on macOS or a systemd user unit on Linux, one per repository, and starts
+it. It is deliberately a *user* service on both platforms: a system daemon would need root and would
+run as the wrong user for the repository's SSH and forge credentials. `--uninstall` removes it, and
+the service writes to `$(git rev-parse --git-common-dir)/merge-broker/serve.log`, including when it
+was installed from a linked worktree whose `.git` is a file.
+
+A remote gate authenticates a pull request as an immutable broker batch. It reads the trusted public
+key from the protected base branch, so it can reject unsigned, forged, or post-assembly work before
+installing dependencies:
 
 ```yaml
 - uses: actions/checkout@v4
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v1
+- uses: WeSpitfire/agent-merge-broker/verify@v0.6.0
 ```
 
-The check confirms that the branch is a broker integration branch, that its manifest was assembled
-on real base history, that the final commit changes nothing but that manifest, that the integrated
-diff matches exactly the paths the receipts account for, that every submitted commit is present, and
-that all recorded validations passed. It accepts the "update branch" merges a protected base
-produces, and rejects a merge that brings in anything the base does not already contain.
+The check verifies the Ed25519 signature, branch and batch identity, real base history, one-file
+manifest commit, integrated diff, submitted commit trail, and recorded validation results. The
+provenance commit must remain the branch head. Even a normal base-update merge can carry arbitrary
+conflict resolution, so any post-assembly merge is rejected; re-cut a stale batch with `batch
+refresh` instead.
 
 Verification policy is read from the configuration committed on the *base* branch, never from the
-change under review.
+change under review. Repositories initialized before `0.6.0` must run `merge-broker provenance
+setup-signing`, commit the resulting public-key policy, and keep the private key outside the working
+tree. Until then verification reports structural-only rather than authenticated provenance.
 
 ## Automatic merging
 
-With `publish.mode` set to `pull-request` and `publish.autoMerge` enabled, the broker enables GitHub auto-merge on each published batch. GitHub lands the pull request once required status checks pass and updates the branch when the base branch requires it. The broker never pushes to the base branch itself, so branch protection remains the authority on what may merge.
+With `publish.mode` set to `pull-request` and `publish.autoMerge` enabled, the broker enables GitHub auto-merge on each published batch. GitHub lands the pull request once required status checks pass. The broker never pushes to the base branch itself, so branch protection remains the authority on what may merge. If the base moves first, re-cut the batch; do not use GitHub's update-branch merge because immutable provenance deliberately rejects it.
 
 Two configuration combinations cannot work and are rejected at load time rather than stalling silently:
 
@@ -250,7 +274,13 @@ forge that fails halfway leaves a published batch carrying a `publishWarning` ra
 whose pull request exists but whose state does not admit it. Running `batch publish` again finds the
 existing pull request and retries what is left.
 
-A process that dies mid-integration leaves its lock behind. A holder on this machine is reclaimed automatically once its process is gone, but a holder on another machine cannot be probed at all and would otherwise block integration for the full stale window. `merge-broker unlock` reports lock state and releases a lock whose owner is provably gone; `--force` overrides that check and should follow confirming that no integration is running.
+A process that dies mid-integration can leave both a lock and durable `running` state. A holder on
+this machine is reclaimed automatically once its process is gone; a holder on another machine cannot
+be probed and waits out the stale window. Once the integration lock is safely acquired, `serve` and
+`integrate` automatically mark the abandoned batch failed, clean its broker-owned worktree and
+branch, and return its tasks to `submitted` without spending their attempt budget. `merge-broker
+recover` performs that reconciliation explicitly. `unlock --force` remains only for an owner that
+cannot be proven gone and must follow confirming no integration is active.
 
 ## Housekeeping
 
@@ -298,7 +328,9 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
     "maxAttempts": 3,
     "provenance": {
       "enabled": true,
-      "directory": ".merge-broker/attestations"
+      "directory": ".merge-broker/attestations",
+      "requireSignature": true,
+      "publicKey": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"
     }
   },
   "validation": {
@@ -330,8 +362,9 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
 Validator commands run inside the isolated integration worktree, under `/bin/sh` unless
 `validation.shell` names another interpreter. The shell is deliberately fixed and is never a login
 shell: an integration decision must not depend on whose machine assembled the batch. The environment
-is inherited from the process that invoked the broker, minus `MERGE_BROKER_TOKEN`, so PATH and
-toolchain managers work while worker credentials stay out of repository-defined commands.
+is inherited from the process that invoked the broker, minus `MERGE_BROKER_TOKEN`,
+`MERGE_BROKER_SIGNING_KEY`, and `MERGE_BROKER_SIGNING_KEY_FILE`, so PATH and toolchain managers work
+while broker credentials stay out of repository-defined commands.
 
 Validators receive these environment variables:
 
@@ -353,8 +386,8 @@ The JSON schemas in [`schemas/`](schemas/) can be used by editors, adapters, and
 ### One authoritative CI pass
 
 Repositories that make GitHub the authoritative validator can leave broker
-authoritative validators empty, keep provenance enabled, and reject any PR
-without a valid broker manifest before installing dependencies. The full lint,
+authoritative validators empty, require signed provenance, and reject any PR
+without an authenticated broker manifest before installing dependencies. The full lint,
 type, test, and build suite then runs exactly once on the assembled broker PR.
 Task worktrees retain only fast changed-scope feedback, while deployment builds
 the already-checked revision without repeating the whole suite.
@@ -364,7 +397,9 @@ the already-checked revision without repeating the whole suite.
 ```text
 merge-broker init
 merge-broker doctor
+merge-broker provenance setup-signing [--private-key <path>] [--rotate]
 merge-broker install-hooks [--force] [--uninstall]
+merge-broker install-service [--uninstall] [--interval <seconds>] [--no-eager]
 merge-broker verify-provenance --branch <ref> --head <sha> --base <sha>
 merge-broker validate [--task <id>] [--scope focused|authoritative|all] [--base <ref>] [--cwd <path>]
 merge-broker task register|claim|extend|heartbeat|submit|retry|release|cancel|show
@@ -377,6 +412,7 @@ merge-broker metrics
 merge-broker events
 merge-broker prune [--older-than <days>] [--dry-run]
 merge-broker unlock [state|integration] [--force]
+merge-broker recover
 merge-broker serve [--publish] [--eager]
 ```
 

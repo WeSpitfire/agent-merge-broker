@@ -198,9 +198,9 @@ export async function readMergeState(
 }
 
 /**
- * Hands the merge decision to GitHub: it lands the pull request once required checks pass, and
- * updates the branch itself when the base branch requires it. The broker never pushes to the base
- * branch, so branch protection stays authoritative.
+ * Hands the merge decision to GitHub: it lands the pull request once required checks pass. The
+ * broker never pushes to the base branch, so branch protection stays authoritative. A batch that
+ * falls behind is re-cut and re-signed; post-assembly update merges are intentionally unverifiable.
  */
 export async function enableAutoMerge(
   repoRoot: string,

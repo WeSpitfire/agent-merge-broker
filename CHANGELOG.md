@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.6.0 — 2026-08-25
+
+### Added
+
+- **Authenticated provenance.** New repositories receive an Ed25519 signing identity during `init`.
+  The public key is committed as protected-base policy; the mode-0600 private key stays under Git's
+  common runtime directory. Remote verification rejects forged, unsigned, or tampered manifests
+  when signature policy is required. Existing repositories can migrate with `merge-broker
+  provenance setup-signing`, and supervised hosts may supply the key through a file or environment
+  secret that validators never inherit.
+- **Abandoned integration recovery.** `serve` and `integrate` now recover a durable `running` batch
+  left by a killed process after safely acquiring the integration lock. Its tasks return to
+  `submitted` without spending their attempt budget, and broker-owned worktree and branch artifacts
+  are cleaned. `merge-broker recover` exposes the same operation explicitly, while `doctor` reports
+  incomplete transaction state and missing signing credentials.
+- `merge-broker install-service` runs the integration loop as a per-user background service — a
+  launchd agent on macOS, a systemd user unit on Linux. `serve` already did the work, but only
+  while somebody kept a terminal open, so a submitted task could sit in `submitted` for as long as
+  nobody happened to look. An agent cannot tell that state apart from having its work rejected, and
+  the repository this was written against had a verified batch waiting with nothing driving it. The
+  service is scoped per repository, because two checkouts of one project sharing a label would
+  leave one of them silently unserved. It is a user service on both platforms: a system daemon
+  would need root and would publish as a user who holds neither the SSH key nor the forge
+  credentials. On macOS the agent carries an explicit `PATH` — a launchd job inherits almost none,
+  and without it the loop starts, cannot see `git`, and does nothing, which looks exactly like
+  having nothing to do.
+- `serve` now reports what it is doing. It previously wrote only on a merge, a closure, an error, or
+  a *completed* integration — so a batch spending minutes in validators produced an empty log, and a
+  healthy busy service could not be told apart from a dead one. That was survivable while the loop
+  lived in a terminal and fatal once `install-service` moved it into the background, where the log
+  file is the only window on it. It now announces startup and its settings, announces a batch
+  *before* the work rather than after, reports idleness on a slower clock than the poll so a quiet
+  loop still proves it is alive without writing thousands of lines a day, and says it is stopping
+  instead of vanishing. Failures and batches returned to the queue go to stderr, progress to stdout,
+  and `--json` emits one object per line. `--once` keeps its original single-result output.
+
+### Security
+
+- **Post-assembly merge commits are rejected.** The former update-branch allowance compared changed
+  paths, which could not detect malicious conflict resolution inside a path the base also changed.
+  The provenance commit must now remain the branch head. A stale batch is closed, re-cut from the
+  current base, revalidated, and re-signed with `batch refresh`.
+- Remote provenance claims now distinguish cryptographically authenticated manifests from legacy
+  structural-only verification. Authenticated enforcement requires a protected-base public key and
+  private-key custody outside untrusted worker environments.
+
+### Fixed
+
+- The documented composite action now uses the real exact `v0.6.0` release tag, and the action runs
+  the matching package version instead of silently defaulting to `0.3.0`.
+- Architecture and protocol documentation now describe the local token vault and signing-key
+  custody accurately.
+- Service logs resolve through Git's common directory, so `install-service` works from linked
+  worktrees where `.git` is a file rather than a directory.
+- `batch refresh` now refuses to requeue or create a replacement when the superseded pull request
+  could not be closed. The previous best-effort close could leave two remotely mergeable copies of
+  the same tasks after a forge failure.
+- Runtime dependencies now honor the documented Node 20 minimum instead of installing a Commander
+  release whose engine declaration requires Node 22.
+
 ## 0.5.0 — 2026-08-17
 
 Surviving a bad afternoon at the forge. A GitHub outage interrupted a publication midway, and the

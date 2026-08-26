@@ -2,6 +2,7 @@ import path from "node:path";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { BrokerError } from "./errors.js";
+import { validateProvenancePublicKey } from "./provenance.js";
 import { CONFIG_VERSION, type BrokerConfig, type MergeMethod, type PublishMode } from "./types.js";
 
 export const CONFIG_DIRECTORY = ".merge-broker";
@@ -61,6 +62,7 @@ export function defaultConfig(baseBranch = "main", remote = "origin", baseRef = 
       provenance: {
         enabled: true,
         directory: ".merge-broker/attestations",
+        requireSignature: false,
       },
     },
     validation: {
@@ -103,7 +105,7 @@ export async function initializeConfig(
   }
   const config = defaultConfig(options.baseBranch, options.remote, options.baseRef);
   await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await writeConfig(repoRoot, config);
   const instructions = path.join(path.dirname(target), AGENT_INSTRUCTIONS_FILENAME);
   if (!(await exists(instructions))) await writeFile(instructions, AGENT_INSTRUCTIONS, "utf8");
   return { path: target, config, created: true };
@@ -241,9 +243,38 @@ export function validateConfig(value: unknown): BrokerConfig {
   assertBoolean(config.integration.refreshBase, "integration.refreshBase");
   assertPositiveInteger(config.integration.maxAttempts, "integration.maxAttempts");
   if (config.integration.provenance !== undefined) {
-    assertAllowedKeys(config.integration.provenance, "integration.provenance", ["enabled", "directory"]);
+    assertAllowedKeys(config.integration.provenance, "integration.provenance", [
+      "enabled",
+      "directory",
+      "requireSignature",
+      "publicKey",
+    ]);
     assertBoolean(config.integration.provenance.enabled, "integration.provenance.enabled");
     assertString(config.integration.provenance.directory, "integration.provenance.directory");
+    config.integration.provenance.requireSignature ??= false;
+    assertBoolean(config.integration.provenance.requireSignature, "integration.provenance.requireSignature");
+    if (config.integration.provenance.publicKey !== undefined) {
+      assertString(config.integration.provenance.publicKey, "integration.provenance.publicKey");
+      try {
+        validateProvenancePublicKey(config.integration.provenance.publicKey);
+      } catch (error) {
+        throw new BrokerError(
+          "INVALID_CONFIG",
+          `integration.provenance.publicKey must be an Ed25519 public key: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    if (config.integration.provenance.requireSignature && !config.integration.provenance.enabled) {
+      throw new BrokerError("INVALID_CONFIG", "Signed provenance cannot be required while provenance is disabled.");
+    }
+    if (config.integration.provenance.requireSignature && !config.integration.provenance.publicKey) {
+      throw new BrokerError(
+        "INVALID_CONFIG",
+        "integration.provenance.publicKey is required when requireSignature is true.",
+      );
+    }
     const directory = config.integration.provenance.directory.replaceAll("\\", "/");
     if (
       path.isAbsolute(directory) ||
@@ -341,4 +372,12 @@ export async function loadConfig(repoRoot: string): Promise<BrokerConfig> {
     if (error instanceof BrokerError) throw error;
     throw new BrokerError("INVALID_CONFIG", `Could not parse ${target}: ${String(error)}`);
   }
+}
+
+export async function writeConfig(repoRoot: string, config: BrokerConfig): Promise<string> {
+  const target = configPath(repoRoot);
+  validateConfig(config);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  return target;
 }

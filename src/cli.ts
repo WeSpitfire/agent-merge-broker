@@ -5,6 +5,13 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Command, Option } from "commander";
 import { BrokerError, CommandError } from "./errors.js";
+import {
+  formatServeEvent,
+  isErrorEvent,
+  serveEventJson,
+  shouldReportIdle,
+  type ServeEvent,
+} from "./serve-log.js";
 import { MergeBroker } from "./broker.js";
 import { GitRepository } from "./git.js";
 import { policyFromBase, verifyProvenance } from "./verify.js";
@@ -207,10 +214,32 @@ program
     output(
       result,
       [
-        "Merge Broker is ready.",
+        result.ok === false ? "Merge Broker needs attention." : "Merge Broker is ready.",
         `Repository: ${String(result.repository)}`,
         `State: ${String(result.stateDirectory)}`,
         ...warnings.map((warning) => `Warning: ${warning}`),
+      ].join("\n"),
+    );
+  });
+
+const provenance = program.command("provenance").description("configure authenticated batch provenance");
+
+provenance
+  .command("setup-signing")
+  .description("generate or import the Ed25519 identity used to sign batch manifests")
+  .option("--private-key <path>", "import an existing Ed25519 private key instead of generating one")
+  .option("--rotate", "replace the current repository signing identity")
+  .action(async (options: { privateKey?: string; rotate?: boolean }) => {
+    const result = await (await openBroker()).setupProvenanceSigning({
+      ...(options.privateKey ? { privateKeyFile: options.privateKey } : {}),
+      rotate: options.rotate ?? false,
+    });
+    output(
+      result,
+      [
+        `Authenticated provenance enabled with key ${result.keyId}.`,
+        `Private key: ${result.keyPath}`,
+        "Commit .merge-broker/config.json so remote verification trusts the public key.",
       ].join("\n"),
     );
   });
@@ -608,8 +637,46 @@ program
   });
 
 program
+  .command("install-service")
+  .description("run the integration loop as a background service, so submitted work publishes without a terminal")
+  .option("--uninstall", "remove the service")
+  .option("--interval <seconds>", "poll interval", "15")
+  .option("--no-eager", "wait for a full or aged batch instead of integrating immediately")
+  .option("--cli-path <path>", "absolute path to the broker CLI the service should run")
+  .option("--log-file <path>", "where the service writes its output")
+  .action(async (options: {
+    uninstall?: boolean;
+    interval: string;
+    eager: boolean;
+    cliPath?: string;
+    logFile?: string;
+  }) => {
+    const result = await (await openBroker()).installService({
+      uninstall: options.uninstall ?? false,
+      intervalSeconds: Number.parseInt(options.interval, 10),
+      eager: options.eager,
+      ...(options.cliPath ? { cliPath: options.cliPath } : {}),
+      ...(options.logFile ? { logFile: options.logFile } : {}),
+    });
+    if ("removed" in result) {
+      output(result, result.removed ? `Removed ${result.file}.` : "No service was installed.");
+      return;
+    }
+    output(
+      result,
+      [
+        `Installed ${result.name} at ${result.file}.`,
+        result.loaded
+          ? "The integration loop is running and will publish verified batches on its own."
+          : `Written, but the loader refused it: ${result.loaderMessage ?? "unknown error"}`,
+        `Output: ${result.logFile}`,
+      ].join("\n"),
+    );
+  });
+
+program
   .command("verify-provenance")
-  .description("prove a pull request head is an unaltered broker batch, before installing anything")
+  .description("verify a batch's immutable structure and protected-base provenance signature")
   .requiredOption("--branch <ref>", "head branch of the pull request")
   .requiredOption("--head <sha>", "head commit of the pull request")
   .requiredOption("--base <sha>", "current tip of the target branch")
@@ -637,14 +704,19 @@ program
         branchPrefix: options.branchPrefix ?? policy.branchPrefix ?? "merge-broker/",
         provenanceDirectory:
           options.provenanceDirectory ?? policy.provenanceDirectory ?? ".merge-broker/attestations",
+        ...(policy.publicKey ? { publicKey: policy.publicKey } : {}),
+        requireSignature: policy.requireSignature ?? false,
       });
       output(
         result,
         [
-          `Verified broker batch ${result.batchId}.`,
+          `${result.authenticated ? "Authenticated" : "Structurally verified"} broker batch ${result.batchId}.`,
           `Tasks: ${result.taskIds.join(", ")}`,
           `Integrated head: ${result.parentSha}`,
           `Validations recorded: ${result.manifest.validations.length}`,
+          ...(result.authenticated
+            ? [`Signature key: ${result.signatureKeyId}`]
+            : ["Warning: no protected-base signature policy authenticated this manifest."]),
         ].join("\n"),
       );
     },
@@ -672,6 +744,25 @@ program
           : []),
         ...(result.archivePath ? [`Archive: ${result.archivePath}`] : []),
       ].join("\n"),
+    );
+  });
+
+program
+  .command("recover")
+  .description("recover tasks left integrating after a broker process stopped unexpectedly")
+  .action(async () => {
+    const result = await (await openBroker()).recoverAbandonedIntegrations();
+    output(
+      result,
+      result.batches.length > 0
+        ? [
+            `Recovered ${result.batches.length} abandoned batch(es).`,
+            `Requeued tasks: ${result.tasks.join(", ") || "none"}`,
+            ...(result.cleanupWarnings.length > 0
+              ? result.cleanupWarnings.map((warning) => `Cleanup warning: ${warning}`)
+              : []),
+          ].join("\n")
+        : "No abandoned integration transactions.",
     );
   });
 
@@ -723,23 +814,46 @@ program
   .action(
     async (options: { interval: string; publish?: boolean; eager?: boolean; once?: boolean }) => {
       let stopping = false;
-      process.once("SIGINT", () => {
+      const json = program.opts<{ json?: boolean }>().json ?? false;
+      let lastOutputAt = Date.now();
+      const say = (event: ServeEvent): void => {
+        const now = new Date();
+        const line = json ? serveEventJson(event, now) : formatServeEvent(event, now);
+        if (isErrorEvent(event)) console.error(line);
+        else console.log(line);
+        lastOutputAt = now.getTime();
+      };
+      const stop = (signal: string) => () => {
         stopping = true;
-      });
-      process.once("SIGTERM", () => {
-        stopping = true;
-      });
+        say({ kind: "stopped", signal });
+      };
+      process.once("SIGINT", stop("SIGINT"));
+      process.once("SIGTERM", stop("SIGTERM"));
+      if (!options.once) {
+        say({
+          kind: "started",
+          version: program.version() ?? "unknown",
+          repository: (await openBroker()).repo.root,
+          intervalSeconds: Number(options.interval),
+          publish: options.publish ?? false,
+          eager: options.eager ?? false,
+        });
+      }
+      const recovery = await (await openBroker()).recoverAbandonedIntegrations();
+      if (!options.once && recovery.batches.length > 0) {
+        say({ kind: "recovered", batches: recovery.batches, tasks: recovery.tasks });
+      }
       do {
         const broker = await openBroker();
         const reconciliation = await broker.syncPublishedBatches();
         for (const failure of reconciliation.errors) {
-          console.error(`Could not sync batch ${failure.batchId}: ${failure.error}`);
+          say({ kind: "sync-failed", batchId: failure.batchId, message: String(failure.error) });
         }
         for (const merged of reconciliation.synced) {
-          console.log(`Batch ${merged.id} merged.`);
+          say({ kind: "merged", batchId: merged.id });
         }
         for (const abandoned of reconciliation.closed) {
-          console.error(`Batch ${abandoned.id} was closed without merging; its tasks returned to the queue.`);
+          say({ kind: "closed", batchId: abandoned.id });
         }
         const plan = await broker.plan();
         const oldest = plan.selected.reduce(
@@ -749,13 +863,26 @@ program
         const aged = Date.now() - oldest >= broker.config.scheduling.maxWaitSeconds * 1_000;
         const full = plan.selected.length >= broker.config.scheduling.maxTasks;
         if (plan.selected.length > 0 && (options.eager || options.once || aged || full)) {
+          // Announced before the work, not after it. Validators can run for
+          // minutes, and the silence was the whole problem.
+          if (!options.once) say({ kind: "integrating", tasks: plan.selected.map((item) => item.id) });
           try {
             const result = await broker.integrate({ publish: options.publish ?? false });
-            output(result, batchHuman(result.batch));
+            if (options.once) output(result, batchHuman(result.batch));
+            else {
+              say({
+                kind: "integrated",
+                batchId: result.batch.id,
+                state: result.batch.status,
+                published: options.publish ?? false,
+              });
+            }
           } catch (error) {
             if (options.once) throw error;
-            console.error(`Integration attempt failed: ${error instanceof Error ? error.message : String(error)}`);
+            say({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
           }
+        } else if (!options.once && shouldReportIdle(lastOutputAt, Date.now())) {
+          say({ kind: "idle", waiting: plan.selected.length, quietSeconds: (Date.now() - lastOutputAt) / 1_000 });
         }
         if (options.once || stopping) break;
         await new Promise<void>((resolve) => setTimeout(resolve, Number(options.interval) * 1_000));
