@@ -88,6 +88,7 @@ test("accepts an unaltered integration branch", async (context) => {
   assert.equal(policy.branchPrefix, "merge-broker/");
   assert.equal(policy.provenanceDirectory, ".merge-broker/attestations");
   assert.equal(policy.requireSignature, true);
+  assert.equal(policy.validationAuthority, "broker");
   assert.match(policy.publicKey ?? "", /BEGIN PUBLIC KEY/u);
 });
 

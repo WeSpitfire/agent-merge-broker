@@ -11,7 +11,8 @@ The core depends on Git rather than a particular agent SDK. CLI JSON output and 
 1. A worker submits immutable commit IDs, never an uncommitted filesystem snapshot.
 2. Broker operations never merge into or rewrite the configured base branch.
 3. Integration happens in a dedicated disposable worktree based on a resolved base SHA.
-4. The retained branch is created only after every configured validator succeeds.
+4. The retained branch is created only after every configured broker-side validator succeeds. When
+   `validation.authority` is `required-ci`, protected pull-request checks make the complete decision.
 5. A task is `merged` only after reconciliation or an explicit operator completion.
 6. State changes are atomic and serialized across linked Git worktrees.
 7. Broker state persists only a lease-token digest; the optional local token vault is a separate
@@ -75,7 +76,7 @@ registered → claimed → submitted → integrating → batched → published �
 - `claimed`: an agent holds an expiring lease.
 - `submitted`: immutable commits and their actual changed paths were recorded.
 - `integrating`: selected by the process holding the integration lock.
-- `batched`: validation passed and a local integration branch exists.
+- `batched`: broker-side preflight passed and a local integration branch exists.
 - `published`: the remote branch or PR was created.
 - `merged`: the result reached the base workflow and dependencies may proceed.
 
@@ -108,7 +109,8 @@ For a selected batch the broker:
 3. Adds a detached Git worktree at that SHA.
 4. Cherry-picks each receipt commit with `-x` in dependency order.
 5. Runs applicable focused validators after each task, in a fixed non-login shell.
-6. Runs all authoritative validators over the complete batch.
+6. Runs all broker-authoritative validators over the complete batch. With `required-ci` authority,
+   this list is deliberately empty and the complete suite runs as protected pull-request checks.
 7. Optionally squashes the batch while preserving task IDs in the message.
 8. Optionally builds a provenance manifest, signs it when protected-base policy requires it, and
    commits it with the integrated task head as its parent.
@@ -116,7 +118,10 @@ For a selected batch the broker:
 10. Removes the disposable worktree.
 11. Optionally pushes the branch and opens one GitHub PR.
 
-A failed cherry-pick is aborted. No retained branch is created after a validation failure. Configurable failed-worktree retention exists for diagnosis, but defaults off because worktrees can contain build products and secrets.
+A failed cherry-pick is aborted. No retained branch is created after a broker-side validation
+failure. Configurable failed-worktree retention exists for diagnosis, but defaults off because
+worktrees can contain build products and secrets. A `required-ci` batch is not eligible to merge
+until the forge's protected checks pass.
 
 ## Publication and reconciliation
 
@@ -130,8 +135,8 @@ When provenance is enabled, the final generated commit records the base SHA, int
 task receipts, paths, and completed broker validators. New repositories also require its Ed25519
 signature, verified against the public key in protected-base configuration. The signature
 authenticates which broker identity created the record; it does not make the recorded validations
-semantically sufficient, so repositories still choose broker-authoritative checks or a required
-remote authoritative suite.
+semantically sufficient. Protected-base configuration explicitly chooses broker authority or a
+required remote CI suite.
 
 PR reconciliation queries GitHub for merged state. Branch reconciliation fetches the configured base and checks that the batch head is an ancestor. Squash and rebase workflows may require the explicit `batch complete` escape hatch because the local batch head can disappear from final ancestry.
 

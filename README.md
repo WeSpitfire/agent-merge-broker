@@ -33,7 +33,7 @@ One integration authority; implementation stays distributed:
 - Commit receipts separate implementation from integration authority.
 - A deterministic conflict/dependency scheduler forms bounded batches.
 - Every batch is tested through real cherry-picks in a disposable worktree.
-- Focused checks run after each task and authoritative checks run over the batch.
+- Focused checks run after each task; the complete gate runs either in the broker or as required CI.
 - Successful work becomes one local branch, remote branch, or GitHub pull request.
 - Published branches can carry a committed provenance manifest for fast remote policy checks.
 - Tasks are dependency-complete only after their batch is actually merged.
@@ -334,6 +334,7 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
     }
   },
   "validation": {
+    "authority": "broker",
     "shell": "/bin/sh",
     "focused": [
       {
@@ -376,8 +377,8 @@ Validators receive these environment variables:
 
 Commands may also use the shell-safe placeholders `{taskId}` and `{files}`. Validator output retained in state is capped to prevent unbounded growth.
 
-`merge-broker validate` runs these same validators against a working tree, so a worker can get the
-integration answer before submitting rather than a weaker local approximation of it. It reports
+`merge-broker validate` runs these same broker-side validators against a working tree, so a worker
+can get the local integration answer before submitting rather than a weaker approximation of it. It reports
 `MERGE_BROKER_BATCH_ID=local`, which a validator can branch on if it needs to behave differently
 outside a batch.
 
@@ -385,12 +386,35 @@ The JSON schemas in [`schemas/`](schemas/) can be used by editors, adapters, and
 
 ### One authoritative CI pass
 
-Repositories that make GitHub the authoritative validator can leave broker
-authoritative validators empty, require signed provenance, and reject any PR
-without an authenticated broker manifest before installing dependencies. The full lint,
-type, test, and build suite then runs exactly once on the assembled broker PR.
-Task worktrees retain only fast changed-scope feedback, while deployment builds
-the already-checked revision without repeating the whole suite.
+Repositories that make required pull-request checks the authoritative validator can opt in explicitly:
+
+```json
+{
+  "validation": {
+    "authority": "required-ci",
+    "focused": [
+      {
+        "name": "changed-scope preflight",
+        "paths": ["src/**", "test/**"],
+        "command": "npm test -- {files}",
+        "timeoutSeconds": 300
+      }
+    ],
+    "authoritative": []
+  }
+}
+```
+
+`required-ci` is accepted only with pull-request publication and authenticated signed provenance.
+The broker still checks leases, submitted paths, cherry-pick compatibility, and every matching
+focused validator before retaining the batch. It then publishes the immutable signed revision, and
+the protected branch's required CI checks run the full lint, type, test, and build suite exactly
+once. The broker cannot inspect every forge's branch-protection policy, so configuring
+`required-ci` is an operator assertion that the complete suite really is required before merge.
+
+The default is `broker`, including for configurations created before this field existed. In that
+mode the broker runs every `validation.authoritative` command over the assembled batch before it
+retains a branch, preserving the original behavior.
 
 ## Command surface
 
@@ -420,7 +444,10 @@ Every command accepts `--json` for adapters and `-C <directory>` for explicit re
 
 ## Guarantees and limits
 
-Path overlap is a conservative coordination signal, not proof of semantic compatibility. Non-overlapping tasks can still break contracts. For this reason, the disposable worktree and authoritative validation—not the scheduler—are the final integration decision.
+Path overlap is a conservative coordination signal, not proof of semantic compatibility.
+Non-overlapping tasks can still break contracts. For this reason, the disposable worktree plus the
+configured authority—broker-side validation or protected required CI—not the scheduler, makes the
+final integration decision.
 
 The scheduler uses a deterministic weighted greedy heuristic. It does not claim to solve the NP-hard maximum independent set problem optimally. Batches are deliberately capped because very large batches reduce CI traffic but increase failure blast radius.
 

@@ -67,6 +67,7 @@ test("claims, submits, verifies, and transactionally batches independent commits
 
   const integrated = await broker.integrate();
   assert.equal(integrated.batch.status, "prepared");
+  assert.equal(integrated.batch.validationAuthority, "broker");
   assert.ok(integrated.batch.branchName);
   assert.ok(integrated.batch.provenancePath);
   assert.ok(integrated.batch.integratedHeadSha);
@@ -305,6 +306,46 @@ test("returns tasks to the queue when authoritative validation fails", async (co
 
   await broker.retryTask("FAIL", claim.token);
   assert.equal((await broker.task("FAIL")).status, "submitted");
+});
+
+test("required CI authority prepares a signed batch after focused preflight", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const config = await loadConfig(repo);
+  config.validation.authority = "required-ci";
+  config.validation.focused.push({
+    name: "changed-scope preflight",
+    paths: ["src/**"],
+    command: "test -f src/fast.ts",
+    timeoutSeconds: 5,
+  });
+  config.publish.mode = "pull-request";
+  config.publish.autoMerge = true;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "FAST", holder: "agent", expectedPaths: ["src/fast.ts"] });
+  const commit = await commitFile(repo, "fast", "src/fast.ts", "export const fast = true;\n");
+  await broker.submitTask("FAST", [commit], claim.token);
+
+  const integrated = await broker.integrate();
+  assert.equal(integrated.batch.status, "prepared");
+  assert.equal(integrated.batch.validationAuthority, "required-ci");
+  assert.deepEqual(integrated.batch.validations.map((item) => item.name), ["changed-scope preflight"]);
+  assert.equal((await broker.doctor()).validationAuthority, "required-ci");
+  assert.equal(
+    ((await broker.doctor()).warnings as string[]).some((warning) => /no authoritative validators/u.test(warning)),
+    false,
+  );
+
+  const provenance = JSON.parse(
+    await git(repo, "show", `${integrated.batch.branchName}:${integrated.batch.provenancePath}`),
+  ) as { validations: Array<{ name: string; scope: string }> };
+  assert.deepEqual(provenance.validations, [
+    { name: "changed-scope preflight", scope: "focused", taskId: "FAST", exitCode: 0, durationMs: integrated.batch.validations[0]?.durationMs },
+  ]);
 });
 
 test("fails only the conflicting task and returns its batch-mates to the queue", async (context) => {

@@ -140,6 +140,7 @@ function batchHuman(batch: BatchRecord): string {
   return [
     `Batch ${batch.id}: ${batch.status}`,
     `Tasks: ${batch.taskIds.join(", ")}`,
+    batch.validationAuthority ? `Validation authority: ${batch.validationAuthority}` : undefined,
     `Base: ${batch.baseBranch} @ ${batch.baseSha}`,
     batch.branchName ? `Branch: ${batch.branchName}` : undefined,
     batch.headSha ? `Head: ${batch.headSha}` : undefined,
@@ -713,6 +714,7 @@ program
           `${result.authenticated ? "Authenticated" : "Structurally verified"} broker batch ${result.batchId}.`,
           `Tasks: ${result.taskIds.join(", ")}`,
           `Integrated head: ${result.parentSha}`,
+          `Validation authority: ${policy.validationAuthority ?? "broker"}`,
           `Validations recorded: ${result.manifest.validations.length}`,
           ...(result.authenticated
             ? [`Signature key: ${result.signatureKeyId}`]

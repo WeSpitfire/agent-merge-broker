@@ -2,6 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultConfig, validateConfig } from "./config.js";
 import { BrokerError } from "./errors.js";
+import { generateProvenanceSigningIdentity } from "./provenance.js";
+
+function requiredCiConfig() {
+  const config = defaultConfig();
+  const identity = generateProvenanceSigningIdentity();
+  config.validation.authority = "required-ci";
+  config.publish.mode = "pull-request";
+  if (!config.integration.provenance) throw new Error("default provenance missing");
+  config.integration.provenance.requireSignature = true;
+  config.integration.provenance.publicKey = identity.publicKey;
+  return config;
+}
 
 test("accepts the generated default configuration", () => {
   assert.deepEqual(validateConfig(defaultConfig()), defaultConfig());
@@ -52,11 +64,44 @@ test("defaults auto-merge off for configurations written before it existed", () 
   delete config.publish?.mergeMethod;
   delete config.integration?.refreshBase;
   delete config.integration?.maxAttempts;
+  delete config.validation?.authority;
   const validated = validateConfig(config);
   assert.equal(validated.publish.autoMerge, false);
   assert.equal(validated.publish.mergeMethod, "squash");
   assert.equal(validated.integration.refreshBase, true);
   assert.equal(validated.integration.maxAttempts, 3);
+  assert.equal(validated.validation.authority, "broker");
+});
+
+test("accepts required CI as the explicit authority for signed pull-request batches", () => {
+  const config = requiredCiConfig();
+  assert.deepEqual(validateConfig(config), config);
+});
+
+test("required CI authority fails closed without a pull request and signed provenance", () => {
+  const unpublished = requiredCiConfig();
+  unpublished.publish.mode = "none";
+  assert.throws(
+    () => validateConfig(unpublished),
+    (error: unknown) => error instanceof BrokerError && /publish\.mode pull-request/u.test(error.message),
+  );
+
+  const unsigned = requiredCiConfig();
+  if (!unsigned.integration.provenance) throw new Error("default provenance missing");
+  unsigned.integration.provenance.requireSignature = false;
+  assert.throws(
+    () => validateConfig(unsigned),
+    (error: unknown) => error instanceof BrokerError && /signed provenance/u.test(error.message),
+  );
+});
+
+test("required CI authority keeps full-suite commands out of the local integration transaction", () => {
+  const config = requiredCiConfig();
+  config.validation.authoritative.push({ name: "full suite", command: "npm test" });
+  assert.throws(
+    () => validateConfig(config),
+    (error: unknown) => error instanceof BrokerError && /authoritative must be empty/u.test(error.message),
+  );
 });
 
 test("rejects unknown fields instead of silently ignoring policy typos", () => {

@@ -83,6 +83,11 @@ SHA, final-commit parent, one-file provenance commit, and protected-base signatu
 time on dependency installation or authoritative CI. The provenance commit must be the branch head;
 post-assembly update merges are not part of the protocol.
 
+Protected-base configuration also declares `validation.authority`. `broker` means the manifest
+records the locally completed authoritative commands. `required-ci` means the signed batch was
+published after focused preflight and the forge's protected status checks must make the complete
+decision. Adapters must treat an absent field as `broker` for compatibility.
+
 ## Path semantics
 
 Paths are repository-relative and use forward slashes. Globs use picomatch semantics. Prefer the smallest scope that covers expected work:
