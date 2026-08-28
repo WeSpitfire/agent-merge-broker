@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Explicit validation authority.** Repositories can select `validation.authority: required-ci` to
+  publish an immutable signed pull-request batch after changed-scope preflight, leaving the complete
+  suite to protected required CI checks instead of running it serially twice. The mode fails closed
+  unless publication uses pull requests, signed provenance is required, and the local authoritative
+  list is empty. Existing configurations default to `broker` and keep their current behavior.
+
 ## 0.6.0 — 2026-08-25
 
 ### Added

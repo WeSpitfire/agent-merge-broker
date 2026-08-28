@@ -859,6 +859,7 @@ export class MergeBroker {
         id,
         status: "running",
         taskIds: plan.selected.map((task) => task.id),
+        validationAuthority: this.config.validation.authority,
         baseBranch: this.config.baseBranch,
         baseSha,
         worktree,
@@ -998,7 +999,12 @@ export class MergeBroker {
             }
             audit("batch.prepared", {
               batchId: id,
-              details: { taskIds: batch.taskIds, branchName, headSha },
+              details: {
+                taskIds: batch.taskIds,
+                branchName,
+                headSha,
+                validationAuthority: batch.validationAuthority,
+              },
             });
           });
           // Batching ends the lease, so any token held for it is now dead weight.
@@ -1687,9 +1693,9 @@ export class MergeBroker {
         "Provenance signatures are not required, so remote verification can confirm structure but cannot authenticate which broker created it. Run `merge-broker provenance setup-signing`.",
       );
     }
-    if (this.config.validation.focused.length === 0 && this.config.validation.authoritative.length === 0) {
+    if (this.config.validation.authority === "broker" && this.config.validation.authoritative.length === 0) {
       warnings.push(
-        "No validators are configured, so batches are assembled without being checked. Configure validation.authoritative or require an authoritative remote CI suite on every batch PR.",
+        "validation.authority is broker, but no authoritative validators are configured. Add validation.authoritative commands or explicitly delegate the complete decision to required CI.",
       );
     }
     const runningBatches = Object.values(state.batches)
@@ -1723,6 +1729,7 @@ export class MergeBroker {
       worktreeClean: clean,
       worktreeCount: worktrees.length,
       publishMode: this.config.publish.mode,
+      validationAuthority: this.config.validation.authority,
       focusedValidators: this.config.validation.focused.map((validator) => validator.name),
       authoritativeValidators: this.config.validation.authoritative.map((validator) => validator.name),
       provenanceAuthenticated: Boolean(provenance?.enabled && provenance.requireSignature && signingKeyId),

@@ -113,6 +113,11 @@
       "additionalProperties": false,
       "required": ["focused", "authoritative"],
       "properties": {
+        "authority": {
+          "enum": ["broker", "required-ci"],
+          "default": "broker",
+          "description": "Where the complete integration decision is made. required-ci publishes after focused preflight and relies on protected pull-request checks."
+        },
         "shell": {
           "type": "string",
           "minLength": 1,
@@ -120,7 +125,13 @@
         },
         "focused": { "type": "array", "items": { "$ref": "#/$defs/validator" } },
         "authoritative": { "type": "array", "items": { "$ref": "#/$defs/validator" } }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "authority": { "const": "required-ci" } }, "required": ["authority"] },
+          "then": { "properties": { "authoritative": { "maxItems": 0 } } }
+        }
+      ]
     },
     "publish": {
       "type": "object",
@@ -148,6 +159,35 @@
       ]
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "validation": {
+            "properties": { "authority": { "const": "required-ci" } },
+            "required": ["authority"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "publish": { "properties": { "mode": { "const": "pull-request" } } },
+          "integration": {
+            "required": ["provenance"],
+            "properties": {
+              "provenance": {
+                "required": ["enabled", "requireSignature", "publicKey"],
+                "properties": {
+                  "enabled": { "const": true },
+                  "requireSignature": { "const": true }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "validator": {
       "type": "object",

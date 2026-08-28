@@ -3,7 +3,13 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { BrokerError } from "./errors.js";
 import { validateProvenancePublicKey } from "./provenance.js";
-import { CONFIG_VERSION, type BrokerConfig, type MergeMethod, type PublishMode } from "./types.js";
+import {
+  CONFIG_VERSION,
+  type BrokerConfig,
+  type MergeMethod,
+  type PublishMode,
+  type ValidationAuthority,
+} from "./types.js";
 
 export const CONFIG_DIRECTORY = ".merge-broker";
 export const CONFIG_FILENAME = "config.json";
@@ -66,6 +72,7 @@ export function defaultConfig(baseBranch = "main", remote = "origin", baseRef = 
       },
     },
     validation: {
+      authority: "broker",
       focused: [],
       authoritative: [],
     },
@@ -287,7 +294,13 @@ export function validateConfig(value: unknown): BrokerConfig {
       );
     }
   }
-  assertAllowedKeys(config.validation, "validation", ["shell", "focused", "authoritative"]);
+  assertAllowedKeys(config.validation, "validation", ["shell", "authority", "focused", "authoritative"]);
+  // Configurations created before validation authority was explicit ran the authoritative commands
+  // inside the broker. Preserve that behavior on upgrade rather than silently delegating it.
+  config.validation.authority ??= "broker";
+  if (!(["broker", "required-ci"] satisfies ValidationAuthority[]).includes(config.validation.authority)) {
+    throw new BrokerError("INVALID_CONFIG", "validation.authority must be broker or required-ci.");
+  }
   if (!Array.isArray(config.validation.focused) || !Array.isArray(config.validation.authoritative)) {
     throw new BrokerError("INVALID_CONFIG", "validation.focused and validation.authoritative must be arrays.");
   }
@@ -328,8 +341,32 @@ export function validateConfig(value: unknown): BrokerConfig {
   }
   assertStringArray(config.publish?.labels, "publish.labels");
   assertString(config.publish?.titleTemplate, "publish.titleTemplate");
+  if (config.validation.authority === "required-ci") {
+    if (config.publish.mode !== "pull-request") {
+      throw new BrokerError(
+        "INVALID_CONFIG",
+        "validation.authority required-ci requires publish.mode pull-request so protected status checks can make the authoritative decision.",
+      );
+    }
+    if (
+      !config.integration.provenance?.enabled ||
+      !config.integration.provenance.requireSignature ||
+      !config.integration.provenance.publicKey
+    ) {
+      throw new BrokerError(
+        "INVALID_CONFIG",
+        "validation.authority required-ci requires signed provenance so the required CI suite can authenticate the batch before validating it.",
+      );
+    }
+    if (config.validation.authoritative.length > 0) {
+      throw new BrokerError(
+        "INVALID_CONFIG",
+        "validation.authoritative must be empty when validation.authority is required-ci; put the full suite in required pull-request checks and keep only fast preflight commands in validation.focused.",
+      );
+    }
+  }
   for (const [scope, validators] of Object.entries(config.validation ?? {})) {
-    if (scope === "shell") continue;
+    if (scope === "shell" || scope === "authority") continue;
     if (!Array.isArray(validators)) {
       throw new BrokerError("INVALID_CONFIG", `validation.${scope} must be an array.`);
     }

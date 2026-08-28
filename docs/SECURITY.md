@@ -68,6 +68,11 @@ early.
   workers; and
 - the repository requires either broker-authoritative validation or its own authoritative CI suite.
 
+Set `validation.authority` to `required-ci` only when that suite is a required pull-request check on
+the protected base. The broker requires pull-request publication and signed provenance for this
+mode, but it cannot prove that an arbitrary forge has made the named CI jobs mandatory. A check that
+merely runs, but is not required, is not an authority and can be bypassed at merge time.
+
 The verifier reads policy from the protected base, never the change being judged. A valid signature
 authenticates the broker identity and the immutable manifest contents. It does not prove those
 contents are good, and it cannot protect a key exposed to the same worker it is meant to constrain.

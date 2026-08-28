@@ -5,7 +5,7 @@ import {
   verifyBatchProvenanceSignature,
 } from "./provenance.js";
 import type { GitRepository } from "./git.js";
-import type { BatchProvenance, BrokerConfig } from "./types.js";
+import type { BatchProvenance, BrokerConfig, ValidationAuthority } from "./types.js";
 
 export interface VerifyProvenanceOptions {
   repo: GitRepository;
@@ -53,6 +53,7 @@ export async function policyFromBase(
   provenanceDirectory?: string;
   publicKey?: string;
   requireSignature?: boolean;
+  validationAuthority?: ValidationAuthority;
 }> {
   const shown = await repo.git(["show", `${baseSha}:.merge-broker/config.json`], repo.root, true);
   if (shown.exitCode !== 0) return {};
@@ -71,6 +72,9 @@ export async function policyFromBase(
         : {}),
       ...(typeof config.integration?.provenance?.requireSignature === "boolean"
         ? { requireSignature: config.integration.provenance.requireSignature }
+        : {}),
+      ...(config.validation?.authority === "broker" || config.validation?.authority === "required-ci"
+        ? { validationAuthority: config.validation.authority }
         : {}),
     };
   } catch {

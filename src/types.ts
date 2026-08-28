@@ -3,6 +3,7 @@ export const CONFIG_VERSION = 1 as const;
 
 export type UnexpectedPathPolicy = "error" | "warn" | "allow";
 export type PublishMode = "none" | "branch" | "pull-request";
+export type ValidationAuthority = "broker" | "required-ci";
 export type HistoryMode = "preserve" | "squash";
 export type MergeMethod = "squash" | "merge" | "rebase";
 export type TaskStatus =
@@ -64,6 +65,11 @@ export interface BrokerConfig {
   };
   validation: {
     shell?: string;
+    /**
+     * Where the complete integration decision is made. `broker` runs the authoritative commands
+     * locally; `required-ci` publishes after focused preflight and relies on protected PR checks.
+     */
+    authority: ValidationAuthority;
     focused: ValidatorConfig[];
     authoritative: ValidatorConfig[];
   };
@@ -128,6 +134,8 @@ export interface BatchRecord {
   id: string;
   status: BatchStatus;
   taskIds: string[];
+  /** Absent only on batches written before validation authority became explicit. */
+  validationAuthority?: ValidationAuthority;
   baseBranch: string;
   baseSha: string;
   branchName?: string;
