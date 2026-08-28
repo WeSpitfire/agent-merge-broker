@@ -26,7 +26,7 @@ repository.
 Publishing the GitHub release invokes the release workflow, repeats verification, checks that the tag equals the package version, and publishes with npm provenance.
 
 The composite action is documented with the same exact release tag, for example
-`WeSpitfire/agent-merge-broker/verify@v0.7.0`. Do not document a floating major tag unless that tag
+`WeSpitfire/agent-merge-broker/verify@v0.7.1`. Do not document a floating major tag unless that tag
 actually exists and is maintained deliberately.
 
 Do not reuse or move a published version tag. If a release is incorrect, deprecate it and publish a corrected patch version.

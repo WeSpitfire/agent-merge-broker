@@ -12,7 +12,7 @@ inputs:
   version:
     description: Version of agent-merge-broker to run. Pin this.
     required: false
-    default: 0.7.0
+    default: 0.7.1
   branch:
     description: Head branch of the pull request.
     required: false
