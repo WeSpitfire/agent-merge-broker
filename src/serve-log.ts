@@ -54,7 +54,7 @@ export function describeServeEvent(event: ServeEvent): string {
     case "merged":
       return `batch ${event.batchId} merged`;
     case "closed":
-      return `batch ${event.batchId} closed without merging; its tasks returned to the queue`;
+      return `batch ${event.batchId} closed without merging; its tasks are paused for revision`;
     case "failed":
       return `integration attempt failed: ${event.message}`;
     case "sync-failed":

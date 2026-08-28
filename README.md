@@ -243,14 +243,19 @@ Integration failures are attributed as narrowly as the evidence allows:
 
 - A cherry-pick conflict or focused validation failure fails only the responsible task. Its batch-mates return to the queue and are re-planned, so one bad commit cannot stall unrelated agents.
 - An authoritative validation failure indicts the whole batch, because no single task can be blamed. Those tasks stay `failed` until `task retry`.
-- A pull request closed without merging moves the batch to `closed` and returns its tasks to the queue. Leaving such a batch `published` strands the work and reads like success.
+- A pull request closed without merging moves the batch to `closed` and pauses its tasks as `failed`. A closed PR is an explicit rejection signal, so the broker never republishes the same receipts automatically.
 
-`integration.maxAttempts` bounds automatic re-queueing so a task that never integrates eventually stops consuming CI capacity and waits for a human. `task retry` resets that budget.
+`integration.maxAttempts` bounds automatic re-queueing of unaffected batch-mates after an attributable integration failure. Closed pull requests do not consume that retry loop. `task retry` is the explicit escape hatch when an operator has determined that retrying the unchanged receipt is safe.
 
 A `failed` task is still the worker's to fix in place: `task extend` can widen its scope, since
 fixing what validation caught often means touching a file the original claim did not cover, and
 `task submit` replaces its commits. Rebuilding the task is not required, and `task cancel` — which is
 final and ends the lease — is not the way back.
+
+After a pull request closes, reclaim the failed task and submit its corrected commits. The eager
+service will remain idle until that explicit revision arrives. If the pull request was closed only
+because of a transient forge problem and the immutable receipt is still correct, use `task retry`
+deliberately instead.
 
 `integrate --dry-run` is a rehearsal in both directions: it retains no branch when it succeeds, and
 returns every task to the queue when it fails, so verifying costs nothing.

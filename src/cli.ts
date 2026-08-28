@@ -355,7 +355,7 @@ task
 
 task
   .command("retry <id>")
-  .description("return a failed task to the submitted queue")
+  .description("explicitly return a failed task's unchanged receipt to the submitted queue")
   .option("--token <token>")
   .option("--token-file <path>", "read the lease token from this file")
   .action(async (id: string, options: TokenOptions) => {
