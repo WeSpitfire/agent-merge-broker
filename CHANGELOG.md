@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Closing a pull request without merging now pauses every affected task as `failed` instead of
+  automatically re-queueing its unchanged receipt. This prevents eager services from repeatedly
+  publishing rejected work; corrected commits can be reclaimed and submitted normally, while
+  `task retry` remains the explicit escape hatch for a deliberate unchanged-receipt retry.
+
 ## 0.7.0 — 2026-08-28
 
 ### Added

@@ -49,10 +49,17 @@ test("says what it started with, so a service that came up wrong is visible", ()
 test("routes failures to stderr and progress to stdout", () => {
   assert.equal(isErrorEvent({ kind: "failed", message: "boom" }), true);
   assert.equal(isErrorEvent({ kind: "sync-failed", batchId: "b", message: "boom" }), true);
-  // A batch closed without merging is somebody's work going back in the queue.
+  // A batch closed without merging needs a human or worker to revise it.
   assert.equal(isErrorEvent({ kind: "closed", batchId: "b" }), true);
   assert.equal(isErrorEvent({ kind: "integrating", tasks: [] }), false);
   assert.equal(isErrorEvent({ kind: "merged", batchId: "b" }), false);
+});
+
+test("says that a closed batch is paused instead of implying an automatic retry", () => {
+  assert.equal(
+    describeServeEvent({ kind: "closed", batchId: "b-1" }),
+    "batch b-1 closed without merging; its tasks are paused for revision",
+  );
 });
 
 test("reports idleness on a slower clock than the poll", () => {

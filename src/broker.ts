@@ -1320,8 +1320,12 @@ export class MergeBroker {
   }
 
   /**
-   * Records that a published batch will never merge and returns its tasks to the queue, so the work
-   * is re-planned against a fresh base instead of being silently lost.
+   * Records that a published batch will never merge and pauses its tasks for revision.
+   *
+   * A closed pull request is an explicit rejection signal. Re-queueing the unchanged receipts made
+   * an eager broker publish the same rejected work again before its worker could attach a fix. Base
+   * movement has its own `refreshBatch` path, and retrying an unchanged receipt remains available as
+   * an explicit operator action through `task retry`.
    */
   async closeBatch(id: string, reason: string): Promise<BatchRecord> {
     return await this.store.transaction((state, audit) => {
@@ -1330,25 +1334,18 @@ export class MergeBroker {
       batch.error = reason;
       batch.closedAt = now();
       batch.finishedAt = batch.closedAt;
-      const requeued: string[] = [];
-      const exhausted: string[] = [];
+      const paused: string[] = [];
       for (const taskId of batch.taskIds) {
         const task = requireTask(state, taskId);
         if (task.status === "merged") continue;
         delete task.batchId;
         delete task.publishedAt;
         task.lastError = reason;
-        task.attempts = (task.attempts ?? 0) + 1;
         task.updatedAt = now();
-        if (task.attempts < this.config.integration.maxAttempts && task.commits.length > 0) {
-          task.status = "submitted";
-          requeued.push(taskId);
-        } else {
-          task.status = "failed";
-          exhausted.push(taskId);
-        }
+        task.status = "failed";
+        paused.push(taskId);
       }
-      audit("batch.closed", { batchId: id, details: { reason, requeued, exhausted } });
+      audit("batch.closed", { batchId: id, details: { reason, paused } });
       return structuredClone(batch);
     });
   }

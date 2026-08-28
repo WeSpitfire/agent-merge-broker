@@ -398,7 +398,7 @@ test("fails only the conflicting task and returns its batch-mates to the queue",
   assert.equal((await broker.task("BYSTANDER")).status, "batched");
 });
 
-test("returns tasks to the queue when a published pull request is closed without merging", async (context) => {
+test("pauses tasks when a published pull request is closed until a revised receipt is submitted", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
     await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -414,37 +414,60 @@ test("returns tasks to the queue when a published pull request is closed without
   assert.equal(closed.status, "closed");
   assert.match(closed.error ?? "", /closed without merging/u);
   const task = await broker.task("CLOSED");
-  assert.equal(task.status, "submitted");
-  assert.equal(task.attempts, 1);
-  assert.ok((await broker.plan()).selected.some((item) => item.id === "CLOSED"));
+  assert.equal(task.status, "failed");
+  assert.equal(task.attempts, undefined);
+  assert.match(task.lastError ?? "", /closed without merging/u);
+  assert.equal((await broker.plan()).selected.length, 0);
+
+  // The durable failed state is the eager-loop guard: restarting the service cannot rediscover and
+  // republish the unchanged receipt.
+  const restarted = await MergeBroker.open(repo);
+  assert.equal((await restarted.plan()).selected.length, 0);
+
+  await git(repo, "switch", "-c", "closed-task-fix", commit);
+  await writeFile(path.join(repo, "src/closed.ts"), "export const closed = false;\n", "utf8");
+  await git(repo, "add", "src/closed.ts");
+  await git(repo, "commit", "-m", "fix closed task");
+  const fix = await git(repo, "rev-parse", "HEAD");
+  await git(repo, "switch", "main");
+
+  const revision = await restarted.claimTask({
+    id: "CLOSED",
+    holder: "fixer",
+    expectedPaths: ["src/closed.ts"],
+  });
+  const revised = await restarted.submitTask("CLOSED", [commit, fix], revision.token);
+  assert.equal(revised.task.status, "submitted");
+  assert.deepEqual(revised.task.commits, [commit, fix]);
+  assert.deepEqual((await restarted.plan()).selected.map((item) => item.id), ["CLOSED"]);
 
   const audit = await broker.store.readAudit();
-  assert.ok(audit.some((event) => event.event === "batch.closed"));
+  assert.ok(
+    audit.some(
+      (event) => event.event === "batch.closed" && (event.details?.paused as string[] | undefined)?.includes("CLOSED"),
+    ),
+  );
 });
 
-test("stops re-queueing a task once its attempt budget is exhausted", async (context) => {
+test("retries a closed pull request receipt only after an explicit operator action", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
     await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
-  const config = await loadConfig(repo);
-  config.integration.maxAttempts = 2;
-  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   const broker = await MergeBroker.open(repo);
-  const claim = await broker.claimTask({ id: "GIVEUP", holder: "agent", expectedPaths: ["src/giveup.ts"] });
-  const commit = await commitFile(repo, "giveup", "src/giveup.ts", "export const giveUp = true;\n");
-  await broker.submitTask("GIVEUP", [commit], claim.token);
+  const claim = await broker.claimTask({ id: "RETRY-CLOSED", holder: "agent", expectedPaths: ["src/retry.ts"] });
+  const commit = await commitFile(repo, "retry-closed", "src/retry.ts", "export const retry = true;\n");
+  await broker.submitTask("RETRY-CLOSED", [commit], claim.token);
 
   const first = await broker.integrate();
   await broker.closeBatch(first.batch.id, "closed once");
-  assert.equal((await broker.task("GIVEUP")).status, "submitted");
-
-  const second = await broker.integrate();
-  await broker.closeBatch(second.batch.id, "closed twice");
-  const task = await broker.task("GIVEUP");
-  assert.equal(task.status, "failed");
-  assert.equal(task.attempts, 2);
+  assert.equal((await broker.task("RETRY-CLOSED")).status, "failed");
   assert.equal((await broker.plan()).selected.length, 0);
+
+  const retried = await broker.retryTask("RETRY-CLOSED");
+  assert.equal(retried.status, "submitted");
+  assert.equal(retried.attempts, undefined);
+  assert.deepEqual((await broker.plan()).selected.map((item) => item.id), ["RETRY-CLOSED"]);
 });
 
 test("publishes one integration branch and reconciles it after merge", async (context) => {
@@ -484,7 +507,7 @@ test("publishes one integration branch and reconciles it after merge", async (co
   assert.equal((await broker.task("PUBLISH")).status, "merged");
 });
 
-test("requeues tasks when a published batch closes without merging", async (context) => {
+test("pauses tasks when a published batch closes without merging", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
     await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -511,7 +534,8 @@ test("requeues tasks when a published batch closes without merging", async (cont
 
   assert.equal(closed.status, "closed");
   assert.match(closed.error ?? "", /closed without merge/u);
-  assert.equal((await broker.task("CLOSED-PR")).status, "submitted");
+  assert.equal((await broker.task("CLOSED-PR")).status, "failed");
+  assert.equal((await broker.plan()).selected.length, 0);
 });
 
 test(

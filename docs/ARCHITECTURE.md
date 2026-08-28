@@ -65,11 +65,10 @@ artifacts. `serve`, `integrate`, and the explicit `recover` command all use the 
 ## Task lifecycle
 
 ```text
-registered → claimed → submitted → integrating → batched → published → merged
-                 ↑          ↑ │          │                     │
-                 │          │ │          │                     │ pull request closed
-                 │          └─┼──────────┴─────────────────────┘ or batch-mate failed
-                 └──── retry ←┴─ failed
+happy path:     registered → claimed → submitted → integrating → batched → published → merged
+revision path:                         failure or rejected PR → failed → claimed → submitted
+explicit retry:                                                failed ──────────→ submitted
+safe refresh:                                                        published → submitted
 ```
 
 - `registered`: metadata exists but no active worker lease is required.
@@ -84,7 +83,9 @@ Cancellation is allowed only before batching. After correction, `task submit` ca
 
 A failed attempt is attributed as narrowly as the evidence allows. A cherry-pick conflict or a focused validation failure is attributable to one task: that task moves to `failed` with error evidence and its batch-mates return to `submitted`, so an unrelated agent's work is not held hostage. An authoritative validation failure indicts the entire batch and moves every selected task to `failed`, which prevents a polling broker from repeating the same broken batch.
 
-A published batch whose pull request is closed without merging becomes `closed` rather than remaining `published`. Its tasks return to `submitted`, because a closed pull request means the work was rejected, not completed. `integration.maxAttempts` bounds how many times a task may be re-queued automatically before it is left `failed` for a human.
+A published batch whose pull request is closed without merging becomes `closed` rather than remaining `published`. Its tasks move to `failed`, because a closed pull request is an explicit rejection signal and republishing the same immutable receipts would simply repeat the rejected attempt. This failed state is durable across eager-loop iterations and service restarts. A worker can reclaim the task and submit corrected commits; an operator can use `task retry` when retrying the unchanged receipt is deliberately intended.
+
+`integration.maxAttempts` applies to automatic re-queueing of unaffected batch-mates after an attributable integration failure. It is not a license to retry closed pull requests.
 
 ## Scheduling
 
