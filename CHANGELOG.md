@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.8.0 — 2026-08-28
+
+### Added
+
+- **Exact candidate approval.** Optional approval policy binds required GitHub checks, named manual
+  evidence, and explicit authorization to the integrated candidate SHA, base SHA, and policy
+  revision. Publishing no longer enables auto-merge before that gate when the policy is required.
+- `batch verify`, `batch approve`, and `batch request-changes` expose verification and authorization
+  as separate, auditable capabilities. Approvers can be restricted by configured actor identity.
+- `task candidate` replaces ambiguous completion language while `task submit` remains a compatible
+  alias. `task abandon` is the explicit cancellation alias.
+- `task reopen` and `task revise` keep corrective work on the same integration branch and pull
+  request. The guarded force update archives the former candidate as `superseded` and starts the new
+  revision with no inherited evidence or approval.
+- Candidate state and evidence have a published JSON schema, and human/JSON status surfaces show
+  verification progress, exact bindings, approval, and blocking reasons.
+
+### Security
+
+- Approval re-reads the live pull request, requires an exact head/base binding, rejects conflicts or
+  requested changes, verifies every task remains outside an editing lease, and passes the candidate
+  SHA to GitHub's merge head guard. External PR-head mutations block the candidate; an out-of-band
+  merge without matching approval is recorded as an invariant violation.
+- Base or candidate changes invalidate all prior verification and approval. Editing leases remain
+  enforceable during revision without being kept artificially alive through long CI and review.
+
+### Compatibility
+
+- Existing version-one configurations receive `approval.required: false` defaults and retain the
+  pre-0.8 publication behavior until they opt into the gate.
+
 ## 0.7.1 — 2026-08-28
 
 ### Fixed

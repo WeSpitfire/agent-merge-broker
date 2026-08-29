@@ -65,12 +65,42 @@ test("defaults auto-merge off for configurations written before it existed", () 
   delete config.integration?.refreshBase;
   delete config.integration?.maxAttempts;
   delete config.validation?.authority;
+  delete config.approval;
   const validated = validateConfig(config);
   assert.equal(validated.publish.autoMerge, false);
   assert.equal(validated.publish.mergeMethod, "squash");
   assert.equal(validated.integration.refreshBase, true);
   assert.equal(validated.integration.maxAttempts, 3);
   assert.equal(validated.validation.authority, "broker");
+  assert.deepEqual(validated.approval, {
+    required: false,
+    policyRevision: "default",
+    requiredVerifications: [],
+    requiredChecks: [],
+    authorizedActors: [],
+  });
+});
+
+test("requires pull-request publication when exact candidate approval is mandatory", () => {
+  const config = defaultConfig();
+  if (!config.approval) throw new Error("default approval policy missing");
+  config.approval.required = true;
+  assert.throws(
+    () => validateConfig(config),
+    (error: unknown) => error instanceof BrokerError && /publish\.mode pull-request/u.test(error.message),
+  );
+  config.publish.mode = "pull-request";
+  assert.deepEqual(validateConfig(config), config);
+});
+
+test("rejects ambiguous duplicate approval evidence names", () => {
+  const config = defaultConfig();
+  if (!config.approval) throw new Error("default approval policy missing");
+  config.approval.requiredVerifications = ["browser", "browser"];
+  assert.throws(
+    () => validateConfig(config),
+    (error: unknown) => error instanceof BrokerError && /evidence names must be unique/u.test(error.message),
+  );
 });
 
 test("accepts required CI as the explicit authority for signed pull-request batches", () => {

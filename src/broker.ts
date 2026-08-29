@@ -10,9 +10,11 @@ import { StateStore, type LockStatus } from "./store.js";
 import { runValidators } from "./validation.js";
 import {
   closePullRequest,
+  disableAutoMerge,
   enableAutoMerge,
   inspectPullRequest,
   publishBatch as publishPreparedBatch,
+  updatePullRequestBody,
 } from "./publisher.js";
 import {
   buildBatchProvenance,
@@ -29,6 +31,7 @@ import {
 } from "./service.js";
 import type {
   BatchRecord,
+  CandidateRecord,
   BrokerConfig,
   BrokerState,
   CommitReceipt,
@@ -36,12 +39,14 @@ import type {
   IntegrationResult,
   LocalValidationResult,
   RefreshResult,
+  RevisionResult,
   RecoveryResult,
   PruneOptions,
   PruneResult,
   SchedulePlan,
   TaskRecord,
   ValidationResult,
+  VerificationEvidence,
 } from "./types.js";
 
 function now(): string {
@@ -90,6 +95,120 @@ function verifyLease(task: TaskRecord, token: string): void {
   if (task.lease.tokenHash !== hashToken(token)) {
     throw new BrokerError("LEASE_TOKEN", `Invalid lease token for task ${task.id}.`);
   }
+}
+
+function approvalPolicy(config: BrokerConfig): NonNullable<BrokerConfig["approval"]> {
+  return config.approval ?? {
+    required: false,
+    policyRevision: "default",
+    requiredVerifications: [],
+    requiredChecks: [],
+    authorizedActors: [],
+  };
+}
+
+function requiredEvidenceNames(config: BrokerConfig): string[] {
+  const policy = approvalPolicy(config);
+  return [
+    ...policy.requiredVerifications,
+    ...policy.requiredChecks.map((name) => `github-check:${name}`),
+  ];
+}
+
+function candidateState(candidate: CandidateRecord): CandidateRecord["state"] {
+  if (
+    candidate.state === "changes_requested" ||
+    candidate.state === "blocked" ||
+    candidate.state === "superseded" ||
+    candidate.state === "abandoned" ||
+    candidate.state === "merged"
+  ) {
+    return candidate.state;
+  }
+  const evidence = new Map(candidate.verifications.map((item) => [item.name, item]));
+  if (candidate.requiredVerifications.some((name) => evidence.get(name)?.status === "failed")) {
+    return "verification_failed";
+  }
+  if (candidate.requiredVerifications.every((name) => evidence.get(name)?.status === "passed")) {
+    return candidate.approval ? (candidate.state === "merging" ? "merging" : "approved") : "ready_for_approval";
+  }
+  return "verifying";
+}
+
+function makeCandidate(config: BrokerConfig, sha: string, baseSha: string, revision: number): CandidateRecord {
+  const policy = approvalPolicy(config);
+  const candidate: CandidateRecord = {
+    revision,
+    sha,
+    baseSha,
+    policyRevision: policy.policyRevision,
+    state: "verifying",
+    requiredVerifications: requiredEvidenceNames(config),
+    verifications: [],
+    createdAt: now(),
+  };
+  candidate.state = candidateState(candidate);
+  return candidate;
+}
+
+function requireCurrentCandidate(batch: BatchRecord): CandidateRecord {
+  if (!batch.candidate) {
+    throw new BrokerError("NO_CANDIDATE", `Batch ${batch.id} has no approval candidate.`);
+  }
+  return batch.candidate;
+}
+
+function assertCandidateBinding(
+  candidate: CandidateRecord,
+  binding: { candidateSha: string; baseSha: string; policyRevision?: string },
+): void {
+  const policyRevision = binding.policyRevision ?? candidate.policyRevision;
+  if (
+    binding.candidateSha !== candidate.sha ||
+    binding.baseSha !== candidate.baseSha ||
+    policyRevision !== candidate.policyRevision
+  ) {
+    throw new BrokerError(
+      "CANDIDATE_MISMATCH",
+      "The supplied candidate SHA, base SHA, or policy revision does not match the current candidate.",
+      {
+        expected: {
+          candidateSha: candidate.sha,
+          baseSha: candidate.baseSha,
+          policyRevision: candidate.policyRevision,
+        },
+        supplied: { ...binding, policyRevision },
+      },
+    );
+  }
+}
+
+function assertCurrentApprovalPolicy(config: BrokerConfig, candidate: CandidateRecord): void {
+  const policy = approvalPolicy(config);
+  const required = requiredEvidenceNames(config);
+  if (
+    candidate.policyRevision !== policy.policyRevision ||
+    candidate.requiredVerifications.length !== required.length ||
+    candidate.requiredVerifications.some((name) => !required.includes(name))
+  ) {
+    throw new BrokerError(
+      "CANDIDATE_POLICY_STALE",
+      "The approval policy changed after this candidate was assembled. Rebuild it before verification or approval.",
+      {
+        candidatePolicyRevision: candidate.policyRevision,
+        currentPolicyRevision: policy.policyRevision,
+        candidateRequiredVerifications: candidate.requiredVerifications,
+        currentRequiredVerifications: required,
+      },
+    );
+  }
+}
+
+function upsertEvidence(candidate: CandidateRecord, evidence: VerificationEvidence): void {
+  candidate.verifications = candidate.verifications.filter((item) => item.name !== evidence.name);
+  candidate.verifications.push(evidence);
+  candidate.state = candidateState(candidate);
+  delete candidate.reason;
 }
 
 /**
@@ -593,6 +712,59 @@ export class MergeBroker {
     });
   }
 
+  private async resolveTaskCommits(
+    snapshot: TaskRecord,
+    commits: string[],
+    options: { sinceBase?: boolean } = {},
+  ): Promise<{ commits: string[]; actualPaths: string[]; warnings: string[] }> {
+    if (options.sinceBase) {
+      const worktree = snapshot.worktree ?? this.repo.root;
+      commits = await this.repo.commitsSinceBase(worktree, snapshot.baseSha);
+      if (commits.length === 0) {
+        throw new BrokerError(
+          "COMMITS_REQUIRED",
+          `Task ${snapshot.id} has no commits after its recorded base ${snapshot.baseSha} in ${worktree}.`,
+          { worktree, baseSha: snapshot.baseSha },
+        );
+      }
+    }
+    if (commits.length === 0) throw new BrokerError("COMMITS_REQUIRED", "At least one commit is required.");
+    if (this.config.policies.requireCleanWorktree && snapshot.worktree && !(await this.repo.isClean(snapshot.worktree))) {
+      throw new BrokerError("DIRTY_WORKTREE", `Task worktree is not clean: ${snapshot.worktree}`);
+    }
+    const resolvedCommits: string[] = [];
+    for (const commit of commits) resolvedCommits.push(await this.repo.resolveCommit(commit));
+    if (new Set(resolvedCommits).size !== resolvedCommits.length) {
+      throw new BrokerError("DUPLICATE_COMMIT", `Task ${snapshot.id} submitted the same commit more than once.`);
+    }
+    for (const commit of resolvedCommits) {
+      if ((await this.repo.parentCount(commit)) > 1) {
+        throw new BrokerError(
+          "MERGE_COMMIT",
+          `Task ${snapshot.id} submitted merge commit ${commit}. Submit focused linear commits instead.`,
+        );
+      }
+      if ((await this.repo.changedFiles(commit)).length === 0) {
+        throw new BrokerError("EMPTY_COMMIT", `Task ${snapshot.id} submitted empty commit ${commit}.`);
+      }
+    }
+    const actualPaths = await this.repo.changedFilesForCommits(resolvedCommits);
+    const outsideScope = unexpectedPaths(actualPaths, snapshot.expectedPaths);
+    if (outsideScope.length > 0 && this.config.policies.unexpectedPaths === "error") {
+      throw new BrokerError("UNEXPECTED_PATHS", `Task ${snapshot.id} changed files outside its declared scope.`, {
+        unexpectedPaths: outsideScope,
+      });
+    }
+    return {
+      commits: resolvedCommits,
+      actualPaths,
+      warnings:
+        outsideScope.length > 0 && this.config.policies.unexpectedPaths === "warn"
+          ? [`Changed outside expected paths: ${outsideScope.join(", ")}`]
+          : [],
+    };
+  }
+
   async submitTask(
     taskId: string,
     commits: string[],
@@ -612,46 +784,9 @@ export class MergeBroker {
       );
     }
     verifyLease(snapshot, token);
-    if (options.sinceBase) {
-      const worktree = snapshot.worktree ?? this.repo.root;
-      commits = await this.repo.commitsSinceBase(worktree, snapshot.baseSha);
-      if (commits.length === 0) {
-        throw new BrokerError(
-          "COMMITS_REQUIRED",
-          `Task ${taskId} has no commits after its recorded base ${snapshot.baseSha} in ${worktree}.`,
-          { worktree, baseSha: snapshot.baseSha },
-        );
-      }
-    }
-    if (commits.length === 0) throw new BrokerError("COMMITS_REQUIRED", "At least one commit is required.");
-    if (this.config.policies.requireCleanWorktree && snapshot.worktree) {
-      if (!(await this.repo.isClean(snapshot.worktree))) {
-        throw new BrokerError("DIRTY_WORKTREE", `Task worktree is not clean: ${snapshot.worktree}`);
-      }
-    }
-    const resolvedCommits: string[] = [];
-    for (const commit of commits) resolvedCommits.push(await this.repo.resolveCommit(commit));
-    if (new Set(resolvedCommits).size !== resolvedCommits.length) {
-      throw new BrokerError("DUPLICATE_COMMIT", `Task ${taskId} submitted the same commit more than once.`);
-    }
-    for (const commit of resolvedCommits) {
-      if ((await this.repo.parentCount(commit)) > 1) {
-        throw new BrokerError(
-          "MERGE_COMMIT",
-          `Task ${taskId} submitted merge commit ${commit}. Submit focused linear commits instead.`,
-        );
-      }
-      if ((await this.repo.changedFiles(commit)).length === 0) {
-        throw new BrokerError("EMPTY_COMMIT", `Task ${taskId} submitted empty commit ${commit}.`);
-      }
-    }
-    const actualPaths = await this.repo.changedFilesForCommits(resolvedCommits);
-    const outsideScope = unexpectedPaths(actualPaths, snapshot.expectedPaths);
-    if (outsideScope.length > 0 && this.config.policies.unexpectedPaths === "error") {
-      throw new BrokerError("UNEXPECTED_PATHS", `Task ${taskId} changed files outside its declared scope.`, {
-        unexpectedPaths: outsideScope,
-      });
-    }
+    const resolved = await this.resolveTaskCommits(snapshot, commits, options);
+    const resolvedCommits = resolved.commits;
+    const actualPaths = resolved.actualPaths;
     const timestamp = now();
     const task = await this.store.transaction((state, audit) => {
       const current = requireTask(state, taskId);
@@ -675,10 +810,7 @@ export class MergeBroker {
       const resubmitted = current.status === "submitted";
       current.commits = resolvedCommits;
       current.actualPaths = actualPaths;
-      current.warnings =
-        outsideScope.length > 0 && this.config.policies.unexpectedPaths === "warn"
-          ? [`Changed outside expected paths: ${outsideScope.join(", ")}`]
-          : [];
+      current.warnings = resolved.warnings;
       if (current.dependsOn.includes(current.id)) {
         throw new BrokerError("DEPENDENCY_CYCLE", `Task ${current.id} cannot depend on itself.`);
       }
@@ -968,6 +1100,10 @@ export class MergeBroker {
           batch.provenancePath = relativePath;
         }
         batch.headSha = headSha;
+        if (!options.dryRun && approvalPolicy(this.config).required) {
+          batch.candidate = makeCandidate(this.config, headSha, baseSha, 1);
+          batch.candidateHistory = [];
+        }
         batch.finishedAt = now();
 
         if (options.dryRun) {
@@ -1004,6 +1140,13 @@ export class MergeBroker {
                 branchName,
                 headSha,
                 validationAuthority: batch.validationAuthority,
+                ...(batch.candidate
+                  ? {
+                      candidateRevision: batch.candidate.revision,
+                      candidateState: batch.candidate.state,
+                      policyRevision: batch.candidate.policyRevision,
+                    }
+                  : {}),
               },
             });
           });
@@ -1239,13 +1382,21 @@ export class MergeBroker {
     });
 
     if (!this.config.publish.autoMerge || !publication.pullRequestUrl) return published;
+    if (approvalPolicy(this.config).required && published.candidate?.state !== "approved") {
+      return published;
+    }
 
     // A separate step with its own outcome. Failing to queue auto-merge is a published batch that
     // needs a hand, not a publication that did not happen.
     let autoMergeEnabled = false;
     let warning: string | undefined;
     try {
-      autoMergeEnabled = await enableAutoMerge(this.repo.root, publication.pullRequestUrl, this.config);
+      autoMergeEnabled = await enableAutoMerge(
+        this.repo.root,
+        publication.pullRequestUrl,
+        this.config,
+        published.candidate?.sha,
+      );
     } catch (error) {
       warning = errorMessage(error);
     }
@@ -1262,6 +1413,594 @@ export class MergeBroker {
     });
   }
 
+  async recordVerification(
+    id: string,
+    input: {
+      name: string;
+      status: "passed" | "failed";
+      candidateSha: string;
+      baseSha: string;
+      policyRevision?: string;
+      actor: string;
+      evidenceUrl?: string;
+      notes?: string;
+    },
+  ): Promise<BatchRecord> {
+    const policy = approvalPolicy(this.config);
+    if (!policy.required) throw new BrokerError("APPROVAL_DISABLED", "SHA-bound approval is not enabled.");
+    if (!policy.requiredVerifications.includes(input.name)) {
+      throw new BrokerError(
+        "VERIFICATION_NOT_REQUIRED",
+        `Verification ${input.name} is not declared in approval.requiredVerifications.`,
+      );
+    }
+    const snapshot = requireBatch(await this.store.read(), id);
+    if (snapshot.status !== "published" || !snapshot.pullRequestUrl) {
+      throw new BrokerError("BATCH_NOT_VERIFIABLE", `Batch ${id} must have an open pull request before evidence is recorded.`);
+    }
+    const candidate = requireCurrentCandidate(snapshot);
+    assertCandidateBinding(candidate, input);
+    assertCurrentApprovalPolicy(this.config, candidate);
+    const pullRequest = await inspectPullRequest(this.repo.root, snapshot.pullRequestUrl);
+    if (pullRequest.state !== "OPEN" || pullRequest.headRefOid !== candidate.sha) {
+      throw new BrokerError("CANDIDATE_MISMATCH", "The pull request no longer points at the candidate being verified.", {
+        expectedHead: candidate.sha,
+        actualHead: pullRequest.headRefOid,
+        pullRequestState: pullRequest.state,
+      });
+    }
+    return await this.store.transaction((state, audit) => {
+      const batch = requireBatch(state, id);
+      const current = requireCurrentCandidate(batch);
+      assertCandidateBinding(current, input);
+      if (
+        current.state === "approved" ||
+        current.state === "merging" ||
+        current.state === "superseded" ||
+        current.state === "abandoned" ||
+        current.state === "merged"
+      ) {
+        throw new BrokerError("CANDIDATE_FINAL", `Candidate ${current.sha} cannot accept evidence while ${current.state}.`);
+      }
+      const evidence: VerificationEvidence = {
+        name: input.name,
+        source: "manual",
+        status: input.status,
+        candidateSha: current.sha,
+        baseSha: current.baseSha,
+        policyRevision: current.policyRevision,
+        actor: input.actor,
+        recordedAt: now(),
+        ...(input.evidenceUrl ? { evidenceUrl: input.evidenceUrl } : {}),
+        ...(input.notes ? { notes: input.notes } : {}),
+      };
+      upsertEvidence(current, evidence);
+      audit("batch.verification_recorded", {
+        actor: input.actor,
+        batchId: id,
+        details: {
+          name: input.name,
+          status: input.status,
+          candidateSha: current.sha,
+          baseSha: current.baseSha,
+          policyRevision: current.policyRevision,
+          ...(input.evidenceUrl ? { evidenceUrl: input.evidenceUrl } : {}),
+        },
+      });
+      return structuredClone(batch);
+    });
+  }
+
+  async requestChanges(
+    id: string,
+    input: {
+      candidateSha: string;
+      baseSha: string;
+      policyRevision?: string;
+      actor: string;
+      reason: string;
+    },
+  ): Promise<BatchRecord> {
+    const snapshot = requireBatch(await this.store.read(), id);
+    const candidate = requireCurrentCandidate(snapshot);
+    assertCandidateBinding(candidate, input);
+    if (snapshot.status !== "published" || !snapshot.pullRequestUrl) {
+      throw new BrokerError("BATCH_NOT_REVISABLE", `Batch ${id} is not a published candidate.`);
+    }
+    const pullRequest = await inspectPullRequest(this.repo.root, snapshot.pullRequestUrl);
+    if (pullRequest.state !== "OPEN" || pullRequest.headRefOid !== candidate.sha) {
+      throw new BrokerError("CANDIDATE_MISMATCH", "The pull request head changed before changes could be requested.");
+    }
+    if (snapshot.autoMergeEnabled) {
+      const disabled = await disableAutoMerge(this.repo.root, snapshot.pullRequestUrl);
+      if (!disabled) throw new BrokerError("CANDIDATE_FINAL", "The pull request merged before approval could be revoked.");
+    }
+    return await this.store.transaction((state, audit) => {
+      const batch = requireBatch(state, id);
+      const current = requireCurrentCandidate(batch);
+      assertCandidateBinding(current, input);
+      current.state = "changes_requested";
+      current.reason = input.reason;
+      delete current.approval;
+      batch.autoMergeEnabled = false;
+      delete batch.publishWarning;
+      audit("batch.changes_requested", {
+        actor: input.actor,
+        batchId: id,
+        details: {
+          reason: input.reason,
+          candidateSha: current.sha,
+          baseSha: current.baseSha,
+          policyRevision: current.policyRevision,
+        },
+      });
+      return structuredClone(batch);
+    });
+  }
+
+  async approveBatch(
+    id: string,
+    input: {
+      candidateSha: string;
+      baseSha: string;
+      policyRevision?: string;
+      actor: string;
+    },
+  ): Promise<BatchRecord> {
+    const policy = approvalPolicy(this.config);
+    if (!policy.required) throw new BrokerError("APPROVAL_DISABLED", "SHA-bound approval is not enabled.");
+    if (policy.authorizedActors.length > 0 && !policy.authorizedActors.includes(input.actor)) {
+      throw new BrokerError("APPROVAL_FORBIDDEN", `Actor ${input.actor} is not authorized to approve candidates.`);
+    }
+    await this.syncBatch(id);
+    const snapshot = requireBatch(await this.store.read(), id);
+    if (snapshot.status !== "published" || !snapshot.pullRequestUrl) {
+      throw new BrokerError("BATCH_NOT_APPROVABLE", `Batch ${id} must have an open pull request before approval.`);
+    }
+    const approvalState = await this.store.read();
+    const invalidTasks = snapshot.taskIds.filter((taskId) => {
+      const task = requireTask(approvalState, taskId);
+      return task.status !== "published" || Boolean(task.lease && !leaseExpired(task));
+    });
+    if (invalidTasks.length > 0) {
+      throw new BrokerError(
+        "CANDIDATE_STATE_INVALID",
+        "Every task must remain published and outside an editing lease at approval time.",
+        { taskIds: invalidTasks },
+      );
+    }
+    const candidate = requireCurrentCandidate(snapshot);
+    assertCandidateBinding(candidate, input);
+    assertCurrentApprovalPolicy(this.config, candidate);
+    if (
+      candidate.state !== "ready_for_approval" &&
+      candidate.state !== "approved" &&
+      candidate.state !== "merging"
+    ) {
+      const missing = candidate.requiredVerifications.filter(
+        (name) => !candidate.verifications.some((item) => item.name === name && item.status === "passed"),
+      );
+      throw new BrokerError(
+        "CANDIDATE_NOT_READY",
+        `Candidate ${candidate.sha} is ${candidate.state}; every required verification must pass before approval.`,
+        { missing },
+      );
+    }
+    const pullRequest = await inspectPullRequest(this.repo.root, snapshot.pullRequestUrl);
+    if (
+      pullRequest.state !== "OPEN" ||
+      pullRequest.headRefOid !== candidate.sha ||
+      (pullRequest.baseRefName && pullRequest.baseRefName !== snapshot.baseBranch) ||
+      (pullRequest.baseRefOid && pullRequest.baseRefOid !== candidate.baseSha)
+    ) {
+      throw new BrokerError("CANDIDATE_MISMATCH", "The PR head or target base changed before approval.", {
+        candidateSha: candidate.sha,
+        pullRequestHead: pullRequest.headRefOid,
+        candidateBaseSha: candidate.baseSha,
+        pullRequestBaseSha: pullRequest.baseRefOid,
+      });
+    }
+    if (pullRequest.reviewDecision === "CHANGES_REQUESTED" || pullRequest.mergeable === "CONFLICTING") {
+      throw new BrokerError("CANDIDATE_BLOCKED", "The pull request has blocking review feedback or merge conflicts.");
+    }
+
+    const approved = await this.store.transaction((state, audit) => {
+      const batch = requireBatch(state, id);
+      const current = requireCurrentCandidate(batch);
+      assertCandidateBinding(current, input);
+      if (
+        current.state !== "ready_for_approval" &&
+        current.state !== "approved" &&
+        current.state !== "merging"
+      ) {
+        throw new BrokerError("CANDIDATE_CHANGED", "Candidate state changed before approval could be recorded.");
+      }
+      const invalidTasks = batch.taskIds.filter((taskId) => {
+        const task = requireTask(state, taskId);
+        return task.status !== "published" || Boolean(task.lease && !leaseExpired(task));
+      });
+      if (invalidTasks.length > 0) {
+        throw new BrokerError(
+          "CANDIDATE_STATE_INVALID",
+          "A task entered an editing state before approval could be recorded.",
+          { taskIds: invalidTasks },
+        );
+      }
+      current.approval = {
+        candidateSha: current.sha,
+        baseSha: current.baseSha,
+        policyRevision: current.policyRevision,
+        actor: input.actor,
+        approvedAt: now(),
+      };
+      current.state = "approved";
+      delete current.reason;
+      audit("batch.approved", {
+        actor: input.actor,
+        batchId: id,
+        details: {
+          candidateSha: current.sha,
+          baseSha: current.baseSha,
+          policyRevision: current.policyRevision,
+        },
+      });
+      return structuredClone(batch);
+    });
+
+    if (!this.config.publish.autoMerge) return approved;
+    let enabled = false;
+    let warning: string | undefined;
+    try {
+      enabled = await enableAutoMerge(
+        this.repo.root,
+        snapshot.pullRequestUrl,
+        this.config,
+        candidate.sha,
+      );
+    } catch (error) {
+      warning = errorMessage(error);
+    }
+    return await this.store.transaction((state, audit) => {
+      const batch = requireBatch(state, id);
+      const current = requireCurrentCandidate(batch);
+      assertCandidateBinding(current, input);
+      batch.autoMergeEnabled = enabled;
+      if (enabled) current.state = "merging";
+      if (warning) batch.publishWarning = warning;
+      else delete batch.publishWarning;
+      audit(enabled ? "batch.auto_merge_enabled" : "batch.auto_merge_pending", {
+        actor: input.actor,
+        batchId: id,
+        details: { candidateSha: current.sha, ...(warning ? { warning } : {}) },
+      });
+      return structuredClone(batch);
+    });
+  }
+
+  async reopenTaskForRevision(
+    taskId: string,
+    input: {
+      holder: string;
+      expectedPaths?: string[];
+      worktree?: string;
+      reason?: string;
+      storeToken?: boolean;
+      tokenFile?: string;
+    },
+  ): Promise<{ task: TaskRecord; batch: BatchRecord; token: string; tokenPath?: string }> {
+    const policy = approvalPolicy(this.config);
+    if (!policy.required) throw new BrokerError("APPROVAL_DISABLED", "Candidate revision requires SHA-bound approval.");
+    const token = createToken();
+    const timestamp = now();
+    const expiresAt = new Date(Date.now() + this.config.leases.ttlSeconds * 1_000).toISOString();
+    const reopened = await this.store.transaction((state, audit) => {
+      const task = requireTask(state, taskId);
+      if (task.status !== "batched" && task.status !== "published") {
+        throw new BrokerError("TASK_NOT_REVISABLE", `Task ${taskId} cannot be revised while ${task.status}.`);
+      }
+      if (!task.batchId) throw new BrokerError("TASK_NOT_REVISABLE", `Task ${taskId} has no active batch.`);
+      const batch = requireBatch(state, task.batchId);
+      const candidate = requireCurrentCandidate(batch);
+      if (candidate.state === "approved" || candidate.state === "merging" || batch.autoMergeEnabled) {
+        throw new BrokerError(
+          "APPROVAL_REVOCATION_REQUIRED",
+          `Candidate ${candidate.sha} is approved. Request changes with its exact binding before reopening the task.`,
+        );
+      }
+      if (task.lease && !leaseExpired(task)) {
+        throw new BrokerError("LEASE_CONFLICT", `Task ${task.id} is already leased by ${task.lease.holder}.`);
+      }
+      const expectedPaths = input.expectedPaths ?? task.expectedPaths;
+      if (expectedPaths.length === 0) {
+        throw new BrokerError("PATHS_REQUIRED", "At least one expected path pattern is required to revise a task.");
+      }
+      assertNoLeaseConflict(state, task.id, expectedPaths, this.config.leases.serializedPatterns);
+      task.expectedPaths = [...new Set(expectedPaths)];
+      if (input.worktree) task.worktree = path.resolve(input.worktree);
+      task.lease = {
+        tokenHash: hashToken(token),
+        holder: input.holder,
+        acquiredAt: timestamp,
+        heartbeatAt: timestamp,
+        expiresAt,
+      };
+      task.updatedAt = timestamp;
+      candidate.state = "changes_requested";
+      candidate.reason = input.reason ?? `Revision opened by ${input.holder}.`;
+      delete candidate.approval;
+      audit("task.revision_opened", {
+        actor: input.holder,
+        taskId,
+        batchId: batch.id,
+        details: {
+          expiresAt,
+          candidateSha: candidate.sha,
+          baseSha: candidate.baseSha,
+          policyRevision: candidate.policyRevision,
+        },
+      });
+      return { task: structuredClone(task), batch: structuredClone(batch), token };
+    });
+    if (input.storeToken === false) return reopened;
+    const target = input.tokenFile ? path.resolve(input.tokenFile) : this.store.tokenPath(taskId);
+    const tokenPath = await this.store.writeToken(taskId, token, target);
+    return { ...reopened, tokenPath };
+  }
+
+  async reviseTask(
+    taskId: string,
+    commits: string[],
+    token: string,
+    options: { sinceBase?: boolean } = {},
+  ): Promise<RevisionResult> {
+    return await this.store.withIntegrationLock(async () => {
+      const state = await this.store.read();
+      const snapshot = requireTask(state, taskId);
+      if (snapshot.status !== "batched" && snapshot.status !== "published") {
+        throw new BrokerError("TASK_NOT_REVISABLE", `Task ${taskId} cannot be revised while ${snapshot.status}.`);
+      }
+      verifyLease(snapshot, token);
+      if (!snapshot.batchId) throw new BrokerError("TASK_NOT_REVISABLE", `Task ${taskId} has no active batch.`);
+      const originalBatch = structuredClone(requireBatch(state, snapshot.batchId));
+      const previousCandidate = structuredClone(requireCurrentCandidate(originalBatch));
+      if (previousCandidate.state !== "changes_requested") {
+        throw new BrokerError(
+          "CHANGES_NOT_REQUESTED",
+          `Candidate ${previousCandidate.sha} must be in changes_requested before it can be revised.`,
+        );
+      }
+      if (!originalBatch.branchName) throw new BrokerError("NO_BRANCH", `Batch ${originalBatch.id} has no branch.`);
+      if (originalBatch.pullRequestUrl) {
+        const pullRequest = await inspectPullRequest(this.repo.root, originalBatch.pullRequestUrl);
+        if (pullRequest.state !== "OPEN" || pullRequest.headRefOid !== previousCandidate.sha) {
+          throw new BrokerError(
+            "CANDIDATE_MISMATCH",
+            "The pull request no longer points at the candidate being revised; no branch was changed.",
+          );
+        }
+      }
+
+      const resolved = await this.resolveTaskCommits(snapshot, commits, options);
+      const revisedTask: TaskRecord = {
+        ...structuredClone(snapshot),
+        commits: resolved.commits,
+        actualPaths: resolved.actualPaths,
+        warnings: resolved.warnings,
+      };
+      const tasks = originalBatch.taskIds.map((id) =>
+        id === taskId ? revisedTask : structuredClone(requireTask(state, id)),
+      );
+      if (this.config.integration.refreshBase) {
+        await this.repo.fetchBranch(this.config.remote, this.config.baseBranch);
+      }
+      const baseSha = await this.repo.resolveCommit(this.config.baseRef);
+      const revision = previousCandidate.revision + 1;
+      const worktree = path.join(this.store.worktreesDirectory, `${originalBatch.id}-revision-${revision}`);
+      const nextBatch: BatchRecord = {
+        ...structuredClone(originalBatch),
+        baseSha,
+        worktree,
+        validations: [],
+      };
+      delete nextBatch.integratedHeadSha;
+      delete nextBatch.provenancePath;
+      delete nextBatch.autoMergeEnabled;
+      delete nextBatch.publishWarning;
+      delete nextBatch.error;
+      delete nextBatch.candidate;
+
+      const signingPrivateKey = await this.provenanceSigningPrivateKey();
+      let added = false;
+      try {
+        await this.repo.addDetachedWorktree(worktree, baseSha);
+        added = true;
+        for (const task of tasks) {
+          for (const commit of task.commits) {
+            const picked = await this.repo.cherryPick(worktree, commit);
+            if (picked.exitCode !== 0) {
+              await this.repo.abortCherryPick(worktree);
+              throw new BrokerError(
+                "CHERRY_PICK_CONFLICT",
+                `Commit ${commit} from task ${task.id} did not apply cleanly while revising the candidate.`,
+                { taskId: task.id, commit, stdout: picked.stdout, stderr: picked.stderr },
+              );
+            }
+          }
+          const focusedHead = await this.repo.currentHead(worktree);
+          nextBatch.validations.push(
+            ...(await runValidators({
+              validators: this.config.validation.focused,
+              scope: "focused",
+              cwd: worktree,
+              taskId: task.id,
+              files: task.actualPaths,
+              baseSha,
+              headSha: focusedHead,
+              batchId: nextBatch.id,
+              ...(this.config.validation.shell ? { shell: this.config.validation.shell } : {}),
+            })),
+          );
+        }
+        let headSha = await this.repo.currentHead(worktree);
+        const allFiles = [...new Set(tasks.flatMap((task) => task.actualPaths))].sort();
+        nextBatch.validations.push(
+          ...(await runValidators({
+            validators: this.config.validation.authoritative,
+            scope: "authoritative",
+            cwd: worktree,
+            files: allFiles,
+            baseSha,
+            headSha,
+            batchId: nextBatch.id,
+            ...(this.config.validation.shell ? { shell: this.config.validation.shell } : {}),
+          })),
+        );
+        if (this.config.integration.history === "squash") {
+          headSha = await this.repo.squash(
+            worktree,
+            baseSha,
+            `Integrate batch ${nextBatch.id} revision ${revision}\n\n${tasks.map((task) => `Task: ${task.id}`).join("\n")}`,
+          );
+        }
+        const provenance = this.config.integration.provenance;
+        if (provenance?.enabled) {
+          const integratedHeadSha = headSha;
+          const integratedPaths = await this.repo.changedFilesBetween(baseSha, integratedHeadSha);
+          const relativePath = provenancePath(provenance.directory, nextBatch.id);
+          let record = buildBatchProvenance({
+            batch: nextBatch,
+            tasks,
+            integratedHeadSha,
+            integratedPaths,
+            history: this.config.integration.history,
+          });
+          if (signingPrivateKey && provenance.publicKey) {
+            record = signBatchProvenance(record, signingPrivateKey, provenance.publicKey);
+          } else if (provenance.requireSignature) {
+            throw new BrokerError("SIGNING_KEY_REQUIRED", "Signed provenance is required for this batch.");
+          }
+          headSha = await this.repo.commitGeneratedFile(
+            worktree,
+            relativePath,
+            `${JSON.stringify(record, null, 2)}\n`,
+            `Record Merge Broker batch ${nextBatch.id} revision ${revision}`,
+          );
+          nextBatch.integratedHeadSha = integratedHeadSha;
+          nextBatch.provenancePath = relativePath;
+        }
+        nextBatch.headSha = headSha;
+        nextBatch.finishedAt = now();
+        nextBatch.candidate = makeCandidate(this.config, headSha, baseSha, revision);
+      } finally {
+        if (added) await this.repo.removeWorktree(worktree);
+      }
+
+      const nextCandidate = requireCurrentCandidate(nextBatch);
+      if (originalBatch.pullRequestUrl) {
+        await this.repo.replaceRemoteBranch(
+          this.config.remote,
+          originalBatch.branchName,
+          nextCandidate.sha,
+          previousCandidate.sha,
+        );
+      } else {
+        await this.repo.git(["branch", "-f", "--", originalBatch.branchName, nextCandidate.sha]);
+      }
+
+      const updated = await this.store.transaction((current, audit) => {
+        const task = requireTask(current, taskId);
+        verifyLease(task, token);
+        const storedBatch = requireBatch(current, originalBatch.id);
+        const storedCandidate = requireCurrentCandidate(storedBatch);
+        if (storedCandidate.sha !== previousCandidate.sha || storedCandidate.state !== "changes_requested") {
+          throw new BrokerError("CANDIDATE_CHANGED", "Candidate state changed while its revision was assembled.");
+        }
+        const superseded: CandidateRecord = {
+          ...structuredClone(storedCandidate),
+          state: "superseded",
+          reason: `Superseded by candidate revision ${revision}.`,
+        };
+        nextBatch.candidateHistory = [...(storedBatch.candidateHistory ?? []), superseded];
+        current.batches[storedBatch.id] = structuredClone(nextBatch);
+        const savedBatch = requireBatch(current, storedBatch.id);
+        const nextTask = requireTask(current, taskId);
+        nextTask.commits = resolved.commits;
+        nextTask.actualPaths = resolved.actualPaths;
+        nextTask.warnings = resolved.warnings;
+        nextTask.submittedAt = now();
+        nextTask.updatedAt = now();
+        delete nextTask.lease;
+        delete nextTask.lastError;
+        for (const id of nextBatch.taskIds) {
+          const batchTask = requireTask(current, id);
+          batchTask.validations = nextBatch.validations.filter(
+            (result) => !result.taskId || result.taskId === id,
+          );
+          batchTask.updatedAt = now();
+        }
+        audit("batch.candidate_revised", {
+          ...(snapshot.lease?.holder ? { actor: snapshot.lease.holder } : {}),
+          taskId,
+          batchId: storedBatch.id,
+          details: {
+            previousCandidateSha: previousCandidate.sha,
+            candidateSha: nextCandidate.sha,
+            previousBaseSha: previousCandidate.baseSha,
+            baseSha: nextCandidate.baseSha,
+            revision,
+          },
+        });
+        return {
+          batch: structuredClone(savedBatch),
+          task: structuredClone(nextTask),
+          previousCandidate: superseded,
+        };
+      });
+      await this.store.deleteToken(taskId);
+      const receipt: CommitReceipt = {
+        version: 1,
+        taskId: updated.task.id,
+        ...(updated.task.agent ? { agent: updated.task.agent } : {}),
+        baseSha: updated.task.baseSha,
+        commits: updated.task.commits,
+        expectedPaths: updated.task.expectedPaths,
+        actualPaths: updated.task.actualPaths,
+        dependsOn: updated.task.dependsOn,
+        ...(updated.task.worktree ? { worktree: updated.task.worktree } : {}),
+        submittedAt: updated.task.submittedAt ?? now(),
+        warnings: updated.task.warnings,
+      };
+      await this.store.writeReceipt(receipt);
+      await this.store.writeBatchManifest(updated.batch.id, {
+        batch: updated.batch,
+        tasks: tasks.map((task) => ({
+          id: task.id,
+          commits: task.id === taskId ? updated.task.commits : task.commits,
+          actualPaths: task.id === taskId ? updated.task.actualPaths : task.actualPaths,
+          dependsOn: task.dependsOn,
+        })),
+      });
+      if (updated.batch.pullRequestUrl) {
+        try {
+          await updatePullRequestBody(this.repo.root, updated.batch.pullRequestUrl, updated.batch, tasks);
+        } catch (error) {
+          const warning = errorMessage(error);
+          const warned = await this.store.transaction((current, audit) => {
+            const batch = requireBatch(current, updated.batch.id);
+            batch.publishWarning = warning;
+            audit("batch.pull_request_update_failed", {
+              batchId: batch.id,
+              details: { warning, candidateSha: batch.candidate?.sha },
+            });
+            return structuredClone(batch);
+          });
+          updated.batch = warned;
+        }
+      }
+      return updated;
+    });
+  }
+
   async syncBatch(id: string): Promise<BatchRecord> {
     const state = await this.store.read();
     const batch = requireBatch(state, id);
@@ -1274,6 +2013,211 @@ export class MergeBroker {
       // the batch "published" strands every task in it forever and reads like success.
       if (pullRequest.state === "CLOSED") {
         return await this.closeBatch(id, `Pull request ${batch.pullRequestUrl} was closed without merging.`);
+      }
+      if (approvalPolicy(this.config).required) {
+        if (!batch.candidate) {
+          if (pullRequest.state === "MERGED") {
+            return await this.store.transaction((current, audit) => {
+              const stored = requireBatch(current, id);
+              stored.status = "failed";
+              stored.error = "GitHub merged an untracked pre-approval candidate after approval policy was enabled.";
+              stored.finishedAt = now();
+              for (const taskId of stored.taskIds) {
+                const task = requireTask(current, taskId);
+                task.status = "failed";
+                task.lastError = stored.error;
+                task.updatedAt = now();
+              }
+              audit("batch.merge_invariant_violated", {
+                batchId: id,
+                details: { actualHead: pullRequest.headRefOid, approvalPresent: false, legacyCandidate: true },
+              });
+              return structuredClone(stored);
+            });
+          }
+          if (!batch.headSha || pullRequest.headRefOid !== batch.headSha) {
+            throw new BrokerError(
+              "CANDIDATE_MISMATCH",
+              "Approval policy was enabled for a legacy batch whose PR head no longer matches broker state.",
+              { expectedHead: batch.headSha, actualHead: pullRequest.headRefOid },
+            );
+          }
+          if (batch.autoMergeEnabled) {
+            const disabled = await disableAutoMerge(this.repo.root, batch.pullRequestUrl);
+            if (!disabled) {
+              throw new BrokerError("CANDIDATE_FINAL", "The legacy pull request merged before auto-merge was disabled.");
+            }
+          }
+          return await this.store.transaction((current, audit) => {
+            const stored = requireBatch(current, id);
+            if (!stored.headSha) throw new BrokerError("NO_CANDIDATE", `Batch ${id} has no head SHA.`);
+            stored.candidate = makeCandidate(this.config, stored.headSha, stored.baseSha, 1);
+            stored.candidateHistory ??= [];
+            stored.autoMergeEnabled = false;
+            audit("batch.candidate_adopted", {
+              batchId: id,
+              details: {
+                candidateSha: stored.candidate.sha,
+                baseSha: stored.candidate.baseSha,
+                policyRevision: stored.candidate.policyRevision,
+              },
+            });
+            return structuredClone(stored);
+          });
+        }
+        const candidate = requireCurrentCandidate(batch);
+        const exactHead = pullRequest.headRefOid === candidate.sha;
+        const exactBaseBranch = pullRequest.baseRefName === undefined || pullRequest.baseRefName === batch.baseBranch;
+        const exactBase = pullRequest.baseRefOid === undefined || pullRequest.baseRefOid === candidate.baseSha;
+        const requiredChecks = approvalPolicy(this.config).requiredChecks;
+        const githubCheckPassed = (check: (typeof pullRequest.checks)[number]): boolean => {
+          const conclusion = check.conclusion?.toUpperCase();
+          const status = check.status.toUpperCase();
+          return (
+            status === "SUCCESS" ||
+            (status === "COMPLETED" && ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion ?? ""))
+          );
+        };
+        const githubCheckFailed = (check: (typeof pullRequest.checks)[number]): boolean => {
+          const conclusion = check.conclusion?.toUpperCase();
+          const status = check.status.toUpperCase();
+          return (
+            status === "ERROR" ||
+            status === "FAILURE" ||
+            (status === "COMPLETED" &&
+              ["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(
+                conclusion ?? "",
+              ))
+          );
+        };
+        const checkPassed = (checkName: string): boolean => {
+          const checks = pullRequest.checks.filter((item) => item.name === checkName);
+          return checks.length > 0 && checks.every(githubCheckPassed);
+        };
+        const approvalInvalidated = Boolean(
+          candidate.approval &&
+            (!exactHead ||
+              !exactBaseBranch ||
+              !exactBase ||
+              pullRequest.reviewDecision === "CHANGES_REQUESTED" ||
+              pullRequest.mergeable === "CONFLICTING" ||
+              !requiredChecks.every(checkPassed)),
+        );
+        if (approvalInvalidated && batch.autoMergeEnabled) {
+          const disabled = await disableAutoMerge(this.repo.root, batch.pullRequestUrl);
+          if (!disabled) {
+            throw new BrokerError(
+              "CANDIDATE_FINAL",
+              "The pull request merged before invalidated approval could be revoked. Sync again to record the result.",
+            );
+          }
+        }
+
+        if (pullRequest.state === "MERGED") {
+          const approval = candidate.approval;
+          if (
+            !exactHead ||
+            !approval ||
+            approval.candidateSha !== candidate.sha ||
+            approval.baseSha !== candidate.baseSha ||
+            approval.policyRevision !== candidate.policyRevision
+          ) {
+            return await this.store.transaction((current, audit) => {
+              const stored = requireBatch(current, id);
+              const currentCandidate = requireCurrentCandidate(stored);
+              currentCandidate.state = "blocked";
+              currentCandidate.reason = "GitHub merged a SHA that did not satisfy the broker approval invariant.";
+              stored.status = "failed";
+              stored.error = currentCandidate.reason;
+              stored.finishedAt = now();
+              for (const taskId of stored.taskIds) {
+                const task = requireTask(current, taskId);
+                task.status = "failed";
+                task.lastError = stored.error;
+                task.updatedAt = now();
+              }
+              audit("batch.merge_invariant_violated", {
+                batchId: id,
+                details: {
+                  expectedHead: currentCandidate.sha,
+                  actualHead: pullRequest.headRefOid,
+                  approvalPresent: Boolean(approval),
+                },
+              });
+              return structuredClone(stored);
+            });
+          }
+        } else {
+          return await this.store.transaction((current, audit) => {
+            const stored = requireBatch(current, id);
+            const currentCandidate = requireCurrentCandidate(stored);
+            if (!exactHead || !exactBaseBranch || !exactBase) {
+              currentCandidate.state = "blocked";
+              currentCandidate.reason = !exactHead
+                ? `Pull request head changed from ${currentCandidate.sha} to ${pullRequest.headRefOid ?? "unknown"}.`
+                : !exactBaseBranch
+                  ? `Pull request base branch changed from ${stored.baseBranch} to ${pullRequest.baseRefName}.`
+                  : `Base moved from ${currentCandidate.baseSha} to ${pullRequest.baseRefOid}. Rebuild the candidate.`;
+              delete currentCandidate.approval;
+              stored.autoMergeEnabled = false;
+            } else if (pullRequest.reviewDecision === "CHANGES_REQUESTED") {
+              currentCandidate.state = "changes_requested";
+              currentCandidate.reason = "GitHub review requested changes.";
+              delete currentCandidate.approval;
+              stored.autoMergeEnabled = false;
+            } else if (pullRequest.mergeable === "CONFLICTING") {
+              currentCandidate.state = "blocked";
+              currentCandidate.reason = "GitHub reports merge conflicts.";
+              delete currentCandidate.approval;
+              stored.autoMergeEnabled = false;
+            } else {
+              currentCandidate.verifications = currentCandidate.verifications.filter(
+                (item) => !requiredChecks.includes(item.name.replace(/^github-check:/u, "")),
+              );
+              for (const checkName of requiredChecks) {
+                const checks = pullRequest.checks.filter((item) => item.name === checkName);
+                if (checks.length === 0) continue;
+                const passed = checks.every(githubCheckPassed);
+                const failed = checks.some(githubCheckFailed);
+                if (!passed && !failed) continue;
+                const detailsUrl = checks.find((check) => check.detailsUrl)?.detailsUrl;
+                currentCandidate.verifications.push({
+                  name: `github-check:${checkName}`,
+                  source: "github-check",
+                  status: passed ? "passed" : "failed",
+                  candidateSha: currentCandidate.sha,
+                  baseSha: currentCandidate.baseSha,
+                  policyRevision: currentCandidate.policyRevision,
+                  actor: "github",
+                  recordedAt: now(),
+                  ...(detailsUrl ? { evidenceUrl: detailsUrl } : {}),
+                });
+              }
+              currentCandidate.state = candidateState(currentCandidate);
+              if (
+                currentCandidate.approval &&
+                currentCandidate.state !== "approved" &&
+                currentCandidate.state !== "merging"
+              ) {
+                delete currentCandidate.approval;
+                stored.autoMergeEnabled = false;
+                currentCandidate.state = candidateState(currentCandidate);
+                currentCandidate.reason = "Required GitHub verification changed after approval; approval was revoked.";
+              } else {
+                delete currentCandidate.reason;
+              }
+            }
+            audit("batch.candidate_synced", {
+              batchId: id,
+              details: {
+                candidateSha: currentCandidate.sha,
+                candidateState: currentCandidate.state,
+                checks: pullRequest.checks.map((check) => ({ name: check.name, status: check.status })),
+              },
+            });
+            return structuredClone(stored);
+          });
+        }
       }
       if (pullRequest.state !== "MERGED") return structuredClone(batch);
       mergedAt = pullRequest.mergedAt ?? now();
@@ -1334,6 +2278,11 @@ export class MergeBroker {
       batch.error = reason;
       batch.closedAt = now();
       batch.finishedAt = batch.closedAt;
+      if (batch.candidate) {
+        batch.candidate.state = "abandoned";
+        batch.candidate.reason = reason;
+        delete batch.candidate.approval;
+      }
       const paused: string[] = [];
       for (const taskId of batch.taskIds) {
         const task = requireTask(state, taskId);
@@ -1416,6 +2365,11 @@ export class MergeBroker {
       stored.closedAt = now();
       stored.finishedAt = stored.closedAt;
       stored.error = `Superseded: base moved from ${stored.baseSha.slice(0, 7)} to ${currentBase.slice(0, 7)}.`;
+      if (stored.candidate) {
+        stored.candidate.state = "superseded";
+        stored.candidate.reason = stored.error;
+        delete stored.candidate.approval;
+      }
       delete stored.branchName;
       const requeued: string[] = [];
       for (const taskId of stored.taskIds) {
@@ -1456,8 +2410,27 @@ export class MergeBroker {
       if (!new Set<BatchRecord["status"]>(["prepared", "published", "closed", "merged"]).has(batch.status)) {
         throw new BrokerError("BATCH_NOT_MERGED", `Batch ${id} cannot be completed while ${batch.status}.`);
       }
+      if (approvalPolicy(this.config).required) {
+        const candidate = requireCurrentCandidate(batch);
+        const approval = candidate.approval;
+        if (
+          !approval ||
+          approval.candidateSha !== candidate.sha ||
+          approval.baseSha !== candidate.baseSha ||
+          approval.policyRevision !== candidate.policyRevision
+        ) {
+          throw new BrokerError(
+            "CANDIDATE_NOT_APPROVED",
+            `Batch ${id} cannot be completed without approval for its exact candidate/base/policy tuple.`,
+          );
+        }
+      }
       batch.status = "merged";
       batch.finishedAt = mergedAt;
+      if (batch.candidate) {
+        batch.candidate.state = "merged";
+        delete batch.candidate.reason;
+      }
       for (const taskId of batch.taskIds) {
         const task = requireTask(state, taskId);
         task.status = "merged";

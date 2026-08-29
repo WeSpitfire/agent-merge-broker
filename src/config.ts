@@ -24,10 +24,15 @@ This repository coordinates parallel work with Agent Merge Broker.
 2. Heartbeat long-running work with \`merge-broker task heartbeat <task-id>\`. The broker holds the
    lease token for you; pass \`--token\` only when working from another machine.
 3. Work only inside the declared scope. Coordinate a new claim before expanding it.
-4. Commit the completed, focused change. Agents do not merge, rebase, push, or administer branches.
-5. Submit immutable commits to the broker:
-   \`merge-broker task submit <task-id> --since-base\`
-6. Report the task ID, commit SHA, changed paths, and validation performed.
+4. Commit the focused change. Agents do not merge, rebase, push, or administer branches.
+5. Nominate immutable commits as a candidate for broker integration:
+   \`merge-broker task candidate <task-id> --since-base\`
+   Candidate nomination never authorizes merging.
+6. If verification requests changes, acquire a revision lease with
+   \`merge-broker task reopen <task-id>\`, commit the fix, then run
+   \`merge-broker task revise <task-id> --since-base\`. The existing pull request is updated and all
+   evidence for the earlier SHA is invalidated.
+7. Report the task ID, commit SHA, changed paths, and validation performed.
 
 The broker owns integration ordering, conflict resolution requests, validation, batching, and publication.
 `;
@@ -75,6 +80,13 @@ export function defaultConfig(baseBranch = "main", remote = "origin", baseRef = 
       authority: "broker",
       focused: [],
       authoritative: [],
+    },
+    approval: {
+      required: false,
+      policyRevision: "default",
+      requiredVerifications: [],
+      requiredChecks: [],
+      authorizedActors: [],
     },
     publish: {
       mode: "none",
@@ -181,6 +193,7 @@ export function validateConfig(value: unknown): BrokerConfig {
     "scheduling",
     "integration",
     "validation",
+    "approval",
     "publish",
   ]);
   if (config.version !== CONFIG_VERSION) {
@@ -305,6 +318,32 @@ export function validateConfig(value: unknown): BrokerConfig {
     throw new BrokerError("INVALID_CONFIG", "validation.focused and validation.authoritative must be arrays.");
   }
   if (config.validation.shell !== undefined) assertString(config.validation.shell, "validation.shell");
+  config.approval ??= {
+    required: false,
+    policyRevision: "default",
+    requiredVerifications: [],
+    requiredChecks: [],
+    authorizedActors: [],
+  };
+  assertAllowedKeys(config.approval, "approval", [
+    "required",
+    "policyRevision",
+    "requiredVerifications",
+    "requiredChecks",
+    "authorizedActors",
+  ]);
+  assertBoolean(config.approval.required, "approval.required");
+  assertString(config.approval.policyRevision, "approval.policyRevision");
+  assertStringArray(config.approval.requiredVerifications, "approval.requiredVerifications");
+  assertStringArray(config.approval.requiredChecks, "approval.requiredChecks");
+  assertStringArray(config.approval.authorizedActors, "approval.authorizedActors");
+  const evidenceNames = [
+    ...config.approval.requiredVerifications,
+    ...config.approval.requiredChecks.map((name) => `github-check:${name}`),
+  ];
+  if (new Set(evidenceNames).size !== evidenceNames.length) {
+    throw new BrokerError("INVALID_CONFIG", "approval evidence names must be unique.");
+  }
   assertAllowedKeys(config.publish, "publish", [
     "mode",
     "draft",
@@ -337,6 +376,18 @@ export function validateConfig(value: unknown): BrokerConfig {
     throw new BrokerError(
       "INVALID_CONFIG",
       "publish.autoMerge has no effect in branch mode: set publish.mode to pull-request.",
+    );
+  }
+  if (config.approval.required && config.publish.mode !== "pull-request") {
+    throw new BrokerError(
+      "INVALID_CONFIG",
+      "approval.required needs publish.mode pull-request so the broker can bind approval to an exact PR head.",
+    );
+  }
+  if (config.approval.required && config.publish.draft) {
+    throw new BrokerError(
+      "INVALID_CONFIG",
+      "approval.required cannot use a draft pull request because an approved candidate must be immediately merge-eligible.",
     );
   }
   assertStringArray(config.publish?.labels, "publish.labels");

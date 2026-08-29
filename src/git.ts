@@ -213,6 +213,27 @@ export class GitRepository {
     );
   }
 
+  /**
+   * Advances an existing broker branch only when the remote still points at the candidate we are
+   * superseding. This is the one permitted force update: it keeps a revision on the same PR while
+   * refusing to overwrite somebody else's concurrent push.
+   */
+  async replaceRemoteBranch(
+    remote: string,
+    branch: string,
+    nextHead: string,
+    expectedHead: string,
+  ): Promise<void> {
+    await this.git([
+      "push",
+      `--force-with-lease=refs/heads/${branch}:${expectedHead}`,
+      "--",
+      remote,
+      `${nextHead}:refs/heads/${branch}`,
+    ]);
+    await this.git(["branch", "-f", "--", branch, nextHead]);
+  }
+
   async listWorktrees(): Promise<WorktreeInfo[]> {
     const result = await this.git(["worktree", "list", "--porcelain"]);
     const records: WorktreeInfo[] = [];

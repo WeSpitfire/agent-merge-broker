@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/candidate.schema.json",
+  "title": "Agent Merge Broker candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "revision",
+    "sha",
+    "baseSha",
+    "policyRevision",
+    "state",
+    "requiredVerifications",
+    "verifications",
+    "createdAt"
+  ],
+  "properties": {
+    "revision": { "type": "integer", "minimum": 1 },
+    "sha": { "$ref": "#/$defs/sha" },
+    "baseSha": { "$ref": "#/$defs/sha" },
+    "policyRevision": { "type": "string", "minLength": 1 },
+    "state": {
+      "enum": [
+        "verifying",
+        "ready_for_approval",
+        "approved",
+        "merging",
+        "changes_requested",
+        "verification_failed",
+        "superseded",
+        "blocked",
+        "abandoned",
+        "merged"
+      ]
+    },
+    "requiredVerifications": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "verifications": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/verification" }
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "approval": { "$ref": "#/$defs/approval" },
+    "reason": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "source",
+        "status",
+        "candidateSha",
+        "baseSha",
+        "policyRevision",
+        "actor",
+        "recordedAt"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "source": { "enum": ["manual", "github-check"] },
+        "status": { "enum": ["passed", "failed"] },
+        "candidateSha": { "$ref": "#/$defs/sha" },
+        "baseSha": { "$ref": "#/$defs/sha" },
+        "policyRevision": { "type": "string", "minLength": 1 },
+        "actor": { "type": "string", "minLength": 1 },
+        "recordedAt": { "type": "string", "format": "date-time" },
+        "evidenceUrl": { "type": "string", "format": "uri" },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidateSha", "baseSha", "policyRevision", "actor", "approvedAt"],
+      "properties": {
+        "candidateSha": { "$ref": "#/$defs/sha" },
+        "baseSha": { "$ref": "#/$defs/sha" },
+        "policyRevision": { "type": "string", "minLength": 1 },
+        "actor": { "type": "string", "minLength": 1 },
+        "approvedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}
