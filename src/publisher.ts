@@ -31,6 +31,19 @@ function pullRequestBody(batch: BatchRecord, tasks: TaskRecord[]): string {
     "### Validation",
     "",
     ...batch.validations.map((result) => `- ${result.exitCode === 0 ? "✅" : "❌"} ${result.name}`),
+    ...(batch.candidate
+      ? [
+          "",
+          "### Merge authorization",
+          "",
+          `- Candidate revision: \`${batch.candidate.revision}\``,
+          `- Candidate SHA: \`${batch.candidate.sha}\``,
+          `- Candidate base: \`${batch.candidate.baseSha}\``,
+          `- Policy: \`${batch.candidate.policyRevision}\``,
+          `- State at publication: \`${batch.candidate.state}\``,
+          "- Candidate nomination does **not** authorize merging.",
+        ]
+      : []),
     ...(batch.provenancePath
       ? ["", "### Provenance", "", `- Batch manifest: \`${batch.provenancePath}\``]
       : []),
@@ -123,6 +136,27 @@ export async function closePullRequest(
   return result.exitCode === 0;
 }
 
+/** Refreshes the informational PR body after the broker replaces a candidate on the same branch. */
+export async function updatePullRequestBody(
+  repoRoot: string,
+  pullRequestUrl: string,
+  batch: BatchRecord,
+  tasks: TaskRecord[],
+): Promise<void> {
+  const result = await runCommand(
+    "gh",
+    ["pr", "edit", pullRequestUrl, "--body-file", "-"],
+    { cwd: repoRoot, input: pullRequestBody(batch, tasks), allowFailure: true },
+  );
+  if (result.exitCode !== 0) {
+    throw new BrokerError("PULL_REQUEST_UPDATE_FAILED", "The candidate was updated but its PR description was not.", {
+      pullRequestUrl,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+  }
+}
+
 /**
  * The open pull request for this branch, or null when there is provably none.
  *
@@ -206,10 +240,12 @@ export async function enableAutoMerge(
   repoRoot: string,
   pullRequestUrl: string,
   config: BrokerConfig,
+  expectedHeadSha?: string,
 ): Promise<boolean> {
+  const headGuard = expectedHeadSha ? ["--match-head-commit", expectedHeadSha] : [];
   const result = await runCommand(
     "gh",
-    ["pr", "merge", pullRequestUrl, "--auto", `--${config.publish.mergeMethod}`],
+    ["pr", "merge", pullRequestUrl, "--auto", ...headGuard, `--${config.publish.mergeMethod}`],
     { cwd: repoRoot, allowFailure: true },
   );
   if (result.exitCode === 0) return true;
@@ -222,7 +258,9 @@ export async function enableAutoMerge(
   if (mergeState?.mergeStateStatus === "CLEAN") {
     // "CLEAN" means mergeable with every required check already passed, so merging now is exactly
     // what the auto-merge queue would have done.
-    const direct = await runCommand("gh", ["pr", "merge", pullRequestUrl, `--${config.publish.mergeMethod}`], {
+    const direct = await runCommand("gh", [
+      "pr", "merge", pullRequestUrl, ...headGuard, `--${config.publish.mergeMethod}`,
+    ], {
       cwd: repoRoot,
       allowFailure: true,
     });
@@ -246,24 +284,96 @@ export async function enableAutoMerge(
   );
 }
 
+/** Stops a queued merge before approval is revoked or a candidate is revised. */
+export async function disableAutoMerge(repoRoot: string, pullRequestUrl: string): Promise<boolean> {
+  const result = await runCommand(
+    "gh",
+    ["pr", "merge", pullRequestUrl, "--disable-auto"],
+    { cwd: repoRoot, allowFailure: true },
+  );
+  if (result.exitCode === 0) return true;
+  const state = await readMergeState(repoRoot, pullRequestUrl);
+  if (state?.state === "MERGED") return false;
+  throw new BrokerError("AUTO_MERGE_DISABLE_FAILED", "Could not disable auto-merge before revoking approval.", {
+    pullRequestUrl,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  });
+}
+
+export interface PullRequestCheck {
+  name: string;
+  status: string;
+  conclusion?: string;
+  detailsUrl?: string;
+}
+
+export interface PullRequestState {
+  state: string;
+  mergedAt?: string;
+  mergeCommitSha?: string;
+  headRefOid?: string;
+  baseRefOid?: string;
+  baseRefName?: string;
+  mergeStateStatus?: string;
+  mergeable?: string;
+  reviewDecision?: string;
+  checks: PullRequestCheck[];
+}
+
 export async function inspectPullRequest(
   repoRoot: string,
   pullRequestUrl: string,
-): Promise<{ state: string; mergedAt?: string; mergeCommitSha?: string }> {
+): Promise<PullRequestState> {
   const result = await runCommand(
     "gh",
-    ["pr", "view", pullRequestUrl, "--json", "state,mergedAt,mergeCommit"],
+    [
+      "pr", "view", pullRequestUrl, "--json",
+      "state,mergedAt,mergeCommit,headRefOid,baseRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup",
+    ],
     { cwd: repoRoot },
   );
   const value = JSON.parse(result.stdout) as {
     state: string;
     mergedAt?: string | null;
     mergeCommit?: { oid?: string } | null;
+    headRefOid?: string;
+    baseRefOid?: string;
+    baseRefName?: string;
+    mergeStateStatus?: string;
+    mergeable?: string;
+    reviewDecision?: string;
+    statusCheckRollup?: Array<{
+      __typename?: string;
+      name?: string;
+      context?: string;
+      status?: string;
+      state?: string;
+      conclusion?: string;
+      detailsUrl?: string;
+      targetUrl?: string;
+    }>;
   };
   return {
     state: value.state,
     ...(value.mergedAt ? { mergedAt: value.mergedAt } : {}),
     ...(value.mergeCommit?.oid ? { mergeCommitSha: value.mergeCommit.oid } : {}),
+    ...(value.headRefOid ? { headRefOid: value.headRefOid } : {}),
+    ...(value.baseRefOid ? { baseRefOid: value.baseRefOid } : {}),
+    ...(value.baseRefName ? { baseRefName: value.baseRefName } : {}),
+    ...(value.mergeStateStatus ? { mergeStateStatus: value.mergeStateStatus } : {}),
+    ...(value.mergeable ? { mergeable: value.mergeable } : {}),
+    ...(value.reviewDecision ? { reviewDecision: value.reviewDecision } : {}),
+    checks: (value.statusCheckRollup ?? []).flatMap((check) => {
+      const name = check.name ?? check.context;
+      if (!name) return [];
+      return [{
+        name,
+        status: check.status ?? check.state ?? "UNKNOWN",
+        ...(check.conclusion ? { conclusion: check.conclusion } : {}),
+        ...(check.detailsUrl ?? check.targetUrl ? { detailsUrl: check.detailsUrl ?? check.targetUrl } : {}),
+      }];
+    }),
   };
 }
 

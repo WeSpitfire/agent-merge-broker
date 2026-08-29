@@ -133,6 +133,42 @@
         }
       ]
     },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "policyRevision", "requiredVerifications", "requiredChecks", "authorizedActors"],
+      "properties": {
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require SHA/base/policy-bound verification and explicit approval before the broker may merge."
+        },
+        "policyRevision": {
+          "type": "string",
+          "minLength": 1,
+          "default": "default",
+          "description": "Operator-controlled policy identifier bound into every candidate, evidence record, and approval."
+        },
+        "requiredVerifications": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Manual evidence names, such as browser, responsive, or security."
+        },
+        "requiredChecks": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Exact GitHub check names that must pass on the candidate SHA."
+        },
+        "authorizedActors": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Actors allowed to approve. Empty permits any explicitly named actor."
+        }
+      }
+    },
     "publish": {
       "type": "object",
       "additionalProperties": false,
@@ -160,6 +196,27 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "approval": {
+            "properties": { "required": { "const": true } },
+            "required": ["required"]
+          }
+        },
+        "required": ["approval"]
+      },
+      "then": {
+        "properties": {
+          "publish": {
+            "properties": {
+              "mode": { "const": "pull-request" },
+              "draft": { "const": false }
+            }
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {

@@ -137,6 +137,7 @@ function planHuman(plan: SchedulePlan): string {
 }
 
 function batchHuman(batch: BatchRecord): string {
+  const candidate = batch.candidate;
   return [
     `Batch ${batch.id}: ${batch.status}`,
     `Tasks: ${batch.taskIds.join(", ")}`,
@@ -144,6 +145,22 @@ function batchHuman(batch: BatchRecord): string {
     `Base: ${batch.baseBranch} @ ${batch.baseSha}`,
     batch.branchName ? `Branch: ${batch.branchName}` : undefined,
     batch.headSha ? `Head: ${batch.headSha}` : undefined,
+    candidate ? `Candidate: r${candidate.revision} ${candidate.sha} (${candidate.state})` : undefined,
+    candidate ? `Approval policy: ${candidate.policyRevision}; base ${candidate.baseSha}` : undefined,
+    candidate && candidate.requiredVerifications.length > 0
+      ? `Required evidence: ${candidate.requiredVerifications
+          .map((name) => {
+            const evidence = candidate.verifications.find((item) => item.name === name);
+            return `${evidence?.status === "passed" ? "✓" : evidence?.status === "failed" ? "✗" : "○"} ${name}`;
+          })
+          .join(", ")}`
+      : undefined,
+    candidate?.approval
+      ? `Approved by ${candidate.approval.actor} at ${candidate.approval.approvedAt}`
+      : candidate
+        ? "Approval: pending"
+        : undefined,
+    candidate?.reason ? `Candidate note: ${candidate.reason}` : undefined,
     batch.pullRequestUrl ? `Pull request: ${batch.pullRequestUrl}` : undefined,
     batch.autoMergeEnabled ? "Auto-merge: enabled" : undefined,
     // The batch is published either way; this says what still needs a hand.
@@ -377,7 +394,7 @@ task
 
 task
   .command("submit <id>")
-  .description("submit one or more immutable Git commits as a receipt")
+  .description("legacy alias for task candidate")
   .option("--commit <revision>", "commit to integrate; repeatable", collect, [])
   .option("--since-base", "submit every linear commit made after the task's recorded base")
   .option("--token <token>")
@@ -393,7 +410,104 @@ task
     });
     output(
       { ...result, task: publicTask(result.task) },
-      `Submitted ${result.task.commits.length} commit(s) for ${id}.\nReceipt: ${result.receiptPath}`,
+      `Candidate nominated with ${result.task.commits.length} commit(s) for ${id}. This does not authorize merging.\nReceipt: ${result.receiptPath}`,
+    );
+  });
+
+task
+  .command("candidate <id>")
+  .description("nominate immutable commits for integration; this never authorizes merging")
+  .option("--commit <revision>", "commit to integrate; repeatable", collect, [])
+  .option("--since-base", "nominate every linear commit made after the task's recorded base")
+  .option("--token <token>")
+  .option("--token-file <path>", "read the lease token from this file")
+  .action(async (id: string, options: { commit: string[]; sinceBase?: boolean } & TokenOptions) => {
+    if (options.sinceBase && options.commit.length > 0) {
+      throw new BrokerError("INVALID_ARGUMENTS", "Use either --since-base or explicit --commit values, not both.");
+    }
+    const broker = await openBroker();
+    const commits = options.commit.length > 0 ? options.commit : ["HEAD"];
+    const result = await broker.submitTask(id, commits, await requireLeaseToken(broker, id, options), {
+      sinceBase: options.sinceBase ?? false,
+    });
+    output(
+      { ...result, task: publicTask(result.task), mergeAuthorized: false },
+      [
+        `Candidate nominated with ${result.task.commits.length} commit(s) for ${id}.`,
+        "This DOES NOT authorize merging.",
+        `Receipt: ${result.receiptPath}`,
+      ].join("\n"),
+    );
+  });
+
+task
+  .command("reopen <id>")
+  .description("acquire a revision lease for a task in an unapproved published candidate")
+  .option("--holder <name>", "lease holder", defaultHolder())
+  .option("--path <pattern>", "replacement expected path or glob; repeatable", collect, [])
+  .option("--worktree <path>", "agent worktree")
+  .option("--reason <reason>", "why the candidate needs revision")
+  .option("--token-file <path>", "write the lease token here instead of the broker state directory")
+  .option("--no-store-token", "do not persist the token; handle custody yourself")
+  .action(async (
+    id: string,
+    options: {
+      holder: string;
+      path: string[];
+      worktree?: string;
+      reason?: string;
+      tokenFile?: string;
+      storeToken: boolean;
+    },
+  ) => {
+    const result = await (await openBroker()).reopenTaskForRevision(id, {
+      holder: options.holder,
+      ...(options.path.length > 0 ? { expectedPaths: options.path } : {}),
+      ...(options.worktree ? { worktree: options.worktree } : {}),
+      ...(options.reason ? { reason: options.reason } : {}),
+      ...(options.tokenFile ? { tokenFile: options.tokenFile } : {}),
+      storeToken: options.storeToken,
+    });
+    output(
+      {
+        task: publicTask(result.task),
+        batch: result.batch,
+        token: result.token,
+        tokenPath: result.tokenPath,
+      },
+      [
+        `Reopened ${id} for candidate revision until ${result.task.lease?.expiresAt}.`,
+        ...(result.tokenPath
+          ? [`Lease token stored at ${result.tokenPath} (readable only by you).`]
+          : [`Lease token: ${result.token}`, "Save this token; it is shown only once."]),
+      ].join("\n"),
+    );
+  });
+
+task
+  .command("revise <id>")
+  .description("replace the current candidate on the same pull request and invalidate old evidence")
+  .option("--commit <revision>", "commit to integrate; repeatable", collect, [])
+  .option("--since-base", "use every linear commit made after the task's recorded base")
+  .option("--token <token>")
+  .option("--token-file <path>", "read the revision lease token from this file")
+  .action(async (id: string, options: { commit: string[]; sinceBase?: boolean } & TokenOptions) => {
+    if (options.sinceBase && options.commit.length > 0) {
+      throw new BrokerError("INVALID_ARGUMENTS", "Use either --since-base or explicit --commit values, not both.");
+    }
+    const broker = await openBroker();
+    const commits = options.commit.length > 0 ? options.commit : ["HEAD"];
+    const result = await broker.reviseTask(id, commits, await requireLeaseToken(broker, id, options), {
+      sinceBase: options.sinceBase ?? false,
+    });
+    output(
+      { ...result, task: publicTask(result.task) },
+      [
+        `Replaced candidate ${result.previousCandidate.sha} with ${result.batch.candidate?.sha}.`,
+        `Pull request retained: ${result.batch.pullRequestUrl ?? "not yet published"}`,
+        "All earlier verification and approval were invalidated.",
+        batchHuman(result.batch),
+      ].join("\n"),
     );
   });
 
@@ -423,6 +537,20 @@ task
       force: options.force ?? false,
     });
     output(publicTask(result), `Cancelled task ${id}.`);
+  });
+
+task
+  .command("abandon <id>")
+  .description("explicit alias for cancelling work that has not reached a batch")
+  .option("--token <token>")
+  .option("--token-file <path>", "read the lease token from this file")
+  .option("--force", "abandon without a lease token, for a holder that is gone")
+  .action(async (id: string, options: { force?: boolean } & TokenOptions) => {
+    const broker = await openBroker();
+    const result = await broker.cancelTask(id, await findLeaseToken(broker, id, options), {
+      force: options.force ?? false,
+    });
+    output(publicTask(result), `Abandoned task ${id}.`);
   });
 
 task
@@ -540,6 +668,85 @@ batch
   .description("push a prepared batch and optionally open its pull request")
   .action(async (id: string) => {
     const result = await (await openBroker()).publishBatch(id);
+    output(result, batchHuman(result));
+  });
+
+batch
+  .command("verify <id>")
+  .description("attach manual verification evidence to the exact current candidate")
+  .requiredOption("--name <name>", "configured manual verification name")
+  .addOption(new Option("--status <status>", "verification result").choices(["passed", "failed"]).makeOptionMandatory())
+  .requiredOption("--candidate <sha>", "exact candidate SHA that was verified")
+  .requiredOption("--base <sha>", "exact candidate base SHA that was verified")
+  .option("--policy-revision <revision>", "exact policy revision that was applied")
+  .requiredOption("--actor <actor>", "verifier identity")
+  .option("--evidence-url <url>", "durable evidence URL")
+  .option("--notes <notes>", "short verification notes")
+  .action(async (
+    id: string,
+    options: {
+      name: string;
+      status: "passed" | "failed";
+      candidate: string;
+      base: string;
+      policyRevision?: string;
+      actor: string;
+      evidenceUrl?: string;
+      notes?: string;
+    },
+  ) => {
+    const result = await (await openBroker()).recordVerification(id, {
+      name: options.name,
+      status: options.status,
+      candidateSha: options.candidate,
+      baseSha: options.base,
+      ...(options.policyRevision ? { policyRevision: options.policyRevision } : {}),
+      actor: options.actor,
+      ...(options.evidenceUrl ? { evidenceUrl: options.evidenceUrl } : {}),
+      ...(options.notes ? { notes: options.notes } : {}),
+    });
+    output(result, batchHuman(result));
+  });
+
+batch
+  .command("approve <id>")
+  .description("authorize only the exact verified candidate/base/policy tuple, then queue merge if configured")
+  .requiredOption("--candidate <sha>", "exact candidate SHA")
+  .requiredOption("--base <sha>", "exact candidate base SHA")
+  .option("--policy-revision <revision>", "exact policy revision")
+  .requiredOption("--actor <actor>", "authorized approver identity")
+  .action(async (
+    id: string,
+    options: { candidate: string; base: string; policyRevision?: string; actor: string },
+  ) => {
+    const result = await (await openBroker()).approveBatch(id, {
+      candidateSha: options.candidate,
+      baseSha: options.base,
+      ...(options.policyRevision ? { policyRevision: options.policyRevision } : {}),
+      actor: options.actor,
+    });
+    output(result, batchHuman(result));
+  });
+
+batch
+  .command("request-changes <id>")
+  .description("revoke approval if necessary and return the exact candidate to changes_requested")
+  .requiredOption("--candidate <sha>", "exact candidate SHA")
+  .requiredOption("--base <sha>", "exact candidate base SHA")
+  .option("--policy-revision <revision>", "exact policy revision")
+  .requiredOption("--actor <actor>", "reviewer identity")
+  .requiredOption("--reason <reason>", "why a revision is required")
+  .action(async (
+    id: string,
+    options: { candidate: string; base: string; policyRevision?: string; actor: string; reason: string },
+  ) => {
+    const result = await (await openBroker()).requestChanges(id, {
+      candidateSha: options.candidate,
+      baseSha: options.base,
+      ...(options.policyRevision ? { policyRevision: options.policyRevision } : {}),
+      actor: options.actor,
+      reason: options.reason,
+    });
     output(result, batchHuman(result));
   });
 

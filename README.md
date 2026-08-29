@@ -35,6 +35,7 @@ One integration authority; implementation stays distributed:
 - Every batch is tested through real cherry-picks in a disposable worktree.
 - Focused checks run after each task; the complete gate runs either in the broker or as required CI.
 - Successful work becomes one local branch, remote branch, or GitHub pull request.
+- Optional exact-candidate policy separates nomination, verification, approval, and mechanical merge.
 - Published branches can carry a committed provenance manifest for fast remote policy checks.
 - Tasks are dependency-complete only after their batch is actually merged.
 - An append-only audit stream records lifecycle decisions and validation results.
@@ -45,9 +46,9 @@ It is deliberately **not** an agent framework and **not** a replacement for prot
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.7.1` is current. Repositories can explicitly delegate the complete integration decision to
-protected required CI after focused broker preflight, avoiding a duplicate serial full-suite run.
-The default remains broker-authoritative validation for backward compatibility.
+`0.8.0` is current. Repositories can require SHA/base/policy-bound evidence and an explicit approval
+before auto-merge is enabled. Candidate revision stays on the same pull request and invalidates all
+earlier evidence. The gate is opt-in so existing repositories keep their current behavior.
 
 The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
@@ -127,14 +128,14 @@ This is the answer integration would give, not an approximation of it, because i
 `validation` configuration. It includes uncommitted and untracked files, writes no state, needs no
 lease, and exits non-zero when a validator fails — so a worker script can gate on it.
 
-The worker commits its change and submits a receipt. It does not merge or push:
+The worker commits its change and nominates a candidate receipt. It does not merge or push:
 
 ```bash
 git commit -m 'Add customer search filters'
-merge-broker task submit CRM-142 --since-base
+merge-broker task candidate CRM-142 --since-base
 ```
 
-Submitting again before the batch is assembled replaces the receipt, which is how a follow-up commit
+Nominating again before the batch is assembled replaces the receipt, which is how a follow-up commit
 from review reaches integration without rebuilding the task.
 
 `--since-base` submits the linear commits made after the base the broker handed out, skipping any
@@ -210,7 +211,7 @@ installing dependencies:
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v0.7.1
+- uses: WeSpitfire/agent-merge-broker/verify@v0.8.0
 ```
 
 The check verifies the Ed25519 signature, branch and batch identity, real base history, one-file
@@ -224,9 +225,53 @@ change under review. Repositories initialized before `0.6.0` must run `merge-bro
 setup-signing`, commit the resulting public-key policy, and keep the private key outside the working
 tree. Until then verification reports structural-only rather than authenticated provenance.
 
-## Automatic merging
+## Exact-candidate approval and automatic merging
 
-With `publish.mode` set to `pull-request` and `publish.autoMerge` enabled, the broker enables GitHub auto-merge on each published batch. GitHub lands the pull request once required status checks pass. The broker never pushes to the base branch itself, so branch protection remains the authority on what may merge. If the base moves first, re-cut the batch; do not use GitHub's update-branch merge because immutable provenance deliberately rejects it.
+`publish.autoMerge` is the mechanical last step, not merge authorization. When `approval.required`
+is enabled, publication opens the pull request and stops. The broker binds a candidate to its exact
+integrated SHA, base SHA, and `policyRevision`; it will not enable auto-merge until every configured
+GitHub check and manual verification has passed on that tuple and an authorized actor explicitly
+approves it.
+
+```text
+working → candidate → verifying → ready_for_approval → approved → merging → merged
+                          ↘ verification_failed
+                          ↘ changes_requested → revised candidate
+```
+
+Sync GitHub checks, attach manual evidence, and approve with values copied from `batch show`:
+
+```bash
+merge-broker batch sync <batch-id>
+merge-broker batch verify <batch-id> --name browser --status passed \
+  --candidate <sha> --base <sha> --policy-revision release-v1 --actor browser-agent
+merge-broker batch verify <batch-id> --name responsive --status passed \
+  --candidate <sha> --base <sha> --policy-revision release-v1 --actor responsive-agent
+merge-broker batch approve <batch-id> \
+  --candidate <sha> --base <sha> --policy-revision release-v1 --actor release-manager
+```
+
+Every binding is explicit on purpose. A stale command fails instead of approving whatever happens
+to be current. Approval also rechecks the open PR head, target base, task state, reviews, conflicts,
+and configured GitHub checks. The final `gh pr merge` uses GitHub's head-SHA guard.
+
+If verification finds a problem, keep the task and PR:
+
+```bash
+merge-broker batch request-changes <batch-id> \
+  --candidate <sha> --base <sha> --actor reviewer --reason 'Responsive layout fails at 390px'
+merge-broker task reopen <task-id> --holder agent --reason 'Fix responsive layout'
+# edit and commit under the new lease
+merge-broker task revise <task-id> --since-base
+```
+
+The broker force-updates only its own integration branch with `--force-with-lease`. The PR remains
+the same, the old candidate becomes `superseded`, and the new SHA starts with no evidence or
+approval. Editing leases end when a candidate is assembled; they are not kept alive during long CI
+runs. Approval instead requires every task to remain in the published, non-editing state.
+
+Without `approval.required`, auto-merge retains its pre-0.8 behavior for compatibility. The broker
+never pushes to the base branch itself, so branch protection remains an independent final defense.
 
 Two configuration combinations cannot work and are rejected at load time rather than stalling silently:
 
@@ -235,7 +280,9 @@ Two configuration combinations cannot work and are rejected at load time rather 
 
 Auto-merge requires the setting to be enabled on the GitHub repository. Configurations written before this feature existed default to `autoMerge: false`, so upgrading never starts landing work on its own.
 
-Running `merge-broker serve --publish` closes the loop: each cycle reconciles published batches, integrates the next batch, and publishes it for auto-merge.
+Running `merge-broker serve --publish` reconciles checks, integrates the next batch, and publishes it.
+With exact approval enabled it deliberately stops at `ready_for_approval`; only `batch approve`
+grants merge permission.
 
 ## Failure recovery
 
@@ -356,6 +403,13 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
       { "name": "build", "command": "npm run build", "timeoutSeconds": 1800 }
     ]
   },
+  "approval": {
+    "required": true,
+    "policyRevision": "release-v1",
+    "requiredVerifications": ["browser", "responsive"],
+    "requiredChecks": ["Verify release"],
+    "authorizedActors": ["release-manager"]
+  },
   "publish": {
     "mode": "pull-request",
     "draft": false,
@@ -433,11 +487,11 @@ merge-broker install-hooks [--force] [--uninstall]
 merge-broker install-service [--uninstall] [--interval <seconds>] [--no-eager]
 merge-broker verify-provenance --branch <ref> --head <sha> --base <sha>
 merge-broker validate [--task <id>] [--scope focused|authoritative|all] [--base <ref>] [--cwd <path>]
-merge-broker task register|claim|extend|heartbeat|submit|retry|release|cancel|show
+merge-broker task register|claim|extend|heartbeat|candidate|submit|reopen|revise|retry|release|cancel|abandon|show
 merge-broker status
 merge-broker plan
 merge-broker integrate [--dry-run] [--publish] [--force]
-merge-broker batch list|show|publish|refresh|sync|complete
+merge-broker batch list|show|publish|verify|approve|request-changes|refresh|sync|complete
 merge-broker audit
 merge-broker metrics
 merge-broker events

@@ -40,6 +40,23 @@ Failed integration worktrees are removed by default. Enabling `keepFailedWorktre
 
 Commit receipts are immutable IDs, but their objects can disappear after aggressive source-repository garbage collection if no ref retains them. Integrate or otherwise retain submitted commits before pruning unreachable branches.
 
+## Merge authorization
+
+`approval.required` moves broker merge authority behind an exact candidate tuple: candidate SHA,
+base SHA, and policy revision. Manual evidence and approval repeat that tuple and identify their
+actors. GitHub checks are accepted only from the live PR whose head matches the candidate; approval
+re-reads the head/base and the merge command uses `--match-head-commit`.
+
+This protects broker-mediated merges, not an administrator bypass in the forge UI. Repositories that
+need the invariant to be organizationally mandatory must also protect the base branch, limit bypass
+permission, require the configured checks, and restrict who can push broker integration branches.
+An out-of-band merge is detected during reconciliation and recorded as an invariant violation, but
+the broker cannot undo code that GitHub already merged.
+
+Authorized actor names are local policy identifiers, not cryptographic identities. Adapters should
+derive them from an authenticated execution context and should not accept an untrusted worker's
+free-form value. Stronger signed approval attestations are a compatible future extension.
+
 The final provenance commit is immutable. Do not use a forge's update-branch button on an integration
 branch. Even when the merged side is the real base, conflict resolution can introduce content that a
 path-only check cannot distinguish from the base change. Close and re-cut stale work with `batch

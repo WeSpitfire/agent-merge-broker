@@ -7,8 +7,8 @@ A worker needs only five capabilities:
 1. Claim an ID and expected path scope.
 2. Maintain an expiring lease while editing.
 3. Create one or more focused Git commits.
-4. Submit those commit IDs with the lease token.
-5. Stop performing Git administration after submission.
+4. Nominate those commit IDs with the lease token.
+5. Stop performing Git administration after nomination.
 
 All CLI commands support `--json`. Successful commands write one JSON value to stdout and exit zero. Errors write a stable code, message, and optional details to stderr and exit nonzero.
 
@@ -51,10 +51,10 @@ MERGE_BROKER_TOKEN=... merge-broker --json task extend TASK-123 \
 The broker rechecks active and serialized-resource conflicts before accepting
 the larger scope.
 
-## Submit
+## Nominate a candidate receipt
 
 ```bash
-MERGE_BROKER_TOKEN=... merge-broker --json task submit TASK-123 \
+MERGE_BROKER_TOKEN=... merge-broker --json task candidate TASK-123 \
   --commit a1b2c3d \
   --commit d4e5f6a
 ```
@@ -62,6 +62,54 @@ MERGE_BROKER_TOKEN=... merge-broker --json task submit TASK-123 \
 Commit order is significant. The broker resolves every revision to a full immutable commit ID and computes actual paths from Git rather than trusting the caller.
 
 The receipt written under Git's common directory conforms to [`../schemas/receipt.schema.json`](../schemas/receipt.schema.json). It contains no lease credential.
+
+`task submit` remains a compatibility alias. Neither command authorizes a merge. Individual task
+commits become a merge candidate only after the broker assembles the complete batch.
+
+## Verify and approve an exact candidate
+
+When `approval.required` is true, the candidate written into batch state conforms to
+[`../schemas/candidate.schema.json`](../schemas/candidate.schema.json). Its identity is the tuple
+`(candidateSha, baseSha, policyRevision)`. Adapters must carry all three values from `batch show` or
+JSON state into subsequent commands; they must not substitute a freshly read `HEAD`.
+
+`batch sync` attaches configured GitHub checks to the exact current candidate. Manual verification
+uses a named result:
+
+```bash
+merge-broker --json batch verify BATCH \
+  --name browser --status passed \
+  --candidate "$CANDIDATE_SHA" --base "$BASE_SHA" \
+  --policy-revision release-v1 --actor browser-agent \
+  --evidence-url https://ci.example/run/123
+```
+
+Approval is a separate capability:
+
+```bash
+merge-broker --json batch approve BATCH \
+  --candidate "$CANDIDATE_SHA" --base "$BASE_SHA" \
+  --policy-revision release-v1 --actor release-manager
+```
+
+The command fails unless all required evidence passed, the actor is authorized, every task remains
+published outside an editing lease, and GitHub still reports the exact head/base without conflicts
+or requested changes. If auto-merge is configured, only this successful command enables it.
+
+## Request and submit a revision
+
+```bash
+merge-broker --json batch request-changes BATCH \
+  --candidate "$CANDIDATE_SHA" --base "$BASE_SHA" \
+  --actor reviewer --reason "Responsive verification failed"
+merge-broker --json task reopen TASK-123 --holder adapter/session-456
+# edit and commit under the new lease
+merge-broker --json task revise TASK-123 --since-base
+```
+
+The broker reassembles and validates every task in the batch, updates the existing integration
+branch with a force-with-lease guard, and keeps the existing pull request. The former candidate is
+retained as `superseded`; the replacement has no inherited verification or approval.
 
 ## Published batch provenance
 
@@ -122,6 +170,8 @@ Adapters should primarily branch on these codes:
 - `LOCK_TIMEOUT`, `LOCK_HELD`
 - `SIGNING_KEY_REQUIRED`, `SIGNING_KEY_MISMATCH`, `SIGNING_KEY_EXISTS`
 - `PUBLISH_DISABLED`, `PUBLISH_FAILED`, `AUTO_MERGE_FAILED`, `PULL_REQUEST_CLOSE_FAILED`
+- `APPROVAL_DISABLED`, `APPROVAL_FORBIDDEN`, `CANDIDATE_MISMATCH`, `CANDIDATE_NOT_READY`
+- `CANDIDATE_BLOCKED`, `CANDIDATE_STATE_INVALID`, `TASK_NOT_REVISABLE`
 - `PROVENANCE_INVALID`
 - `HOOKS_PATH_CONFLICT`
 

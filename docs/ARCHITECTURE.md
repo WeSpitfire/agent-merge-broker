@@ -21,6 +21,10 @@ The core depends on Git rather than a particular agent SDK. CLI JSON output and 
    Ed25519 identity whose public key is committed on the protected base.
 9. The provenance commit is the immutable integration-branch head; stale batches are re-cut, never
    updated with a merge commit after validation.
+10. When exact approval is required, the code tested, reviewed, approved, and handed to GitHub's
+    merge operation is the same candidate SHA on the same recorded base and policy revision.
+11. Any candidate SHA or base change creates a new revision and invalidates all earlier evidence and
+    approval. A GitHub head mutation outside the broker blocks the candidate.
 
 ## Portable and runtime state
 
@@ -85,6 +89,40 @@ A failed attempt is attributed as narrowly as the evidence allows. A cherry-pick
 
 A published batch whose pull request is closed without merging becomes `closed` rather than remaining `published`. Its tasks move to `failed`, because a closed pull request is an explicit rejection signal and republishing the same immutable receipts would simply repeat the rejected attempt. This failed state is durable across eager-loop iterations and service restarts. A worker can reclaim the task and submit corrected commits; an operator can use `task retry` when retrying the unchanged receipt is deliberately intended.
 
+## Candidate lifecycle
+
+Task receipts are inputs to a batch. The mergeable candidate exists only after the broker has
+assembled those receipts, so approval is a batch-level fact rather than a claim about an individual
+worker commit.
+
+```text
+verifying → ready_for_approval → approved → merging → merged
+    │                 │
+    ├→ verification_failed
+    ├→ changes_requested → superseded (new revision begins at verifying)
+    ├→ blocked
+    └→ abandoned
+```
+
+The immutable authorization key is `(candidate SHA, base SHA, policy revision)`. Each verification
+record repeats that key together with its name, source, result, actor, timestamp, and optional
+evidence URL. The approval record repeats the same key and names the approving actor. This
+duplication is deliberate: a record remains intelligible in an audit archive without relying on
+mutable surrounding state.
+
+Configured GitHub checks are collected by `batch sync` only when the PR head exactly matches the
+candidate. Manual evidence is accepted only through a command that supplies the exact key. Approval
+re-reads the PR, rejects a moved base, conflicts, requested changes, missing evidence, unauthorized
+actors, and any task that has returned to an editing lease. The final GitHub merge command carries a
+head-SHA guard.
+
+An editing lease proves authority to create or revise task commits. It intentionally ends when the
+candidate is assembled instead of remaining alive throughout an unbounded CI or review interval.
+`task reopen` creates a new editing lease and marks the current candidate `changes_requested`;
+`task revise` rebuilds the complete batch, updates the existing broker branch with
+`--force-with-lease`, keeps the PR, archives the previous candidate as `superseded`, and starts the
+new candidate with empty evidence.
+
 `integration.maxAttempts` applies to automatic re-queueing of unaffected batch-mates after an attributable integration failure. It is not a license to retry closed pull requests.
 
 ## Scheduling
@@ -118,6 +156,8 @@ For a selected batch the broker:
 9. Creates a uniquely named local branch at the resulting head.
 10. Removes the disposable worktree.
 11. Optionally pushes the branch and opens one GitHub PR.
+12. When approval policy is enabled, records that exact head as candidate revision 1 and waits for
+    SHA-bound evidence and approval before enabling auto-merge.
 
 A failed cherry-pick is aborted. No retained branch is created after a broker-side validation
 failure. Configurable failed-worktree retention exists for diagnosis, but defaults off because
@@ -140,6 +180,10 @@ semantically sufficient. Protected-base configuration explicitly chooses broker 
 required remote CI suite.
 
 PR reconciliation queries GitHub for merged state. Branch reconciliation fetches the configured base and checks that the batch head is an ancestor. Squash and rebase workflows may require the explicit `batch complete` escape hatch because the local batch head can disappear from final ancestry.
+
+With exact approval enabled, reconciliation also imports configured GitHub check results and checks
+the live head/base binding. A PR merged without a matching non-revoked approval is recorded as a
+merge-invariant violation rather than silently reported as successful.
 
 ## Remote verification
 

@@ -6,6 +6,19 @@ export type PublishMode = "none" | "branch" | "pull-request";
 export type ValidationAuthority = "broker" | "required-ci";
 export type HistoryMode = "preserve" | "squash";
 export type MergeMethod = "squash" | "merge" | "rebase";
+export type CandidateState =
+  | "verifying"
+  | "ready_for_approval"
+  | "approved"
+  | "merging"
+  | "changes_requested"
+  | "verification_failed"
+  | "superseded"
+  | "blocked"
+  | "abandoned"
+  | "merged";
+export type VerificationStatus = "passed" | "failed";
+export type VerificationSource = "manual" | "github-check";
 export type TaskStatus =
   | "registered"
   | "claimed"
@@ -73,6 +86,17 @@ export interface BrokerConfig {
     focused: ValidatorConfig[];
     authoritative: ValidatorConfig[];
   };
+  /**
+   * Optional for configuration-file compatibility. `validateConfig` fills the defaults at runtime.
+   * When required, no broker merge operation is allowed before exact candidate approval.
+   */
+  approval?: {
+    required: boolean;
+    policyRevision: string;
+    requiredVerifications: string[];
+    requiredChecks: string[];
+    authorizedActors: string[];
+  };
   publish: {
     mode: PublishMode;
     draft: boolean;
@@ -81,6 +105,40 @@ export interface BrokerConfig {
     labels: string[];
     titleTemplate: string;
   };
+}
+
+export interface VerificationEvidence {
+  name: string;
+  source: VerificationSource;
+  status: VerificationStatus;
+  candidateSha: string;
+  baseSha: string;
+  policyRevision: string;
+  actor: string;
+  recordedAt: string;
+  evidenceUrl?: string;
+  notes?: string;
+}
+
+export interface ApprovalRecord {
+  candidateSha: string;
+  baseSha: string;
+  policyRevision: string;
+  actor: string;
+  approvedAt: string;
+}
+
+export interface CandidateRecord {
+  revision: number;
+  sha: string;
+  baseSha: string;
+  policyRevision: string;
+  state: CandidateState;
+  requiredVerifications: string[];
+  verifications: VerificationEvidence[];
+  createdAt: string;
+  approval?: ApprovalRecord;
+  reason?: string;
 }
 
 export interface LeaseRecord {
@@ -140,6 +198,10 @@ export interface BatchRecord {
   baseSha: string;
   branchName?: string;
   headSha?: string;
+  /** Exact integrated artifact whose evidence and approval control merge authorization. */
+  candidate?: CandidateRecord;
+  /** Earlier immutable candidates retained for audit after a revision changes the SHA or base. */
+  candidateHistory?: CandidateRecord[];
   integratedHeadSha?: string;
   provenancePath?: string;
   worktree?: string;
@@ -303,4 +365,10 @@ export interface RecoveryResult {
   worktreesRemoved: string[];
   branchesRemoved: string[];
   cleanupWarnings: string[];
+}
+
+export interface RevisionResult {
+  batch: BatchRecord;
+  task: TaskRecord;
+  previousCandidate: CandidateRecord;
 }
