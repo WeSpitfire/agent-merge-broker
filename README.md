@@ -46,7 +46,7 @@ It is deliberately **not** an agent framework and **not** a replacement for prot
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.8.0` is current. Repositories can require SHA/base/policy-bound evidence and an explicit approval
+`0.8.1` is current. Repositories can require SHA/base/policy-bound evidence and an explicit approval
 before auto-merge is enabled. Candidate revision stays on the same pull request and invalidates all
 earlier evidence. The gate is opt-in so existing repositories keep their current behavior.
 
@@ -211,7 +211,7 @@ installing dependencies:
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v0.8.0
+- uses: WeSpitfire/agent-merge-broker/verify@v0.8.1
 ```
 
 The check verifies the Ed25519 signature, branch and batch identity, real base history, one-file

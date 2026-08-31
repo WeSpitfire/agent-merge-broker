@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.1 — 2026-08-30
+
+### Fixed
+
+- SHA-bound approval now works with GitHub CLI versions that do not expose `baseRefOid` through
+  `gh pr view --json`. The broker detects that specific capability gap, retrieves the exact head
+  and base refs through `gh api`, and fails closed if the pull request head changes between the two
+  snapshots.
+
 ## 0.8.0 — 2026-08-28
 
 ### Added
