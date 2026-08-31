@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { defaultConfig } from "./config.js";
 import { BrokerError } from "./errors.js";
-import { enableAutoMerge, publishBatch } from "./publisher.js";
+import { enableAutoMerge, inspectPullRequest, publishBatch } from "./publisher.js";
 
 const PULL_REQUEST = "https://github.example.invalid/owner/repo/pull/1";
 
@@ -62,6 +62,70 @@ test(
         error instanceof BrokerError &&
         error.code === "AUTO_MERGE_FAILED" &&
         (error.details?.mergeState as { mergeStateStatus?: string } | undefined)?.mergeStateStatus === "BLOCKED",
+    );
+  },
+);
+
+async function fakeLegacyGh(
+  context: TestContext,
+  apiHeadRefOid = "1".repeat(40),
+): Promise<string> {
+  const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-bin-"));
+  const log = path.join(bin, "gh.log");
+  await writeFile(log, "", "utf8");
+  await writeFile(
+    path.join(bin, "gh"),
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >> "${log}"`,
+      "case \"$*\" in",
+      `  *"pr view"*baseRefOid*) echo 'Unknown JSON field: "baseRefOid"' >&2; exit 1 ;;`,
+      `  *"pr view"*) echo '{"state":"OPEN","headRefOid":"${"1".repeat(40)}","baseRefName":"main","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","statusCheckRollup":[]}' ;;`,
+      `  *"api repos/owner/repo/pulls/1"*) echo '{"headRefOid":"${apiHeadRefOid}","baseRefOid":"${"0".repeat(40)}","baseRefName":"main"}' ;;`,
+      "  *) exit 1 ;;",
+      "esac",
+      "",
+    ].join("\n"),
+    { encoding: "utf8", mode: 0o755 },
+  );
+  const previous = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
+  context.after(async () => {
+    if (previous === undefined) delete process.env.PATH;
+    else process.env.PATH = previous;
+    await rm(bin, { recursive: true, force: true });
+  });
+  return log;
+}
+
+test(
+  "falls back to the GitHub API when gh pr view does not support baseRefOid",
+  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
+  async (context) => {
+    const log = await fakeLegacyGh(context);
+
+    const state = await inspectPullRequest(process.cwd(), PULL_REQUEST);
+
+    assert.equal(state.headRefOid, "1".repeat(40));
+    assert.equal(state.baseRefOid, "0".repeat(40));
+    assert.equal(state.baseRefName, "main");
+    const calls = await readFile(log, "utf8");
+    assert.match(calls, /pr view.*baseRefOid/u);
+    assert.match(calls, /api repos\/owner\/repo\/pulls\/1 --hostname github\.example\.invalid/u);
+  },
+);
+
+test(
+  "fails closed when the pull request head moves during the legacy fallback",
+  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
+  async (context) => {
+    await fakeLegacyGh(context, "2".repeat(40));
+
+    await assert.rejects(
+      inspectPullRequest(process.cwd(), PULL_REQUEST),
+      (error: unknown) =>
+        error instanceof BrokerError &&
+        error.code === "PULL_REQUEST_CHANGED_DURING_INSPECTION",
     );
   },
 );

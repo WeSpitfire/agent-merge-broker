@@ -1,5 +1,5 @@
 import path from "node:path";
-import { BrokerError } from "./errors.js";
+import { BrokerError, CommandError } from "./errors.js";
 import { runCommand } from "./process.js";
 import type { BatchRecord, BrokerConfig, TaskRecord } from "./types.js";
 import type { GitRepository } from "./git.js";
@@ -321,18 +321,115 @@ export interface PullRequestState {
   checks: PullRequestCheck[];
 }
 
+const PULL_REQUEST_FIELDS =
+  "state,mergedAt,mergeCommit,headRefOid,baseRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup";
+const LEGACY_PULL_REQUEST_FIELDS =
+  "state,mergedAt,mergeCommit,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup";
+
+function isUnsupportedBaseRefOid(error: unknown): error is CommandError {
+  return (
+    error instanceof CommandError &&
+    error.stderr.includes('Unknown JSON field: "baseRefOid"')
+  );
+}
+
+function pullRequestApiTarget(pullRequestUrl: string): {
+  hostname: string;
+  endpoint: string;
+} {
+  let url: URL;
+  try {
+    url = new URL(pullRequestUrl);
+  } catch {
+    throw new BrokerError(
+      "INVALID_PULL_REQUEST_URL",
+      `Cannot inspect an invalid pull request URL: ${pullRequestUrl}`,
+    );
+  }
+  const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  if (parts.length !== 4 || parts[2] !== "pull" || !/^\d+$/u.test(parts[3] ?? "")) {
+    throw new BrokerError(
+      "INVALID_PULL_REQUEST_URL",
+      `Cannot derive a GitHub API endpoint from pull request URL: ${pullRequestUrl}`,
+    );
+  }
+  const [owner, repository, , number] = parts;
+  return {
+    hostname: url.hostname,
+    endpoint: `repos/${encodeURIComponent(owner ?? "")}/${encodeURIComponent(repository ?? "")}/pulls/${number}`,
+  };
+}
+
+/**
+ * GitHub CLI added `baseRefOid` to `gh pr view --json` after the approval lifecycle shipped.
+ * Older supported installations can still provide the same exact binding through the stable pull
+ * request REST response. Read head and base together, then compare the head with `pr view` so a
+ * force-push between the two snapshots fails closed instead of mixing checks with another commit.
+ */
+async function inspectLegacyPullRequestRefs(
+  repoRoot: string,
+  pullRequestUrl: string,
+  expectedHeadRefOid?: string,
+): Promise<{ headRefOid: string; baseRefOid: string; baseRefName: string }> {
+  const target = pullRequestApiTarget(pullRequestUrl);
+  const result = await runCommand(
+    "gh",
+    [
+      "api",
+      target.endpoint,
+      "--hostname",
+      target.hostname,
+      "--jq",
+      "{headRefOid: .head.sha, baseRefOid: .base.sha, baseRefName: .base.ref}",
+    ],
+    { cwd: repoRoot },
+  );
+  const refs = JSON.parse(result.stdout) as {
+    headRefOid?: string;
+    baseRefOid?: string;
+    baseRefName?: string;
+  };
+  if (!refs.headRefOid || !refs.baseRefOid || !refs.baseRefName) {
+    throw new BrokerError(
+      "PULL_REQUEST_REF_LOOKUP_FAILED",
+      "GitHub did not return the pull request head and base refs required for approval.",
+      { pullRequestUrl },
+    );
+  }
+  if (expectedHeadRefOid && refs.headRefOid !== expectedHeadRefOid) {
+    throw new BrokerError(
+      "PULL_REQUEST_CHANGED_DURING_INSPECTION",
+      "The pull request head changed while the broker was inspecting it. Retry against a stable candidate.",
+      { pullRequestUrl, expectedHeadRefOid, actualHeadRefOid: refs.headRefOid },
+    );
+  }
+  return {
+    headRefOid: refs.headRefOid,
+    baseRefOid: refs.baseRefOid,
+    baseRefName: refs.baseRefName,
+  };
+}
+
 export async function inspectPullRequest(
   repoRoot: string,
   pullRequestUrl: string,
 ): Promise<PullRequestState> {
-  const result = await runCommand(
-    "gh",
-    [
-      "pr", "view", pullRequestUrl, "--json",
-      "state,mergedAt,mergeCommit,headRefOid,baseRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup",
-    ],
-    { cwd: repoRoot },
-  );
+  let result: Awaited<ReturnType<typeof runCommand>>;
+  let legacyRefs: Awaited<ReturnType<typeof inspectLegacyPullRequestRefs>> | undefined;
+  try {
+    result = await runCommand(
+      "gh",
+      ["pr", "view", pullRequestUrl, "--json", PULL_REQUEST_FIELDS],
+      { cwd: repoRoot },
+    );
+  } catch (error) {
+    if (!isUnsupportedBaseRefOid(error)) throw error;
+    result = await runCommand(
+      "gh",
+      ["pr", "view", pullRequestUrl, "--json", LEGACY_PULL_REQUEST_FIELDS],
+      { cwd: repoRoot },
+    );
+  }
   const value = JSON.parse(result.stdout) as {
     state: string;
     mergedAt?: string | null;
@@ -354,13 +451,23 @@ export async function inspectPullRequest(
       targetUrl?: string;
     }>;
   };
+  if (!value.baseRefOid) {
+    legacyRefs = await inspectLegacyPullRequestRefs(
+      repoRoot,
+      pullRequestUrl,
+      value.headRefOid,
+    );
+  }
+  const headRefOid = value.headRefOid ?? legacyRefs?.headRefOid;
+  const baseRefOid = value.baseRefOid ?? legacyRefs?.baseRefOid;
+  const baseRefName = value.baseRefName ?? legacyRefs?.baseRefName;
   return {
     state: value.state,
     ...(value.mergedAt ? { mergedAt: value.mergedAt } : {}),
     ...(value.mergeCommit?.oid ? { mergeCommitSha: value.mergeCommit.oid } : {}),
-    ...(value.headRefOid ? { headRefOid: value.headRefOid } : {}),
-    ...(value.baseRefOid ? { baseRefOid: value.baseRefOid } : {}),
-    ...(value.baseRefName ? { baseRefName: value.baseRefName } : {}),
+    ...(headRefOid ? { headRefOid } : {}),
+    ...(baseRefOid ? { baseRefOid } : {}),
+    ...(baseRefName ? { baseRefName } : {}),
     ...(value.mergeStateStatus ? { mergeStateStatus: value.mergeStateStatus } : {}),
     ...(value.mergeable ? { mergeable: value.mergeable } : {}),
     ...(value.reviewDecision ? { reviewDecision: value.reviewDecision } : {}),
