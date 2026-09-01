@@ -91,7 +91,7 @@ export function defaultConfig(baseBranch = "main", remote = "origin", baseRef = 
     publish: {
       mode: "none",
       draft: false,
-      autoMerge: true,
+      autoMerge: false,
       mergeMethod: "squash",
       labels: [],
       titleTemplate: "Integration batch {batchId}",

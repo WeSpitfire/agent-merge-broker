@@ -302,3 +302,55 @@ test(
     );
   },
 );
+
+test(
+  "recovers a candidate revision when the branch moved before state finalization",
+  { skip: process.platform === "win32" ? "POSIX fake GitHub fixture" : false },
+  async (context) => {
+    const fixture = await repository(context);
+    const broker = await MergeBroker.open(fixture.repo);
+    const claim = await broker.claimTask({ id: "RECOVER-REVISION", holder: "worker", expectedPaths: ["feature.ts"] });
+    const firstCommit = await taskCommit(fixture.repo);
+    await broker.submitTask("RECOVER-REVISION", [firstCommit], claim.token);
+    const integrated = await broker.integrate();
+    const firstCandidate = integrated.batch.candidate;
+    assert.ok(firstCandidate);
+    await writeFile(fixture.headFile, `${firstCandidate.sha}\n`, "utf8");
+    await broker.publishBatch(integrated.batch.id);
+    await broker.requestChanges(integrated.batch.id, {
+      candidateSha: firstCandidate.sha,
+      baseSha: firstCandidate.baseSha,
+      actor: "reviewer",
+      reason: "Needs one correction.",
+    });
+    const revisionLease = await broker.reopenTaskForRevision("RECOVER-REVISION", {
+      holder: "worker",
+      reason: "Apply the correction.",
+    });
+    const correction = await fixCommit(fixture.repo);
+    const replaceRemoteBranch = broker.repo.replaceRemoteBranch.bind(broker.repo);
+    broker.repo.replaceRemoteBranch = async (remote, branch, nextHead, expectedHead) => {
+      await replaceRemoteBranch(remote, branch, nextHead, expectedHead);
+      await writeFile(fixture.headFile, `${nextHead}\n`, "utf8");
+      throw new Error("simulated stop after branch update");
+    };
+
+    await assert.rejects(
+      broker.reviseTask("RECOVER-REVISION", [firstCommit, correction], revisionLease.token),
+      /simulated stop/u,
+    );
+    broker.repo.replaceRemoteBranch = replaceRemoteBranch;
+    const interrupted = (await broker.state()).batches[integrated.batch.id];
+    assert.ok(interrupted?.revisionIntent);
+    assert.equal(interrupted?.candidate?.sha, firstCandidate.sha);
+
+    const recovery = await broker.recoverAbandonedIntegrations();
+    assert.deepEqual(recovery.candidateRevisionsRecovered, [integrated.batch.id]);
+    assert.deepEqual(recovery.candidateRevisionWarnings, []);
+    const recovered = (await broker.state()).batches[integrated.batch.id];
+    assert.equal(recovered?.revisionIntent, undefined);
+    assert.equal(recovered?.candidate?.revision, 2);
+    assert.notEqual(recovered?.candidate?.sha, firstCandidate.sha);
+    assert.deepEqual((await broker.task("RECOVER-REVISION")).commits, [firstCommit, correction]);
+  },
+);

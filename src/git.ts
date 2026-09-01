@@ -234,6 +234,10 @@ export class GitRepository {
     await this.git(["branch", "-f", "--", branch, nextHead]);
   }
 
+  async replaceLocalBranch(branch: string, nextHead: string): Promise<void> {
+    await this.git(["branch", "-f", "--", branch, nextHead]);
+  }
+
   async listWorktrees(): Promise<WorktreeInfo[]> {
     const result = await this.git(["worktree", "list", "--porcelain"]);
     const records: WorktreeInfo[] = [];

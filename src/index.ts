@@ -24,6 +24,12 @@ export {
 export { defaultConfig, initializeConfig, loadConfig, validateConfig, writeConfig } from "./config.js";
 export { scheduleTasks } from "./scheduler.js";
 export {
+  githubCliPublisher,
+  type ForgePublisher,
+  type PublicationResult,
+  type PullRequestState,
+} from "./publisher.js";
+export {
   buildBatchProvenance,
   generateProvenanceSigningIdentity,
   provenanceKeyId,

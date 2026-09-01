@@ -46,9 +46,10 @@ It is deliberately **not** an agent framework and **not** a replacement for prot
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.8.1` is current. Repositories can require SHA/base/policy-bound evidence and an explicit approval
-before auto-merge is enabled. Candidate revision stays on the same pull request and invalidates all
-earlier evidence. The gate is opt-in so existing repositories keep their current behavior.
+`0.9.0` is current. Publication and integration recover safely across interrupted state changes,
+validators run with bounded output and process-group timeouts, and `doctor` inspects the full
+operational toolchain. The Node API now accepts an injectable forge publisher while retaining the
+built-in GitHub CLI adapter.
 
 The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
@@ -89,6 +90,9 @@ manifests, keys, locks, and integration worktrees therefore stay outside commits
 worktree sees the same broker authority.
 
 ## Quick start
+
+For a guided rollout—including validator, publication, service, recovery, and protected-branch
+recipes—start with [Getting started](docs/GETTING_STARTED.md).
 
 Initialize an existing Git repository and edit its generated configuration:
 
@@ -211,7 +215,7 @@ installing dependencies:
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v0.8.1
+- uses: WeSpitfire/agent-merge-broker/verify@v0.9.0
 ```
 
 The check verifies the Ed25519 signature, branch and batch identity, real base history, one-file
@@ -336,6 +340,11 @@ branch, and return its tasks to `submitted` without spending their attempt budge
 recover` performs that reconciliation explicitly. `unlock --force` remains only for an owner that
 cannot be proven gone and must follow confirming no integration is active.
 
+Candidate revisions also carry a durable intent before the broker moves their branch. If a process
+stops after the branch update but before state finalization, `recover` compares the real PR/local
+head with the old and new candidate SHAs and safely finishes or rolls back the transition. An
+unexpected third SHA is never guessed at and remains visible in `doctor`.
+
 ## Housekeeping
 
 `state.json` is rewritten in full on every transaction, including heartbeats, so completed work should not accumulate in it forever:
@@ -436,7 +445,9 @@ Validators receive these environment variables:
 - `MERGE_BROKER_HEAD_SHA`
 - `MERGE_BROKER_BATCH_ID`
 
-Commands may also use the shell-safe placeholders `{taskId}` and `{files}`. Validator output retained in state is capped to prevent unbounded growth.
+Commands may also use the shell-safe placeholders `{taskId}` and `{files}`. Validator output is
+captured with a fixed memory bound and retained in state with that cap. A timeout terminates the
+validator process group on POSIX rather than leaving shell descendants behind.
 
 `merge-broker validate` runs these same broker-side validators against a working tree, so a worker
 can get the local integration answer before submitting rather than a weaker approximation of it. It reports

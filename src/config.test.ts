@@ -16,7 +16,9 @@ function requiredCiConfig() {
 }
 
 test("accepts the generated default configuration", () => {
-  assert.deepEqual(validateConfig(defaultConfig()), defaultConfig());
+  const config = defaultConfig();
+  assert.equal(config.publish.autoMerge, false);
+  assert.deepEqual(validateConfig(config), config);
 });
 
 test("rejects state directories that escape Git's common directory", () => {

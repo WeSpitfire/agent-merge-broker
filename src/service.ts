@@ -87,7 +87,24 @@ export interface ServiceOptions {
   logFile: string;
 }
 
+function assertServiceOptions(options: ServiceOptions): void {
+  if (!Number.isFinite(options.intervalSeconds) || options.intervalSeconds <= 0) {
+    throw new BrokerError("INVALID_INTERVAL", "Service intervalSeconds must be a positive number.");
+  }
+  for (const [name, value] of Object.entries({
+    repositoryRoot: options.repositoryRoot,
+    nodePath: options.nodePath,
+    cliPath: options.cliPath,
+    logFile: options.logFile,
+  })) {
+    if (!path.isAbsolute(value) || /[\0\r\n]/u.test(value)) {
+      throw new BrokerError("INVALID_SERVICE_PATH", `${name} must be an absolute single-line path.`);
+    }
+  }
+}
+
 export function launchdPlist(options: ServiceOptions): string {
+  assertServiceOptions(options);
   const args = [
     options.nodePath,
     options.cliPath,
@@ -136,6 +153,7 @@ ${argumentXml}
 }
 
 export function systemdUnit(options: ServiceOptions): string {
+  assertServiceOptions(options);
   const args = [
     options.nodePath,
     options.cliPath,
@@ -155,9 +173,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${options.repositoryRoot}
-Environment=PATH=${options.pathEntries.join(":")}
+WorkingDirectory=${JSON.stringify(options.repositoryRoot)}
+Environment=${JSON.stringify(`PATH=${options.pathEntries.join(":")}`)}
 ExecStart=${args.map((value) => JSON.stringify(value)).join(" ")}
+StandardOutput=${JSON.stringify(`append:${options.logFile}`)}
+StandardError=${JSON.stringify(`append:${options.logFile}`)}
 Restart=always
 RestartSec=15
 
@@ -177,6 +197,7 @@ export function serviceFilePath(
 }
 
 export function describeService(options: ServiceOptions, home: string = homedir()): ServiceDefinition {
+  assertServiceOptions(options);
   const servicePlatform = currentServicePlatform();
   const name = serviceName(options.repositoryRoot);
   return {
@@ -225,6 +246,16 @@ export async function installService(
   home: string = homedir(),
 ): Promise<ServiceInstallation> {
   const definition = describeService(options, home);
+  const existing = await readFile(definition.file, "utf8").catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (existing !== undefined && !existing.includes(SERVICE_MARKER)) {
+    throw new BrokerError(
+      "SERVICE_FILE_CONFLICT",
+      `Refusing to overwrite service file not owned by Agent Merge Broker: ${definition.file}`,
+    );
+  }
   await mkdir(path.dirname(definition.file), { recursive: true });
   await mkdir(path.dirname(definition.logFile), { recursive: true });
   await writeFile(definition.file, definition.contents, "utf8");
@@ -244,7 +275,17 @@ export async function uninstallService(
   const servicePlatform = currentServicePlatform();
   const name = serviceName(repositoryRoot);
   const file = serviceFilePath(servicePlatform, name, home);
-  const existed = await readFile(file, "utf8").then(() => true, () => false);
+  const existing = await readFile(file, "utf8").catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+  const existed = existing !== undefined;
+  if (existing !== undefined && !existing.includes(SERVICE_MARKER)) {
+    throw new BrokerError(
+      "SERVICE_FILE_CONFLICT",
+      `Refusing to remove service file not owned by Agent Merge Broker: ${file}`,
+    );
+  }
   if (servicePlatform === "launchd") {
     await runCommand("launchctl", ["unload", "-w", file], { cwd: repositoryRoot, allowFailure: true })
       .catch(() => undefined);

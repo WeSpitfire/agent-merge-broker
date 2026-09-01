@@ -102,7 +102,14 @@
           "allOf": [
             {
               "if": { "properties": { "requireSignature": { "const": true } }, "required": ["requireSignature"] },
-              "then": { "required": ["publicKey"], "properties": { "enabled": { "const": true } } }
+              "then": {
+                "type": "object",
+                "required": ["publicKey"],
+                "properties": {
+                  "enabled": { "const": true },
+                  "publicKey": { "type": "string", "minLength": 1 }
+                }
+              }
             }
           ]
         }
@@ -129,7 +136,7 @@
       "allOf": [
         {
           "if": { "properties": { "authority": { "const": "required-ci" } }, "required": ["authority"] },
-          "then": { "properties": { "authoritative": { "maxItems": 0 } } }
+          "then": { "properties": { "authoritative": { "type": "array", "maxItems": 0 } } }
         }
       ]
     },
@@ -200,6 +207,7 @@
       "if": {
         "properties": {
           "approval": {
+            "type": "object",
             "properties": { "required": { "const": true } },
             "required": ["required"]
           }
@@ -209,6 +217,7 @@
       "then": {
         "properties": {
           "publish": {
+            "type": "object",
             "properties": {
               "mode": { "const": "pull-request" },
               "draft": { "const": false }
@@ -221,6 +230,7 @@
       "if": {
         "properties": {
           "validation": {
+            "type": "object",
             "properties": { "authority": { "const": "required-ci" } },
             "required": ["authority"]
           }
@@ -228,15 +238,18 @@
       },
       "then": {
         "properties": {
-          "publish": { "properties": { "mode": { "const": "pull-request" } } },
+          "publish": { "type": "object", "properties": { "mode": { "const": "pull-request" } } },
           "integration": {
+            "type": "object",
             "required": ["provenance"],
             "properties": {
               "provenance": {
+                "type": "object",
                 "required": ["enabled", "requireSignature", "publicKey"],
                 "properties": {
                   "enabled": { "const": true },
-                  "requireSignature": { "const": true }
+                  "requireSignature": { "const": true },
+                  "publicKey": { "type": "string", "minLength": 1 }
                 }
               }
             }

@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible Agent Merge Broker defect
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include lease tokens, private keys, credentials, or sensitive validator output.
+  - type: input
+    id: version
+    attributes:
+      label: Broker version
+      placeholder: 0.8.1
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Node version, Git version, and publication mode.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Commands or a safe fixture that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Stable error code and relevant merge-broker doctor --json output.

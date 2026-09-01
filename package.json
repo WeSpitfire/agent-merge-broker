@@ -1,6 +1,6 @@
 {
   "name": "agent-merge-broker",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "A transaction coordinator for parallel code-producing agents and humans.",
   "type": "module",
   "bin": {
@@ -20,6 +20,7 @@
     "!dist/**/*.test.*",
     "schemas",
     "templates",
+    "examples",
     "docs",
     "README.md",
     "LICENSE"
@@ -62,6 +63,7 @@
   "devDependencies": {
     "@types/node": "^26.2.0",
     "@types/picomatch": "^4.0.2",
+    "ajv": "^8.20.0",
     "tsx": "^4.19.3",
     "typescript": "^7.0.2"
   }

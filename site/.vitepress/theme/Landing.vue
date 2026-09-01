@@ -14,7 +14,7 @@
       <nav>
         <a class="opt" href="#how">How it works</a>
         <a class="opt" href="#demo">Demo</a>
-        <a href="/agent-merge-broker/docs/architecture">Docs</a>
+        <a href="/agent-merge-broker/docs/getting-started">Docs</a>
         <a href="https://github.com/WeSpitfire/agent-merge-broker">GitHub&nbsp;↗</a>
       </nav>
     </div>
@@ -29,8 +29,8 @@
     <h1>Four agents just finished at the same time. Who merges first?</h1>
     <p class="lede">Agent Merge Broker answers that so your agents never have to. Workers commit and stop. The broker decides what can safely go together, cherry-picks it into a disposable worktree, runs your tests against the combination, and lands one validated branch.</p>
     <div class="actions">
-      <a class="btn" href="#how">How it works</a>
-      <a class="btn btn-ghost" href="https://github.com/WeSpitfire/agent-merge-broker">View on GitHub</a>
+      <a class="btn" href="/agent-merge-broker/docs/getting-started">Get started</a>
+      <a class="btn btn-ghost" href="#how">How it works</a>
     </div>
     <div class="cmd">
       <span class="sigil">$</span>
@@ -102,8 +102,13 @@
     <p class="eyebrow">See it work</p>
     <h2>Watch it in one minute</h2>
     <p class="col">Two workers race on a throwaway repository, a third is turned away for claiming ground someone else leased, and four commits land as one branch. No forge, no network, no credentials. It is also the project's acceptance test in CI — if the demo stops telling the truth, the build goes red.</p>
+    <div class="cmd">
+      <span class="sigil">$</span>
+      <span class="txt" id="demo-install">git clone https://github.com/WeSpitfire/agent-merge-broker && cd agent-merge-broker && npm install && npm run build && npm run example</span>
+      <button class="copy" data-copy="demo-install">Copy</button>
+    </div>
     <div class="frame">
-      <div class="frame-bar"><span>npm run example</span><span>~60s</span></div>
+      <div class="frame-bar"><span>Source checkout · npm run example</span><span>~60s</span></div>
       <div class="term">
 <pre><span class="c-mut">──</span> Two workers claim non-overlapping scope
    Claimed task <span class="c-sig">checkout</span> until 2026-08-17T04:12:55Z
@@ -135,7 +140,7 @@ with no agent pushing anything.</span></pre>
     <dl class="facts">
       <div class="fact"><dt>Tests</dt><dd>{{ project.tests }} passing</dd></div>
       <div class="fact"><dt>Supply chain</dt><dd>SLSA provenance</dd></div>
-      <div class="fact"><dt>Runtime deps</dt><dd>1</dd></div>
+      <div class="fact"><dt>Runtime deps</dt><dd>{{ project.dependencies }}</dd></div>
       <div class="fact"><dt>License</dt><dd>Apache-2.0</dd></div>
     </dl>
   </div>
@@ -146,6 +151,10 @@ with no agent pushing anything.</span></pre>
     <p class="eyebrow">Documentation</p>
     <h2>Wire it into your repository</h2>
     <div class="docs">
+      <a class="doc" href="/agent-merge-broker/docs/getting-started">
+        <h3>Getting started <span class="arrow">→</span></h3>
+        <p>Install, validate, publish, supervise, and recover your first repository.</p>
+      </a>
       <a class="doc" href="/agent-merge-broker/docs/architecture">
         <h3>Architecture <span class="arrow">→</span></h3>
         <p>Invariants, state model, scheduling, and the integration transaction.</p>
@@ -204,7 +213,9 @@ import { useData } from "vitepress";
 
 // Read from package.json and the test sources at build time; see projectFacts in config.mts.
 const { theme } = useData();
-const project = computed(() => theme.value.project as { version: string; tests: number });
+const project = computed(
+  () => theme.value.project as { version: string; tests: number; dependencies: number },
+);
 
 /**
  * The markup above is authored in its finished state, so a reader without JavaScript still sees the

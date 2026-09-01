@@ -5,13 +5,6 @@ import type { ValidationResult, ValidatorConfig } from "./types.js";
 
 const OUTPUT_LIMIT_BYTES = 64 * 1_024;
 
-function truncateOutput(value: string): string {
-  if (Buffer.byteLength(value, "utf8") <= OUTPUT_LIMIT_BYTES) return value;
-  const head = value.slice(0, 48 * 1_024);
-  const tail = value.slice(-16 * 1_024);
-  return `${head}\n... output truncated by Merge Broker ...\n${tail}`;
-}
-
 function renderCommand(
   command: string,
   taskId: string | undefined,
@@ -66,6 +59,8 @@ export async function runValidators(options: {
       cwd: options.cwd,
       allowFailure: true,
       timeoutMs: (validator.timeoutSeconds ?? 900) * 1_000,
+      maxOutputBytes: OUTPUT_LIMIT_BYTES,
+      killProcessTree: true,
       shell,
       env: {
         ...validatorEnvironment(validator.env),
@@ -86,8 +81,8 @@ export async function runValidators(options: {
       finishedAt: finishedAt.toISOString(),
       durationMs: finishedAt.getTime() - startedAt.getTime(),
       exitCode: result.exitCode,
-      stdout: truncateOutput(result.stdout),
-      stderr: truncateOutput(result.stderr),
+      stdout: result.stdout,
+      stderr: result.stderr,
     };
     results.push(validation);
     if (result.exitCode !== 0) {

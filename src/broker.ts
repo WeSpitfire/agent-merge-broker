@@ -6,15 +6,12 @@ import { GitRepository } from "./git.js";
 import { initializeConfig, loadConfig, writeConfig } from "./config.js";
 import { patternSetsMayOverlap, unexpectedPaths } from "./patterns.js";
 import { scheduleTasks } from "./scheduler.js";
-import { StateStore, type LockStatus } from "./store.js";
+import { StateStore, type AuditRecorder, type LockStatus } from "./store.js";
 import { runValidators } from "./validation.js";
+import { runCommand } from "./process.js";
 import {
-  closePullRequest,
-  disableAutoMerge,
-  enableAutoMerge,
-  inspectPullRequest,
-  publishBatch as publishPreparedBatch,
-  updatePullRequestBody,
+  githubCliPublisher,
+  type ForgePublisher,
 } from "./publisher.js";
 import {
   buildBatchProvenance,
@@ -25,13 +22,18 @@ import {
 } from "./provenance.js";
 import { installHooks, uninstallHooks, type HookInstallation } from "./hooks.js";
 import {
+  currentServicePlatform,
   installService,
+  SERVICE_MARKER,
+  serviceFilePath,
+  serviceName,
   uninstallService,
   type ServiceInstallation,
 } from "./service.js";
 import type {
   BatchRecord,
   CandidateRecord,
+  CandidateRevisionIntent,
   BrokerConfig,
   BrokerState,
   CommitReceipt,
@@ -61,6 +63,14 @@ function createToken(): string {
   return randomBytes(24).toString("base64url");
 }
 
+function versionAtLeast(version: string, minimum: [number, number]): boolean {
+  const match = /^(\d+)\.(\d+)/u.exec(version);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > minimum[0] || (major === minimum[0] && minor >= minimum[1]);
+}
+
 function leaseExpired(task: TaskRecord, at = Date.now()): boolean {
   return Boolean(task.lease && Date.parse(task.lease.expiresAt) <= at);
 }
@@ -75,6 +85,17 @@ function requireBatch(state: BrokerState, id: string): BatchRecord {
   const batch = Object.hasOwn(state.batches, id) ? state.batches[id] : undefined;
   if (!batch) throw new BrokerError("UNKNOWN_BATCH", `Unknown batch: ${id}`);
   return batch;
+}
+
+function sameSubmittedReceipt(current: TaskRecord, selected: TaskRecord): boolean {
+  return (
+    current.updatedAt === selected.updatedAt &&
+    current.submittedAt === selected.submittedAt &&
+    current.baseSha === selected.baseSha &&
+    JSON.stringify(current.commits) === JSON.stringify(selected.commits) &&
+    JSON.stringify(current.actualPaths) === JSON.stringify(selected.actualPaths) &&
+    JSON.stringify(current.dependsOn) === JSON.stringify(selected.dependsOn)
+  );
 }
 
 function assertTaskId(taskId: string): void {
@@ -156,6 +177,73 @@ function requireCurrentCandidate(batch: BatchRecord): CandidateRecord {
     throw new BrokerError("NO_CANDIDATE", `Batch ${batch.id} has no approval candidate.`);
   }
   return batch.candidate;
+}
+
+function finalizeCandidateRevision(
+  state: BrokerState,
+  audit: AuditRecorder,
+  batchId: string,
+  intent: CandidateRevisionIntent,
+): RevisionResult {
+  const storedBatch = requireBatch(state, batchId);
+  const storedIntent = storedBatch.revisionIntent;
+  if (
+    !storedIntent ||
+    storedIntent.candidateSha !== intent.candidateSha ||
+    storedIntent.previousCandidateSha !== intent.previousCandidateSha
+  ) {
+    throw new BrokerError("REVISION_INTENT_CHANGED", `Candidate revision intent changed for batch ${batchId}.`);
+  }
+  const storedCandidate = requireCurrentCandidate(storedBatch);
+  if (
+    storedCandidate.sha !== intent.previousCandidateSha ||
+    storedCandidate.state !== "changes_requested"
+  ) {
+    throw new BrokerError("CANDIDATE_CHANGED", "Candidate state changed while its revision was published.");
+  }
+  const superseded: CandidateRecord = {
+    ...structuredClone(storedCandidate),
+    state: "superseded",
+    reason: `Superseded by candidate revision ${intent.revision}.`,
+  };
+  const nextBatch = structuredClone(intent.nextBatch) as BatchRecord;
+  nextBatch.candidateHistory = [...(storedBatch.candidateHistory ?? []), superseded];
+  delete nextBatch.revisionIntent;
+  state.batches[batchId] = nextBatch;
+
+  const nextTask = requireTask(state, intent.taskId);
+  const actor = nextTask.lease?.holder;
+  nextTask.commits = [...intent.revisedTask.commits];
+  nextTask.actualPaths = [...intent.revisedTask.actualPaths];
+  nextTask.warnings = [...intent.revisedTask.warnings];
+  nextTask.submittedAt = intent.revisedTask.submittedAt;
+  nextTask.updatedAt = now();
+  delete nextTask.lease;
+  delete nextTask.lastError;
+  for (const id of nextBatch.taskIds) {
+    const batchTask = requireTask(state, id);
+    batchTask.validations = nextBatch.validations.filter(
+      (result) => !result.taskId || result.taskId === id,
+    );
+    batchTask.updatedAt = now();
+  }
+  audit("batch.candidate_revised", {
+    ...(actor ? { actor } : {}),
+    taskId: intent.taskId,
+    batchId,
+    details: {
+      previousCandidateSha: intent.previousCandidateSha,
+      candidateSha: intent.candidateSha,
+      previousBaseSha: superseded.baseSha,
+      baseSha: nextBatch.candidate?.baseSha,
+      revision: intent.revision,
+    },
+  });
+  return {
+    batch: structuredClone(nextBatch),
+    task: structuredClone(nextTask),
+    previousCandidate: superseded,
+  };
 }
 
 function assertCandidateBinding(
@@ -379,19 +467,29 @@ export class MergeBroker {
   readonly repo: GitRepository;
   readonly config: BrokerConfig;
   readonly store: StateStore;
+  readonly publisher: ForgePublisher;
 
-  private constructor(repo: GitRepository, config: BrokerConfig, store: StateStore) {
+  private constructor(
+    repo: GitRepository,
+    config: BrokerConfig,
+    store: StateStore,
+    publisher: ForgePublisher,
+  ) {
     this.repo = repo;
     this.config = config;
     this.store = store;
+    this.publisher = publisher;
   }
 
-  static async open(cwd = process.cwd()): Promise<MergeBroker> {
+  static async open(
+    cwd = process.cwd(),
+    options: { publisher?: ForgePublisher } = {},
+  ): Promise<MergeBroker> {
     const repo = await GitRepository.discover(cwd);
     const config = await loadConfig(repo.root);
     const store = new StateStore(repo.commonGitDir, config.stateDirectory, config.leases.lockTimeoutSeconds);
     await store.initialize();
-    return new MergeBroker(repo, config, store);
+    return new MergeBroker(repo, config, store, options.publisher ?? githubCliPublisher);
   }
 
   static async initialize(
@@ -1002,8 +1100,11 @@ export class MergeBroker {
       await this.store.transaction((state, audit) => {
         for (const selected of plan.selected) {
           const task = requireTask(state, selected.id);
-          if (task.status !== "submitted") {
-            throw new BrokerError("TASK_CHANGED", `Task ${task.id} changed status before integration.`);
+          if (task.status !== "submitted" || !sameSubmittedReceipt(task, selected)) {
+            throw new BrokerError(
+              "TASK_CHANGED",
+              `Task ${task.id} changed after planning; integrate again to use its latest receipt.`,
+            );
           }
           task.status = "integrating";
           task.batchId = id;
@@ -1231,8 +1332,97 @@ export class MergeBroker {
     });
   }
 
+  private async writeRevisionArtifacts(updated: RevisionResult): Promise<void> {
+    await this.store.deleteToken(updated.task.id);
+    const receipt: CommitReceipt = {
+      version: 1,
+      taskId: updated.task.id,
+      ...(updated.task.agent ? { agent: updated.task.agent } : {}),
+      baseSha: updated.task.baseSha,
+      commits: updated.task.commits,
+      expectedPaths: updated.task.expectedPaths,
+      actualPaths: updated.task.actualPaths,
+      dependsOn: updated.task.dependsOn,
+      ...(updated.task.worktree ? { worktree: updated.task.worktree } : {}),
+      submittedAt: updated.task.submittedAt ?? now(),
+      warnings: updated.task.warnings,
+    };
+    await this.store.writeReceipt(receipt);
+    const state = await this.store.read();
+    await this.store.writeBatchManifest(updated.batch.id, {
+      batch: updated.batch,
+      tasks: updated.batch.taskIds.map((id) => {
+        const task = requireTask(state, id);
+        return {
+          id: task.id,
+          commits: task.commits,
+          actualPaths: task.actualPaths,
+          dependsOn: task.dependsOn,
+        };
+      }),
+    });
+  }
+
   private async recoverAbandonedIntegrationsLocked(): Promise<RecoveryResult> {
     const snapshot = await this.store.read();
+    const candidateRevisionsRecovered: string[] = [];
+    const candidateRevisionWarnings: string[] = [];
+    for (const pending of Object.values(snapshot.batches).filter((batch) => batch.revisionIntent)) {
+      const intent = pending.revisionIntent;
+      if (!intent) continue;
+      let branchHead: string | undefined;
+      try {
+        branchHead = pending.pullRequestUrl
+          ? (await this.publisher.inspectPullRequest(this.repo.root, pending.pullRequestUrl)).headRefOid
+          : await this.repo.resolveCommit(`refs/heads/${intent.branchName}`);
+      } catch (error) {
+        candidateRevisionWarnings.push(
+          `Could not inspect candidate revision ${pending.id}: ${errorMessage(error)}`,
+        );
+        continue;
+      }
+
+      if (branchHead === intent.candidateSha) {
+        try {
+          await this.repo.replaceLocalBranch(intent.branchName, intent.candidateSha);
+          const updated = await this.store.transaction((state, audit) =>
+            finalizeCandidateRevision(state, audit, pending.id, intent),
+          );
+          candidateRevisionsRecovered.push(pending.id);
+          try {
+            await this.writeRevisionArtifacts(updated);
+          } catch (error) {
+            candidateRevisionWarnings.push(
+              `Candidate revision ${pending.id} recovered, but sidecar refresh failed: ${errorMessage(error)}`,
+            );
+          }
+        } catch (error) {
+          candidateRevisionWarnings.push(
+            `Could not finalize candidate revision ${pending.id}: ${errorMessage(error)}`,
+          );
+        }
+      } else if (branchHead === intent.previousCandidateSha) {
+        await this.store.transaction((state, audit) => {
+          const batch = requireBatch(state, pending.id);
+          if (batch.revisionIntent?.candidateSha !== intent.candidateSha) return;
+          delete batch.revisionIntent;
+          audit("batch.candidate_revision_rolled_back", {
+            taskId: intent.taskId,
+            batchId: pending.id,
+            details: {
+              previousCandidateSha: intent.previousCandidateSha,
+              candidateSha: intent.candidateSha,
+              reason: "branch update did not complete",
+            },
+          });
+        });
+      } else {
+        candidateRevisionWarnings.push(
+          `Candidate revision ${pending.id} points at unexpected branch head ${branchHead}; intent retained.`,
+        );
+      }
+    }
+
     const running = Object.values(snapshot.batches).filter((batch) => batch.status === "running");
     if (running.length === 0) {
       return {
@@ -1241,6 +1431,8 @@ export class MergeBroker {
         worktreesRemoved: [],
         branchesRemoved: [],
         cleanupWarnings: [],
+        candidateRevisionsRecovered,
+        candidateRevisionWarnings,
       };
     }
 
@@ -1313,11 +1505,25 @@ export class MergeBroker {
         }
       }
       audit("integration.recovery_completed", {
-        details: { ...recovered, worktreesRemoved, branchesRemoved, cleanupWarnings },
+        details: {
+          ...recovered,
+          worktreesRemoved,
+          branchesRemoved,
+          cleanupWarnings,
+          candidateRevisionsRecovered,
+          candidateRevisionWarnings,
+        },
       });
     });
 
-    return { ...recovered, worktreesRemoved, branchesRemoved, cleanupWarnings };
+    return {
+      ...recovered,
+      worktreesRemoved,
+      branchesRemoved,
+      cleanupWarnings,
+      candidateRevisionsRecovered,
+      candidateRevisionWarnings,
+    };
   }
 
   /**
@@ -1340,7 +1546,7 @@ export class MergeBroker {
     const tasks = batch.taskIds.map((taskId) => requireTask(state, taskId));
     let publication;
     try {
-      publication = await publishPreparedBatch({ repo: this.repo, config: this.config, batch, tasks });
+      publication = await this.publisher.publishBatch({ repo: this.repo, config: this.config, batch, tasks });
     } catch (error) {
       await this.store.transaction((current, audit) => {
         const stored = Object.hasOwn(current.batches, id) ? current.batches[id] : undefined;
@@ -1391,11 +1597,11 @@ export class MergeBroker {
     let autoMergeEnabled = false;
     let warning: string | undefined;
     try {
-      autoMergeEnabled = await enableAutoMerge(
+      autoMergeEnabled = await this.publisher.enableAutoMerge(
         this.repo.root,
         publication.pullRequestUrl,
         this.config,
-        published.candidate?.sha,
+        published.candidate?.sha ?? published.headSha,
       );
     } catch (error) {
       warning = errorMessage(error);
@@ -1441,7 +1647,7 @@ export class MergeBroker {
     const candidate = requireCurrentCandidate(snapshot);
     assertCandidateBinding(candidate, input);
     assertCurrentApprovalPolicy(this.config, candidate);
-    const pullRequest = await inspectPullRequest(this.repo.root, snapshot.pullRequestUrl);
+    const pullRequest = await this.publisher.inspectPullRequest(this.repo.root, snapshot.pullRequestUrl);
     if (pullRequest.state !== "OPEN" || pullRequest.headRefOid !== candidate.sha) {
       throw new BrokerError("CANDIDATE_MISMATCH", "The pull request no longer points at the candidate being verified.", {
         expectedHead: candidate.sha,
@@ -1507,12 +1713,12 @@ export class MergeBroker {
     if (snapshot.status !== "published" || !snapshot.pullRequestUrl) {
       throw new BrokerError("BATCH_NOT_REVISABLE", `Batch ${id} is not a published candidate.`);
     }
-    const pullRequest = await inspectPullRequest(this.repo.root, snapshot.pullRequestUrl);
+    const pullRequest = await this.publisher.inspectPullRequest(this.repo.root, snapshot.pullRequestUrl);
     if (pullRequest.state !== "OPEN" || pullRequest.headRefOid !== candidate.sha) {
       throw new BrokerError("CANDIDATE_MISMATCH", "The pull request head changed before changes could be requested.");
     }
     if (snapshot.autoMergeEnabled) {
-      const disabled = await disableAutoMerge(this.repo.root, snapshot.pullRequestUrl);
+      const disabled = await this.publisher.disableAutoMerge(this.repo.root, snapshot.pullRequestUrl);
       if (!disabled) throw new BrokerError("CANDIDATE_FINAL", "The pull request merged before approval could be revoked.");
     }
     return await this.store.transaction((state, audit) => {
@@ -1586,7 +1792,7 @@ export class MergeBroker {
         { missing },
       );
     }
-    const pullRequest = await inspectPullRequest(this.repo.root, snapshot.pullRequestUrl);
+    const pullRequest = await this.publisher.inspectPullRequest(this.repo.root, snapshot.pullRequestUrl);
     if (
       pullRequest.state !== "OPEN" ||
       pullRequest.headRefOid !== candidate.sha ||
@@ -1651,7 +1857,7 @@ export class MergeBroker {
     let enabled = false;
     let warning: string | undefined;
     try {
-      enabled = await enableAutoMerge(
+      enabled = await this.publisher.enableAutoMerge(
         this.repo.root,
         snapshot.pullRequestUrl,
         this.config,
@@ -1762,6 +1968,12 @@ export class MergeBroker {
       verifyLease(snapshot, token);
       if (!snapshot.batchId) throw new BrokerError("TASK_NOT_REVISABLE", `Task ${taskId} has no active batch.`);
       const originalBatch = structuredClone(requireBatch(state, snapshot.batchId));
+      if (originalBatch.revisionIntent) {
+        throw new BrokerError(
+          "REVISION_IN_PROGRESS",
+          `Batch ${originalBatch.id} already has a candidate revision awaiting recovery.`,
+        );
+      }
       const previousCandidate = structuredClone(requireCurrentCandidate(originalBatch));
       if (previousCandidate.state !== "changes_requested") {
         throw new BrokerError(
@@ -1771,7 +1983,7 @@ export class MergeBroker {
       }
       if (!originalBatch.branchName) throw new BrokerError("NO_BRANCH", `Batch ${originalBatch.id} has no branch.`);
       if (originalBatch.pullRequestUrl) {
-        const pullRequest = await inspectPullRequest(this.repo.root, originalBatch.pullRequestUrl);
+        const pullRequest = await this.publisher.inspectPullRequest(this.repo.root, originalBatch.pullRequestUrl);
         if (pullRequest.state !== "OPEN" || pullRequest.headRefOid !== previousCandidate.sha) {
           throw new BrokerError(
             "CANDIDATE_MISMATCH",
@@ -1894,95 +2106,71 @@ export class MergeBroker {
       } finally {
         if (added) await this.repo.removeWorktree(worktree);
       }
+      delete nextBatch.worktree;
 
       const nextCandidate = requireCurrentCandidate(nextBatch);
-      if (originalBatch.pullRequestUrl) {
-        await this.repo.replaceRemoteBranch(
-          this.config.remote,
-          originalBatch.branchName,
-          nextCandidate.sha,
-          previousCandidate.sha,
-        );
-      } else {
-        await this.repo.git(["branch", "-f", "--", originalBatch.branchName, nextCandidate.sha]);
-      }
-
-      const updated = await this.store.transaction((current, audit) => {
+      const intent = await this.store.transaction((current, audit) => {
         const task = requireTask(current, taskId);
         verifyLease(task, token);
         const storedBatch = requireBatch(current, originalBatch.id);
         const storedCandidate = requireCurrentCandidate(storedBatch);
+        if (storedBatch.revisionIntent) {
+          throw new BrokerError("REVISION_IN_PROGRESS", `Batch ${storedBatch.id} already has a revision intent.`);
+        }
         if (storedCandidate.sha !== previousCandidate.sha || storedCandidate.state !== "changes_requested") {
           throw new BrokerError("CANDIDATE_CHANGED", "Candidate state changed while its revision was assembled.");
         }
-        const superseded: CandidateRecord = {
-          ...structuredClone(storedCandidate),
-          state: "superseded",
-          reason: `Superseded by candidate revision ${revision}.`,
+        const prepared: CandidateRevisionIntent = {
+          revision,
+          taskId,
+          previousCandidateSha: previousCandidate.sha,
+          candidateSha: nextCandidate.sha,
+          branchName: originalBatch.branchName ?? "",
+          createdAt: now(),
+          nextBatch: structuredClone(nextBatch),
+          revisedTask: {
+            commits: [...resolved.commits],
+            actualPaths: [...resolved.actualPaths],
+            warnings: [...resolved.warnings],
+            submittedAt: now(),
+          },
         };
-        nextBatch.candidateHistory = [...(storedBatch.candidateHistory ?? []), superseded];
-        current.batches[storedBatch.id] = structuredClone(nextBatch);
-        const savedBatch = requireBatch(current, storedBatch.id);
-        const nextTask = requireTask(current, taskId);
-        nextTask.commits = resolved.commits;
-        nextTask.actualPaths = resolved.actualPaths;
-        nextTask.warnings = resolved.warnings;
-        nextTask.submittedAt = now();
-        nextTask.updatedAt = now();
-        delete nextTask.lease;
-        delete nextTask.lastError;
-        for (const id of nextBatch.taskIds) {
-          const batchTask = requireTask(current, id);
-          batchTask.validations = nextBatch.validations.filter(
-            (result) => !result.taskId || result.taskId === id,
-          );
-          batchTask.updatedAt = now();
-        }
-        audit("batch.candidate_revised", {
-          ...(snapshot.lease?.holder ? { actor: snapshot.lease.holder } : {}),
+        storedBatch.revisionIntent = prepared;
+        audit("batch.candidate_revision_prepared", {
+          ...(task.lease?.holder ? { actor: task.lease.holder } : {}),
           taskId,
           batchId: storedBatch.id,
           details: {
-            previousCandidateSha: previousCandidate.sha,
-            candidateSha: nextCandidate.sha,
-            previousBaseSha: previousCandidate.baseSha,
-            baseSha: nextCandidate.baseSha,
+            previousCandidateSha: prepared.previousCandidateSha,
+            candidateSha: prepared.candidateSha,
             revision,
           },
         });
-        return {
-          batch: structuredClone(savedBatch),
-          task: structuredClone(nextTask),
-          previousCandidate: superseded,
-        };
+        return structuredClone(prepared);
       });
-      await this.store.deleteToken(taskId);
-      const receipt: CommitReceipt = {
-        version: 1,
-        taskId: updated.task.id,
-        ...(updated.task.agent ? { agent: updated.task.agent } : {}),
-        baseSha: updated.task.baseSha,
-        commits: updated.task.commits,
-        expectedPaths: updated.task.expectedPaths,
-        actualPaths: updated.task.actualPaths,
-        dependsOn: updated.task.dependsOn,
-        ...(updated.task.worktree ? { worktree: updated.task.worktree } : {}),
-        submittedAt: updated.task.submittedAt ?? now(),
-        warnings: updated.task.warnings,
-      };
-      await this.store.writeReceipt(receipt);
-      await this.store.writeBatchManifest(updated.batch.id, {
-        batch: updated.batch,
-        tasks: tasks.map((task) => ({
-          id: task.id,
-          commits: task.id === taskId ? updated.task.commits : task.commits,
-          actualPaths: task.id === taskId ? updated.task.actualPaths : task.actualPaths,
-          dependsOn: task.dependsOn,
-        })),
+      if (originalBatch.pullRequestUrl) {
+        await this.repo.replaceRemoteBranch(
+          this.config.remote,
+          intent.branchName,
+          intent.candidateSha,
+          intent.previousCandidateSha,
+        );
+      } else {
+        await this.repo.replaceLocalBranch(intent.branchName, intent.candidateSha);
+      }
+
+      const updated = await this.store.transaction((current, audit) => {
+        return finalizeCandidateRevision(current, audit, originalBatch.id, intent);
       });
+      await this.writeRevisionArtifacts(updated);
       if (updated.batch.pullRequestUrl) {
         try {
-          await updatePullRequestBody(this.repo.root, updated.batch.pullRequestUrl, updated.batch, tasks);
+          await this.publisher.updatePullRequestBody(
+            this.repo.root,
+            updated.batch.pullRequestUrl,
+            updated.batch,
+            tasks,
+          );
         } catch (error) {
           const warning = errorMessage(error);
           const warned = await this.store.transaction((current, audit) => {
@@ -2008,7 +2196,7 @@ export class MergeBroker {
     let mergedAt: string | undefined;
     let mergeCommitSha: string | undefined;
     if (batch.pullRequestUrl) {
-      const pullRequest = await inspectPullRequest(this.repo.root, batch.pullRequestUrl);
+      const pullRequest = await this.publisher.inspectPullRequest(this.repo.root, batch.pullRequestUrl);
       // A pull request closed without merging means the work was rejected, not completed. Leaving
       // the batch "published" strands every task in it forever and reads like success.
       if (pullRequest.state === "CLOSED") {
@@ -2043,7 +2231,7 @@ export class MergeBroker {
             );
           }
           if (batch.autoMergeEnabled) {
-            const disabled = await disableAutoMerge(this.repo.root, batch.pullRequestUrl);
+            const disabled = await this.publisher.disableAutoMerge(this.repo.root, batch.pullRequestUrl);
             if (!disabled) {
               throw new BrokerError("CANDIDATE_FINAL", "The legacy pull request merged before auto-merge was disabled.");
             }
@@ -2104,7 +2292,7 @@ export class MergeBroker {
               !requiredChecks.every(checkPassed)),
         );
         if (approvalInvalidated && batch.autoMergeEnabled) {
-          const disabled = await disableAutoMerge(this.repo.root, batch.pullRequestUrl);
+          const disabled = await this.publisher.disableAutoMerge(this.repo.root, batch.pullRequestUrl);
           if (!disabled) {
             throw new BrokerError(
               "CANDIDATE_FINAL",
@@ -2344,7 +2532,7 @@ export class MergeBroker {
     // still merge, which would land the batch this call is replacing.
     let pullRequestClosed: boolean | undefined;
     if (batch.pullRequestUrl) {
-      pullRequestClosed = await closePullRequest(
+      pullRequestClosed = await this.publisher.closePullRequest(
         this.repo.root,
         batch.pullRequestUrl,
         `Superseded: the base branch moved to ${currentBase.slice(0, 7)}, so this batch was re-cut from the current tip.`,
@@ -2639,15 +2827,116 @@ export class MergeBroker {
   }
 
   async doctor(): Promise<Record<string, unknown>> {
-    const [baseSha, clean, worktrees, locks, state] = await Promise.all([
-      this.repo.resolveCommit(this.config.baseRef),
-      this.repo.isClean(),
-      this.repo.listWorktrees(),
-      this.inspectLocks(),
-      this.store.read(),
-    ]);
+    const [baseResolution, clean, worktrees, locks, state, gitVersionResult, remoteUrlResult, trackedConfig, hooksPath] =
+      await Promise.all([
+        this.repo.resolveCommit(this.config.baseRef).then(
+          (sha) => ({ sha }),
+          (error: unknown) => ({ error: errorMessage(error) }),
+        ),
+        this.repo.isClean(),
+        this.repo.listWorktrees(),
+        this.inspectLocks(),
+        this.store.read(),
+        this.repo.git(["--version"], this.repo.root, true),
+        this.repo.git(["remote", "get-url", this.config.remote], this.repo.root, true),
+        this.repo.git(
+          ["ls-files", "--error-unmatch", ".merge-broker/config.json"],
+          this.repo.root,
+          true,
+        ),
+        this.repo.git(["config", "--get", "core.hooksPath"], this.repo.root, true),
+      ]);
     const warnings: string[] = [];
     let ok = true;
+    const nodeVersion = process.versions.node;
+    const nodeSupported = versionAtLeast(nodeVersion, [20, 12]);
+    if (!nodeSupported) {
+      ok = false;
+      warnings.push(`Node ${nodeVersion} is unsupported; Agent Merge Broker requires Node 20.12 or newer.`);
+    }
+    const gitVersion = /git version\s+([^\s]+)/u.exec(gitVersionResult.stdout)?.[1] ?? "unknown";
+    const gitSupported = versionAtLeast(gitVersion, [2, 31]);
+    if (!gitSupported) {
+      ok = false;
+      warnings.push(`Git ${gitVersion} is unsupported; use Git 2.31 or newer.`);
+    }
+    const baseSha = "sha" in baseResolution ? baseResolution.sha : undefined;
+    if (!baseSha) {
+      ok = false;
+      warnings.push(
+        `The configured base ref cannot be resolved: ${"error" in baseResolution ? baseResolution.error : "unknown error"}`,
+      );
+    }
+
+    const remoteUrl = remoteUrlResult.exitCode === 0 ? remoteUrlResult.stdout.trim() : undefined;
+    let remoteReachable = false;
+    let remoteBaseSha: string | undefined;
+    if (remoteUrl) {
+      const remoteHead = await runCommand(
+        "git",
+        ["ls-remote", "--exit-code", this.config.remote, `refs/heads/${this.config.baseBranch}`],
+        {
+          cwd: this.repo.root,
+          allowFailure: true,
+          timeoutMs: 10_000,
+          maxOutputBytes: 16 * 1_024,
+          killProcessTree: true,
+        },
+      );
+      remoteReachable = remoteHead.exitCode === 0;
+      remoteBaseSha = remoteHead.stdout.trim().split(/\s+/u)[0] || undefined;
+    }
+    const remoteRequired = this.config.publish.mode !== "none" || this.config.baseRef.startsWith(`${this.config.remote}/`);
+    if (!remoteReachable) {
+      warnings.push(`Remote ${this.config.remote} or branch ${this.config.baseBranch} is not reachable.`);
+      if (remoteRequired) ok = false;
+    }
+    const baseFresh = Boolean(baseSha && remoteBaseSha && baseSha === remoteBaseSha);
+    if (baseSha && remoteBaseSha && !baseFresh) {
+      warnings.push(
+        `Configured base ${this.config.baseRef} is at ${baseSha.slice(0, 12)}, while ${this.config.remote}/${this.config.baseBranch} is at ${remoteBaseSha.slice(0, 12)}.`,
+      );
+      if (!this.config.integration.refreshBase) ok = false;
+    }
+
+    const configCommitted = trackedConfig.exitCode === 0;
+    if (!configCommitted) {
+      warnings.push(".merge-broker/config.json is not committed, so collaborators and remote verification cannot share its policy.");
+      if (this.config.publish.mode === "pull-request" || this.config.validation.authority === "required-ci") ok = false;
+    }
+
+    const forgeRequired = this.config.publish.mode === "pull-request";
+    let ghAvailable = false;
+    let ghAuthenticated: boolean | undefined;
+    if (forgeRequired) {
+      const ghVersion = await runCommand("gh", ["--version"], {
+        cwd: this.repo.root,
+        allowFailure: true,
+        timeoutMs: 5_000,
+        maxOutputBytes: 16 * 1_024,
+        killProcessTree: true,
+      }).catch(() => undefined);
+      ghAvailable = ghVersion?.exitCode === 0;
+      if (ghAvailable) {
+        const auth = await runCommand("gh", ["auth", "status"], {
+          cwd: this.repo.root,
+          allowFailure: true,
+          timeoutMs: 5_000,
+          maxOutputBytes: 16 * 1_024,
+          killProcessTree: true,
+        });
+        ghAuthenticated = auth.exitCode === 0;
+      }
+      if (!ghAvailable || !ghAuthenticated) {
+        ok = false;
+        warnings.push(
+          ghAvailable
+            ? "GitHub CLI is installed but not authenticated for pull-request publication."
+            : "GitHub CLI is required for pull-request publication but was not found.",
+        );
+      }
+    }
+
     const provenance = this.config.integration.provenance;
     let signingKeyId: string | undefined;
     if (provenance?.enabled && provenance.requireSignature) {
@@ -2677,6 +2966,15 @@ export class MergeBroker {
         `Integration state is incomplete for ${runningBatches.join(", ")}. Run \`merge-broker recover\` after confirming no broker process is active.`,
       );
     }
+    const pendingCandidateRevisions = Object.values(state.batches)
+      .filter((batch) => batch.revisionIntent)
+      .map((batch) => batch.id);
+    if (pendingCandidateRevisions.length > 0) {
+      ok = false;
+      warnings.push(
+        `Candidate revisions await reconciliation for ${pendingCandidateRevisions.join(", ")}. Run \`merge-broker recover\`.`,
+      );
+    }
     for (const lock of locks) {
       if (!lock.held) continue;
       warnings.push(
@@ -2684,6 +2982,36 @@ export class MergeBroker {
           (lock.ageMs ?? 0) / 1_000,
         )}s old${lock.abandoned ? "; its owning process is gone, so \"merge-broker unlock\" can clear it" : ""}.`,
       );
+    }
+
+    const configuredHooksPath = hooksPath.exitCode === 0 ? hooksPath.stdout.trim() : undefined;
+    const hookFile = path.join(this.repo.root, ".githooks", "pre-push");
+    const hookOwned = await readFile(hookFile, "utf8").then(
+      (contents) => contents.includes("Installed by Agent Merge Broker"),
+      () => false,
+    );
+    const hooksInstalled = configuredHooksPath === ".githooks" && hookOwned;
+    let service: { supported: boolean; installed: boolean; owned: boolean; file?: string } = {
+      supported: false,
+      installed: false,
+      owned: false,
+    };
+    try {
+      const servicePlatform = currentServicePlatform();
+      const file = serviceFilePath(servicePlatform, serviceName(this.repo.root));
+      const serviceContents = await readFile(file, "utf8").catch(() => undefined);
+      service = {
+        supported: true,
+        installed: serviceContents !== undefined,
+        owned: serviceContents?.includes(SERVICE_MARKER) ?? false,
+        file,
+      };
+      if (service.installed && !service.owned) {
+        ok = false;
+        warnings.push(`The repository's computed service file exists but is not broker-owned: ${file}`);
+      }
+    } catch (error) {
+      if (!(error instanceof BrokerError && error.code === "UNSUPPORTED_PLATFORM")) throw error;
     }
     return {
       ok,
@@ -2696,6 +3024,18 @@ export class MergeBroker {
       baseBranch: this.config.baseBranch,
       baseRef: this.config.baseRef,
       baseSha,
+      remote: {
+        name: this.config.remote,
+        url: remoteUrl,
+        reachable: remoteReachable,
+        baseSha: remoteBaseSha,
+        baseFresh,
+      },
+      tools: {
+        node: { version: nodeVersion, supported: nodeSupported },
+        git: { version: gitVersion, supported: gitSupported },
+        githubCli: { required: forgeRequired, available: ghAvailable, authenticated: ghAuthenticated },
+      },
       worktreeClean: clean,
       worktreeCount: worktrees.length,
       publishMode: this.config.publish.mode,
@@ -2705,6 +3045,10 @@ export class MergeBroker {
       provenanceAuthenticated: Boolean(provenance?.enabled && provenance.requireSignature && signingKeyId),
       provenanceKeyId: signingKeyId,
       runningBatches,
+      pendingCandidateRevisions,
+      policy: { configCommitted },
+      hooks: { installed: hooksInstalled, configuredPath: configuredHooksPath, file: hookFile },
+      service,
     };
   }
 }

@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import {
   currentServicePlatform,
   launchdPlist,
+  installService,
   serviceFilePath,
   serviceName,
   systemdUnit,
+  uninstallService,
   type ServiceOptions,
 } from "./service.js";
 import { BrokerError } from "./errors.js";
@@ -75,7 +79,20 @@ test("escapes a repository path that would otherwise break the plist", () => {
 test("quotes systemd arguments so a spaced path stays one argument", () => {
   const unit = systemdUnit(options({ repositoryRoot: "/srv/two words" }));
   assert.match(unit, /ExecStart=.*"\/srv\/two words"/);
+  assert.match(unit, /StandardOutput="append:.*serve\.log"/);
+  assert.match(unit, /StandardError="append:.*serve\.log"/);
   assert.match(unit, /Restart=always/);
+});
+
+test("rejects an invalid service interval before writing a supervisor file", () => {
+  assert.throws(
+    () => systemdUnit(options({ intervalSeconds: 0 })),
+    (error: unknown) => error instanceof BrokerError && error.code === "INVALID_INTERVAL",
+  );
+  assert.throws(
+    () => launchdPlist(options({ intervalSeconds: Number.NaN })),
+    (error: unknown) => error instanceof BrokerError && error.code === "INVALID_INTERVAL",
+  );
 });
 
 test("installs into the per-user location, never a system one", () => {
@@ -98,3 +115,32 @@ test("refuses a platform it cannot supervise instead of writing a file nothing r
     return true;
   });
 });
+
+test(
+  "refuses to overwrite or remove a supervisor file it does not own",
+  async (context) => {
+    const root = await mkdtemp(path.join(tmpdir(), "merge-broker-service-"));
+    const home = path.join(root, "home");
+    const repositoryRoot = path.join(root, "repo");
+    await mkdir(repositoryRoot, { recursive: true });
+    const configured = options({
+      repositoryRoot,
+      logFile: path.join(root, "serve.log"),
+    });
+    const file = serviceFilePath(currentServicePlatform(), serviceName(repositoryRoot), home);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "# somebody else's service\n", "utf8");
+    context.after(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+
+    await assert.rejects(
+      installService(configured, home),
+      (error: unknown) => error instanceof BrokerError && error.code === "SERVICE_FILE_CONFLICT",
+    );
+    await assert.rejects(
+      uninstallService(repositoryRoot, home),
+      (error: unknown) => error instanceof BrokerError && error.code === "SERVICE_FILE_CONFLICT",
+    );
+  },
+);

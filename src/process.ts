@@ -14,6 +14,10 @@ export interface RunOptions {
   input?: string;
   allowFailure?: boolean;
   timeoutMs?: number;
+  /** Maximum bytes retained independently for stdout and stderr. */
+  maxOutputBytes?: number;
+  /** Terminate descendants as well as the immediate process when a timeout expires. */
+  killProcessTree?: boolean;
 }
 
 export interface ResolvedShell {
@@ -57,6 +61,62 @@ function quoteForDisplay(value: string): string {
   return /[\s"'\\]/u.test(value) ? JSON.stringify(value) : value;
 }
 
+class OutputCapture {
+  private text = "";
+  private head = Buffer.alloc(0);
+  private tail = Buffer.alloc(0);
+  private truncated = false;
+
+  constructor(private readonly limit?: number) {}
+
+  append(chunk: string): void {
+    if (this.limit === undefined) {
+      this.text += chunk;
+      return;
+    }
+    const value = Buffer.from(chunk, "utf8");
+    if (!this.truncated) {
+      const combined = Buffer.concat([Buffer.from(this.text, "utf8"), value]);
+      if (combined.byteLength <= this.limit) {
+        this.text = combined.toString("utf8");
+        return;
+      }
+      this.truncated = true;
+      const headBytes = Math.floor(this.limit * 0.75);
+      const tailBytes = this.limit - headBytes;
+      this.head = combined.subarray(0, headBytes);
+      this.tail = combined.subarray(-tailBytes);
+      this.text = "";
+      return;
+    }
+    const tailBytes = this.limit - this.head.byteLength;
+    this.tail = Buffer.concat([this.tail, value]).subarray(-tailBytes);
+  }
+
+  value(): string {
+    if (!this.truncated) return this.text;
+    return `${this.head.toString("utf8")}\n... output truncated by Merge Broker ...\n${this.tail.toString("utf8")}`;
+  }
+}
+
+function terminate(child: ReturnType<typeof spawn>, signal: NodeJS.Signals, tree: boolean): void {
+  if (tree && process.platform !== "win32" && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall back to the direct child when the process group has already gone away.
+    }
+  }
+  if (tree && process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/t", ...(signal === "SIGKILL" ? ["/f"] : [])], {
+      stdio: "ignore",
+      windowsHide: true,
+    }).unref();
+  }
+  child.kill(signal);
+}
+
 export async function runCommand(
   executable: string,
   args: string[],
@@ -70,39 +130,50 @@ export async function runCommand(
       env: options.env ?? process.env,
       shell: false,
       stdio: "pipe",
+      detached: options.killProcessTree === true && process.platform !== "win32",
+      windowsHide: true,
     });
-    let stdout = "";
-    let stderr = "";
+    const stdout = new OutputCapture(options.maxOutputBytes);
+    const stderr = new OutputCapture(options.maxOutputBytes);
     let timedOut = false;
+    let forceTimer: NodeJS.Timeout | undefined;
     const timer = options.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          child.kill("SIGTERM");
-          setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+          terminate(child, "SIGTERM", options.killProcessTree ?? false);
+          forceTimer = setTimeout(
+            () => terminate(child, "SIGKILL", options.killProcessTree ?? false),
+            2_000,
+          );
+          forceTimer.unref();
         }, options.timeoutMs)
       : undefined;
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
+      stdout.append(chunk);
     });
     child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
+      stderr.append(chunk);
     });
     child.once("error", (error) => {
       if (timer) clearTimeout(timer);
+      if (forceTimer) clearTimeout(forceTimer);
       reject(error);
     });
     child.once("close", (code, signal) => {
       if (timer) clearTimeout(timer);
+      if (timedOut && options.killProcessTree) terminate(child, "SIGKILL", true);
+      if (forceTimer) clearTimeout(forceTimer);
       const exitCode = code ?? (signal ? 128 : 1);
+      let stderrValue = stderr.value();
       if (timedOut) {
-        stderr += `\nTimed out after ${options.timeoutMs}ms`;
+        stderrValue += `\nTimed out after ${options.timeoutMs}ms`;
       }
-      const result = { command: rendered, exitCode, stdout, stderr };
+      const result = { command: rendered, exitCode, stdout: stdout.value(), stderr: stderrValue };
       if (exitCode !== 0 && !options.allowFailure) {
-        reject(new CommandError(rendered, exitCode, stdout, stderr));
+        reject(new CommandError(rendered, exitCode, result.stdout, result.stderr));
       } else {
         resolve(result);
       }
