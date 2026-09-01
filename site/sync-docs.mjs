@@ -20,10 +20,12 @@ const EXTERNAL = [
 
 /** Docs that do have a page here, so cross-references stay inside the site. */
 const INTERNAL = [
+  [/\]\(docs\/GETTING_STARTED\.md\)/g, "](/docs/getting-started)"],
   [/\]\(docs\/ARCHITECTURE\.md\)/g, "](/docs/architecture)"],
   [/\]\(docs\/PROTOCOL\.md\)/g, "](/docs/protocol)"],
   [/\]\(docs\/SECURITY\.md\)/g, "](/docs/security)"],
   [/\]\(docs\/RELEASING\.md\)/g, "](/docs/releasing)"],
+  [/\]\(GETTING_STARTED\.md\)/g, "](/docs/getting-started)"],
   [/\]\(ARCHITECTURE\.md\)/g, "](/docs/architecture)"],
   [/\]\(PROTOCOL\.md\)/g, "](/docs/protocol)"],
   [/\]\(SECURITY\.md\)/g, "](/docs/security)"],
@@ -31,6 +33,7 @@ const INTERNAL = [
 ];
 
 const PAGES = [
+  { from: "docs/GETTING_STARTED.md", to: "getting-started.md" },
   { from: "docs/ARCHITECTURE.md", to: "architecture.md" },
   { from: "docs/PROTOCOL.md", to: "protocol.md" },
   { from: "docs/SECURITY.md", to: "security.md" },

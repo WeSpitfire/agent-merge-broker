@@ -20,7 +20,8 @@ Do not run the broker automatically on untrusted fork configuration. A safe forg
   cancel work on a worker's behalf.
 - Do not place tokens in commits, task titles, validator commands, or logs.
 - Git and GitHub credentials remain owned by the host's normal credential helpers.
-- Validator stdout and stderr are retained locally and may contain accidental secrets. Output is capped, not redacted.
+- Validator stdout and stderr are retained locally and may contain accidental secrets. Capture is
+  bounded while the process runs, not only truncated afterward; output is capped, not redacted.
 - New repositories receive an Ed25519 provenance private key under Git's common runtime directory,
   mode 0600. Only the public key is committed. `MERGE_BROKER_SIGNING_KEY` and
   `MERGE_BROKER_SIGNING_KEY_FILE` support supervised hosts and are removed from validator
@@ -30,7 +31,10 @@ Do not run the broker automatically on untrusted fork configuration. A safe forg
   rotation and committing new public-key policy recoverable and lets in-flight protected-base policy
   select its matching key. Retire old keys deliberately only after no supported base trusts them.
 
-Runtime state is stored inside Git's common directory and inherits its filesystem permissions. Anyone who can modify the repository's Git directory can modify broker state or audit records. The audit stream is append-only by convention, not cryptographically tamper-evident.
+Runtime state is stored inside Git's common directory. Broker-owned directories are mode 0700 and
+state, audit, receipt, manifest, token, and key files are mode 0600 on POSIX systems. Anyone who can
+modify the repository's Git directory can still modify broker state or audit records. The audit
+stream is append-only by convention, not cryptographically tamper-evident.
 
 ## Git safety
 
@@ -67,6 +71,10 @@ refresh`, which reruns validation and produces a new signed manifest.
 Configuration is trusted. `{files}` and `{taskId}` placeholders are shell-quoted, and structured metadata is also supplied as environment variables. Prefer environment variables when composing complex commands.
 
 Validators run under a fixed interpreter — `/bin/sh` by default, or `validation.shell` — and never under a login shell. Sourcing an operator's personal profile would make an integration decision depend on whose machine assembled the batch, and would let a compromised dotfile influence what the broker reports as validated. Quoting follows the configured shell; POSIX shells are the supported and tested surface.
+
+Validator timeouts terminate the spawned process group on POSIX so a shell child cannot leave a
+grandchild running after the decision has failed. Repository configuration remains trusted code and
+can deliberately start detached work beyond that process group; do not run untrusted fork policy.
 
 Task and batch metadata must still be treated as untrusted display text by external dashboards. The bundled GitHub publisher constructs command arguments without a shell and sends PR content through stdin.
 

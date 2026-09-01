@@ -218,6 +218,28 @@ export interface BatchRecord {
   publishWarning?: string;
   closedAt?: string;
   error?: string;
+  /**
+   * Durable hand-off between assembling a candidate and moving its Git branch. If the process
+   * stops between those operations, recovery can decide whether to finalize or roll back without
+   * guessing which receipt the branch represents.
+   */
+  revisionIntent?: CandidateRevisionIntent;
+}
+
+export interface CandidateRevisionIntent {
+  revision: number;
+  taskId: string;
+  previousCandidateSha: string;
+  candidateSha: string;
+  branchName: string;
+  createdAt: string;
+  nextBatch: Omit<BatchRecord, "revisionIntent">;
+  revisedTask: {
+    commits: string[];
+    actualPaths: string[];
+    warnings: string[];
+    submittedAt: string;
+  };
 }
 
 export interface BatchProvenance {
@@ -365,6 +387,10 @@ export interface RecoveryResult {
   worktreesRemoved: string[];
   branchesRemoved: string[];
   cleanupWarnings: string[];
+  /** Candidate revisions finalized after their branch move completed but the process stopped. */
+  candidateRevisionsRecovered?: string[];
+  /** Revision intents retained because the external branch could not be reconciled safely. */
+  candidateRevisionWarnings?: string[];
 }
 
 export interface RevisionResult {

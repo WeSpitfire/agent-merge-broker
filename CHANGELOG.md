@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.9.0 — 2026-08-31
+
+### Added
+
+- Candidate revision intents make branch publication recoverable across an interrupted state
+  finalization, and integration now rejects a task receipt replaced after planning.
+- `ForgePublisher` is an injectable Node API boundary; the GitHub CLI publisher remains built in.
+- `doctor` reports toolchain, remote/base, forge authentication, committed policy, hooks, service,
+  locks, provenance, and unfinished transaction readiness.
+- A full getting-started guide, community support/conduct files, and structured issue templates.
+
+### Security
+
+- Validator output is memory-bounded while commands run, and timeouts terminate the POSIX process
+  group. Runtime directories/files now receive explicit 0700/0600 modes without changing a
+  caller-owned custom token directory.
+- Auto-merge defaults off, every auto-merge call carries an exact head SHA, and service installers
+  refuse to overwrite or remove unowned supervisor files.
+
+### Fixed
+
+- systemd user services now write stdout and stderr to the log path reported by the CLI.
+- The generated config is validated against the published JSON Schema during tests, packaged demos
+  are included in npm tarballs, numeric CLI options fail closed, and documentation edit links point
+  at their real source files.
+
 ## 0.8.1 — 2026-08-30
 
 ### Fixed

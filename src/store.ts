@@ -85,15 +85,21 @@ export class StateStore {
   }
 
   async initialize(): Promise<void> {
-    await Promise.all([
-      mkdir(this.directory, { recursive: true }),
-      mkdir(this.worktreesDirectory, { recursive: true }),
-      mkdir(this.receiptsDirectory, { recursive: true }),
-      mkdir(this.batchesDirectory, { recursive: true }),
-      mkdir(this.archiveDirectory, { recursive: true }),
-      mkdir(this.tokensDirectory, { recursive: true, mode: 0o700 }),
-      mkdir(this.provenanceKeysDirectory, { recursive: true, mode: 0o700 }),
-    ]);
+    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    await chmod(this.directory, 0o700).catch(() => undefined);
+    await Promise.all(
+      [
+        this.worktreesDirectory,
+        this.receiptsDirectory,
+        this.batchesDirectory,
+        this.archiveDirectory,
+        this.tokensDirectory,
+        this.provenanceKeysDirectory,
+      ].map(async (directory) => {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await chmod(directory, 0o700).catch(() => undefined);
+      }),
+    );
     if (!(await exists(this.stateFile))) {
       try {
         await writeFile(
@@ -104,12 +110,13 @@ export class StateStore {
             tasks: {},
             batches: {},
           } satisfies BrokerState, null, 2)}\n`,
-          { encoding: "utf8", flag: "wx" },
+          { encoding: "utf8", flag: "wx", mode: 0o600 },
         );
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
     }
+    await chmod(this.stateFile, 0o600).catch(() => undefined);
   }
 
   async read(): Promise<BrokerState> {
@@ -141,7 +148,11 @@ export class StateStore {
       await this.atomicWrite(this.stateFile, state);
       if (events.length > 0) {
         await this.rotateAuditIfLarge();
-        await appendFile(this.auditFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+        await appendFile(this.auditFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        await chmod(this.auditFile, 0o600).catch(() => undefined);
       }
       return result;
     });
@@ -169,12 +180,16 @@ export class StateStore {
    * state it authorizes, under a directory whose contents are already trusted.
    */
   async writeToken(taskId: string, token: string, target = this.tokenPath(taskId)): Promise<string> {
-    await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-    await chmod(path.dirname(target), 0o700).catch(() => undefined);
+    const parent = path.dirname(target);
+    const relativeToTokens = path.relative(this.tokensDirectory, parent);
+    const brokerOwnedParent = !relativeToTokens.startsWith("..") && !path.isAbsolute(relativeToTokens);
+    await mkdir(parent, { recursive: true, ...(brokerOwnedParent ? { mode: 0o700 } : {}) });
+    if (brokerOwnedParent) await chmod(parent, 0o700).catch(() => undefined);
     const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(temporary, `${token}\n`, { encoding: "utf8", mode: 0o600 });
     await chmod(temporary, 0o600).catch(() => undefined);
     await rename(temporary, target);
+    await chmod(target, 0o600).catch(() => undefined);
     return target;
   }
 
@@ -262,6 +277,7 @@ export class StateStore {
     await writeFile(temporary, privateKey, { encoding: "utf8", mode: 0o600 });
     await chmod(temporary, 0o600).catch(() => undefined);
     await rename(temporary, target);
+    await chmod(target, 0o600).catch(() => undefined);
   }
 
   async writeBatchManifest(batchId: string, manifest: unknown): Promise<string> {
@@ -383,11 +399,11 @@ export class StateStore {
     const startedAt = Date.now();
     while (true) {
       try {
-        await mkdir(lockDirectory);
+        await mkdir(lockDirectory, { mode: 0o700 });
         await writeFile(
           path.join(lockDirectory, "owner.json"),
           `${JSON.stringify({ pid: process.pid, host: hostname(), createdAt: new Date().toISOString() })}\n`,
-          "utf8",
+          { encoding: "utf8", mode: 0o600 },
         );
         break;
       } catch (error) {
@@ -445,10 +461,11 @@ export class StateStore {
   }
 
   private async atomicWrite(target: string, value: unknown): Promise<void> {
-    await mkdir(path.dirname(target), { recursive: true });
+    await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await rename(temporary, target);
+    await chmod(target, 0o600).catch(() => undefined);
   }
 }
 

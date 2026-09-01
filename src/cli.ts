@@ -30,6 +30,26 @@ function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
+function integerOption(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) throw new BrokerError("INVALID_LIMIT", `${name} must be an integer.`);
+  return parsed;
+}
+
+function positiveIntegerOption(value: string, name: string): number {
+  const parsed = integerOption(value, name);
+  if (parsed <= 0) throw new BrokerError("INVALID_LIMIT", `${name} must be a positive integer.`);
+  return parsed;
+}
+
+function positiveNumberOption(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new BrokerError("INVALID_LIMIT", `${name} must be a positive number.`);
+  }
+  return parsed;
+}
+
 function globalOptions(): { cwd: string; json: boolean } {
   const options = program.opts<{ cwd?: string; json?: boolean }>();
   return { cwd: options.cwd ?? process.cwd(), json: options.json ?? false };
@@ -294,7 +314,7 @@ task
         ...(options.base ? { base: options.base } : {}),
         expectedPaths: options.path,
         dependsOn: options.dependsOn,
-        priority: Number(options.priority),
+        priority: integerOption(options.priority, "--priority"),
         ...(options.worktree ? { worktree: options.worktree } : {}),
       });
       output(publicTask(registered), `Registered task ${registered.id} at ${registered.baseSha}.`);
@@ -338,7 +358,7 @@ task
         ...(options.base ? { base: options.base } : {}),
         ...(options.path.length > 0 ? { expectedPaths: options.path } : {}),
         ...(options.dependsOn.length > 0 ? { dependsOn: options.dependsOn } : {}),
-        ...(options.priority ? { priority: Number(options.priority) } : {}),
+        ...(options.priority ? { priority: integerOption(options.priority, "--priority") } : {}),
         worktree: options.worktree ?? globalOptions().cwd,
         ...(options.tokenFile ? { tokenFile: options.tokenFile } : {}),
         storeToken: options.storeToken,
@@ -577,7 +597,7 @@ program
   .action(async (options: { task: string[]; maxTasks?: string }) => {
     const result = await (await openBroker()).plan({
       ...(options.task.length > 0 ? { taskIds: options.task } : {}),
-      ...(options.maxTasks ? { maxTasks: Number(options.maxTasks) } : {}),
+      ...(options.maxTasks ? { maxTasks: positiveIntegerOption(options.maxTasks, "--max-tasks") } : {}),
     });
     output(result, planHuman(result));
   });
@@ -600,7 +620,7 @@ program
     }) => {
       const result = await (await openBroker()).integrate({
         ...(options.task.length > 0 ? { taskIds: options.task } : {}),
-        ...(options.maxTasks ? { maxTasks: Number(options.maxTasks) } : {}),
+        ...(options.maxTasks ? { maxTasks: positiveIntegerOption(options.maxTasks, "--max-tasks") } : {}),
         dryRun: options.dryRun ?? false,
         publish: options.publish ?? false,
         force: options.force ?? false,
@@ -861,7 +881,7 @@ program
   }) => {
     const result = await (await openBroker()).installService({
       uninstall: options.uninstall ?? false,
-      intervalSeconds: Number.parseInt(options.interval, 10),
+      intervalSeconds: positiveNumberOption(options.interval, "--interval"),
       eager: options.eager,
       ...(options.cliPath ? { cliPath: options.cliPath } : {}),
       ...(options.logFile ? { logFile: options.logFile } : {}),
@@ -1006,7 +1026,9 @@ program
   .description("show the append-only local audit trail")
   .addOption(new Option("--limit <number>", "maximum events").default("100"))
   .action(async (options: { limit: string }) => {
-    const result = await (await openBroker()).store.readAudit(Number(options.limit));
+    const result = await (await openBroker()).store.readAudit(
+      positiveIntegerOption(options.limit, "--limit"),
+    );
     output(
       result,
       result.map((event) => `${event.at} #${event.sequence} ${event.event} ${event.taskId ?? event.batchId ?? ""}`).join("\n"),
@@ -1022,6 +1044,7 @@ program
   .option("--once", "perform one polling cycle and exit")
   .action(
     async (options: { interval: string; publish?: boolean; eager?: boolean; once?: boolean }) => {
+      const intervalSeconds = positiveNumberOption(options.interval, "--interval");
       let stopping = false;
       const json = program.opts<{ json?: boolean }>().json ?? false;
       let lastOutputAt = Date.now();
@@ -1043,7 +1066,7 @@ program
           kind: "started",
           version: program.version() ?? "unknown",
           repository: (await openBroker()).repo.root,
-          intervalSeconds: Number(options.interval),
+          intervalSeconds,
           publish: options.publish ?? false,
           eager: options.eager ?? false,
         });
@@ -1094,7 +1117,7 @@ program
           say({ kind: "idle", waiting: plan.selected.length, quietSeconds: (Date.now() - lastOutputAt) / 1_000 });
         }
         if (options.once || stopping) break;
-        await new Promise<void>((resolve) => setTimeout(resolve, Number(options.interval) * 1_000));
+        await new Promise<void>((resolve) => setTimeout(resolve, intervalSeconds * 1_000));
       } while (!stopping);
     },
   );

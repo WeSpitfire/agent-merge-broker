@@ -12,6 +12,31 @@ export interface PublicationResult {
   reusedPullRequest?: boolean;
 }
 
+/** Forge boundary used by the broker; GitHub CLI remains the built-in implementation. */
+export interface ForgePublisher {
+  publishBatch(options: {
+    repo: GitRepository;
+    config: BrokerConfig;
+    batch: BatchRecord;
+    tasks: TaskRecord[];
+  }): Promise<PublicationResult>;
+  closePullRequest(repoRoot: string, pullRequestUrl: string, comment: string): Promise<boolean>;
+  updatePullRequestBody(
+    repoRoot: string,
+    pullRequestUrl: string,
+    batch: BatchRecord,
+    tasks: TaskRecord[],
+  ): Promise<void>;
+  enableAutoMerge(
+    repoRoot: string,
+    pullRequestUrl: string,
+    config: BrokerConfig,
+    expectedHeadSha?: string,
+  ): Promise<boolean>;
+  disableAutoMerge(repoRoot: string, pullRequestUrl: string): Promise<boolean>;
+  inspectPullRequest(repoRoot: string, pullRequestUrl: string): Promise<PullRequestState>;
+}
+
 function renderTitle(template: string, batch: BatchRecord): string {
   return template.replaceAll("{batchId}", batch.id).replaceAll("{taskCount}", String(batch.taskIds.length));
 }
@@ -487,3 +512,12 @@ export async function inspectPullRequest(
 export function defaultProjectTitle(repoRoot: string): string {
   return path.basename(repoRoot);
 }
+
+export const githubCliPublisher: ForgePublisher = {
+  publishBatch,
+  closePullRequest,
+  updatePullRequestBody,
+  enableAutoMerge,
+  disableAutoMerge,
+  inspectPullRequest,
+};

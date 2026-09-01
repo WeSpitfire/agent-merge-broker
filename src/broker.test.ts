@@ -7,6 +7,7 @@ import { MergeBroker } from "./broker.js";
 import { configPath, loadConfig } from "./config.js";
 import { BrokerError } from "./errors.js";
 import { runCommand } from "./process.js";
+import { githubCliPublisher } from "./publisher.js";
 
 async function git(repo: string, ...args: string[]): Promise<string> {
   return (await runCommand("git", args, { cwd: repo })).stdout.trim();
@@ -100,6 +101,52 @@ test("claims, submits, verifies, and transactionally batches independent commits
   const audit = await broker.store.readAudit();
   assert.ok(audit.some((event) => event.event === "batch.prepared"));
   assert.ok(audit.some((event) => event.event === "batch.merged"));
+});
+
+test("refuses a receipt that is replaced after planning but before integration starts", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "RACE", holder: "worker", expectedPaths: ["src/race.ts"] });
+  const first = await commitFile(repo, "agent-race", "src/race.ts", "export const race = 1;\n");
+  await git(repo, "switch", "agent-race");
+  await writeFile(path.join(repo, "src/race.ts"), "export const race = 2;\n", "utf8");
+  await git(repo, "add", "src/race.ts");
+  await git(repo, "commit", "-m", "finish race task");
+  const second = await git(repo, "rev-parse", "HEAD");
+  await git(repo, "switch", "main");
+  await broker.submitTask("RACE", [first], claim.token);
+
+  let announceFetch: (() => void) | undefined;
+  let releaseFetch: (() => void) | undefined;
+  const fetchStarted = new Promise<void>((resolve) => {
+    announceFetch = resolve;
+  });
+  const fetchRelease = new Promise<void>((resolve) => {
+    releaseFetch = resolve;
+  });
+  const originalFetch = broker.repo.fetchBranch.bind(broker.repo);
+  broker.repo.fetchBranch = async () => {
+    announceFetch?.();
+    await fetchRelease;
+    return false;
+  };
+  const integration = broker.integrate();
+  await fetchStarted;
+  await broker.submitTask("RACE", [first, second], claim.token);
+  releaseFetch?.();
+  await assert.rejects(
+    integration,
+    (error: unknown) => error instanceof BrokerError && error.code === "TASK_CHANGED",
+  );
+  broker.repo.fetchBranch = originalFetch;
+
+  const task = await broker.task("RACE");
+  assert.equal(task.status, "submitted");
+  assert.deepEqual(task.commits, [first, second]);
+  assert.equal(Object.keys((await broker.state()).batches).length, 0);
 });
 
 test("recovers an abandoned integration transaction and cleans its retained Git artifacts", async (context) => {
@@ -505,6 +552,40 @@ test("publishes one integration branch and reconciles it after merge", async (co
   const reconciled = await broker.syncBatch(published.id);
   assert.equal(reconciled.status, "merged");
   assert.equal((await broker.task("PUBLISH")).status, "merged");
+});
+
+test("accepts an injected forge publisher without changing broker state semantics", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const config = await loadConfig(repo);
+  config.publish.mode = "pull-request";
+  config.publish.autoMerge = false;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const publishedIds: string[] = [];
+  const broker = await MergeBroker.open(repo, {
+    publisher: {
+      ...githubCliPublisher,
+      publishBatch: async ({ batch }) => {
+        publishedIds.push(batch.id);
+        return {
+          mode: "pull-request",
+          branchName: batch.branchName ?? "missing",
+          pullRequestUrl: "https://forge.example.invalid/pulls/1",
+        };
+      },
+    },
+  });
+  const claim = await broker.claimTask({ id: "FORGE", holder: "agent", expectedPaths: ["src/forge.ts"] });
+  const commit = await commitFile(repo, "forge", "src/forge.ts", "export const forge = true;\n");
+  await broker.submitTask("FORGE", [commit], claim.token);
+  const integrated = await broker.integrate();
+  const published = await broker.publishBatch(integrated.batch.id);
+  assert.deepEqual(publishedIds, [integrated.batch.id]);
+  assert.equal(published.status, "published");
+  assert.equal(published.pullRequestUrl, "https://forge.example.invalid/pulls/1");
+  assert.equal((await broker.task("FORGE")).status, "published");
 });
 
 test("pauses tasks when a published batch closes without merging", async (context) => {

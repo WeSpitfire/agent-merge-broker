@@ -66,6 +66,13 @@ next process that safely acquires the integration lock marks the incomplete batc
 tasks to `submitted` without charging an attempt, and removes only broker-owned worktree and branch
 artifacts. `serve`, `integrate`, and the explicit `recover` command all use the same recovery path.
 
+Candidate revision uses a second durable hand-off. Before moving the integration branch, the broker
+records a revision intent containing the old candidate, replacement candidate, and replacement task
+receipt. After a restart, recovery inspects the real branch or pull-request head: it finalizes when
+the new SHA is present, rolls the intent back when the old SHA is still present, and retains the
+intent for operator inspection when neither is true. State never claims a receipt that the branch
+does not contain.
+
 ## Task lifecycle
 
 ```text
@@ -207,3 +214,8 @@ The first failing cherry-pick identifies a commit and task. Focused validation i
 ## Future adapters
 
 Adapters should translate their native task system into the protocol rather than receive Git administration privileges. Natural additions are MCP, GitHub Actions, Codex, Claude Code, and generic webhook adapters. The core state machine must remain usable without them.
+
+Forge publication is an explicit exported boundary. `MergeBroker.open` accepts a `ForgePublisher`;
+the GitHub CLI implementation is the default. An alternative forge adapter owns pull-request
+creation, inspection, body updates, and merge controls while Git and the broker state machine retain
+branch assembly, validation, receipts, and recovery authority.

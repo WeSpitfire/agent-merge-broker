@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { StateStore } from "./store.js";
 import { BrokerError } from "./errors.js";
@@ -84,3 +84,32 @@ test("releases an abandoned lock but refuses one that may still be live", async 
   assert.equal((await store.releaseLock("integration")).held, false);
   assert.equal((await store.inspectLock("integration")).held, false);
 });
+
+test(
+  "keeps runtime state private without changing a caller-owned token directory",
+  { skip: process.platform === "win32" ? "POSIX permission modes" : false },
+  async (context) => {
+    const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+    context.after(async () => {
+      await rm(directory, { recursive: true, force: true });
+    });
+    const store = new StateStore(directory, "state", 10);
+    await store.initialize();
+    assert.equal((await stat(store.directory)).mode & 0o777, 0o700);
+    assert.equal((await stat(path.join(store.directory, "state.json"))).mode & 0o777, 0o600);
+    assert.equal((await stat(store.tokensDirectory)).mode & 0o777, 0o700);
+
+    await store.transaction((_state, audit) => audit("permissions.test"));
+    assert.equal((await stat(path.join(store.directory, "audit.jsonl"))).mode & 0o777, 0o600);
+    const manifest = await store.writeBatchManifest("permissions", { private: true });
+    assert.equal((await stat(manifest)).mode & 0o777, 0o600);
+
+    const external = path.join(directory, "caller-owned");
+    await mkdir(external, { mode: 0o755 });
+    await chmod(external, 0o755);
+    const token = path.join(external, "worker.token");
+    await store.writeToken("worker", "secret", token);
+    assert.equal((await stat(external)).mode & 0o777, 0o755);
+    assert.equal((await stat(token)).mode & 0o777, 0o600);
+  },
+);

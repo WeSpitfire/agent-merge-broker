@@ -10,9 +10,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
  * Figures the landing page states about the package are read from the package itself, so a release
  * cannot leave the site claiming a version or a test count that is no longer true.
  */
-function projectFacts(): { version: string; tests: number } {
+function projectFacts(): { version: string; tests: number; dependencies: number } {
   const manifest = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8")) as {
     version: string;
+    dependencies?: Record<string, string>;
   };
 
   const src = path.join(repoRoot, "src");
@@ -25,7 +26,7 @@ function projectFacts(): { version: string; tests: number } {
 
   if (tests === 0) throw new Error("Counted no tests: the declaration pattern has drifted.");
 
-  return { version: manifest.version, tests };
+  return { version: manifest.version, tests, dependencies: Object.keys(manifest.dependencies ?? {}).length };
 }
 
 const project = projectFacts();
@@ -53,12 +54,16 @@ export default defineConfig({
   themeConfig: {
     project,
     nav: [
-      { text: "Docs", link: "/docs/architecture", activeMatch: "/docs/" },
+      { text: "Docs", link: "/docs/getting-started", activeMatch: "/docs/" },
       { text: "npm", link: "https://www.npmjs.com/package/agent-merge-broker" },
       { text: "Changelog", link: `${REPO}/blob/main/CHANGELOG.md` },
     ],
     sidebar: {
       "/docs/": [
+        {
+          text: "Start here",
+          items: [{ text: "Getting started", link: "/docs/getting-started" }],
+        },
         {
           text: "Reference",
           items: [
@@ -72,7 +77,16 @@ export default defineConfig({
     },
     socialLinks: [{ icon: "github", link: REPO }],
     editLink: {
-      pattern: `${REPO}/edit/main/docs/:path`,
+      pattern: ({ filePath }) => {
+        const sources: Record<string, string> = {
+          "docs/getting-started.md": "docs/GETTING_STARTED.md",
+          "docs/architecture.md": "docs/ARCHITECTURE.md",
+          "docs/protocol.md": "docs/PROTOCOL.md",
+          "docs/security.md": "docs/SECURITY.md",
+          "docs/releasing.md": "docs/RELEASING.md",
+        };
+        return `https://github.com/WeSpitfire/agent-merge-broker/edit/main/${sources[filePath] ?? filePath}`;
+      },
       text: "Edit this page on GitHub",
     },
     footer: {
