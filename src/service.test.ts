@@ -118,6 +118,7 @@ test("refuses a platform it cannot supervise instead of writing a file nothing r
 
 test(
   "refuses to overwrite or remove a supervisor file it does not own",
+  { skip: process.platform === "win32" ? "No supported Windows supervisor" : false },
   async (context) => {
     const root = await mkdtemp(path.join(tmpdir(), "merge-broker-service-"));
     const home = path.join(root, "home");
