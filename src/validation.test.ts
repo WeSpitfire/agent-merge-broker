@@ -5,7 +5,10 @@ import { runValidators } from "./validation.js";
 
 test("gives every validator an isolated cache directory and removes it afterward", async () => {
   const [result] = await runValidators({
-    validators: [{ name: "cache", command: "printf '%s' \"$MERGE_BROKER_CACHE_DIR\"" }],
+    validators: [{
+      name: "cache",
+      command: `node -e "process.stdout.write(process.env.MERGE_BROKER_CACHE_DIR || '')"`,
+    }],
     scope: "authoritative",
     cwd: process.cwd(),
     files: [],
