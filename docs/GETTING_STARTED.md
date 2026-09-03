@@ -15,6 +15,9 @@ You need:
 Windows, macOS, and Linux are supported. On Windows, make sure Git and Node are available to the
 same user account that will run the broker or its Scheduled Task.
 
+See [Compatibility and current limits](COMPATIBILITY.md) for the tested matrix, the precise Windows
+service model, release availability, and integrations that are not built in.
+
 The broker treats checked-in configuration as executable policy. Validator commands run on the
 integration host, so review `.merge-broker/config.json` like a CI workflow.
 
@@ -214,6 +217,12 @@ Task. Each writes to the log path reported by the command. The installer refuses
 remove a service file without the broker ownership marker. Service installation also refuses while
 `publish.mode` is `none`, because an unattended loop that cannot publish would only strand work.
 
+The Windows task uses the installing user's interactive token. It starts immediately and at that
+user's logon, but it is not a boot-time machine service and will not run before the user logs on.
+Node and the broker CLI are recorded by absolute path; Git, GitHub CLI, and validator commands must
+remain available to that user's environment. Run `npx merge-broker doctor` as the service user after
+installing or moving the repository.
+
 You can also run one cycle from CI or a scheduler:
 
 ```bash
@@ -230,11 +239,27 @@ not the command's current directory.
 
 ### Connect an MCP coding agent
 
-Run `merge-broker-mcp -C <repository> --profile worker` as a stdio MCP server. Worker tools can
-claim, validate, nominate, and revise their own leased work; lease tokens remain in the local vault
-and are not returned in MCP messages. A trusted integration controller can run a separate
-`--profile operator` server for planning, integration, publication, evidence, and approval. Do not
-give the operator profile to ordinary implementation agents.
+Configure `merge-broker-mcp` as a stdio server rooted at the repository:
+
+```json
+{
+  "mcpServers": {
+    "merge-broker": {
+      "command": "npx",
+      "args": ["--no-install", "merge-broker-mcp", "-C", "/absolute/repository/path", "--profile", "worker"]
+    }
+  }
+}
+```
+
+Use `npx.cmd` on Windows when the MCP host does not resolve npm command shims. Worker tools can
+inspect status, claim, heartbeat, extend, validate, nominate, release, reopen, and revise their own
+leased work. Lease tokens remain in the local vault and are not returned in MCP messages.
+
+A trusted integration controller can run a separate `--profile operator` server. It adds planning,
+integration, publication, synchronization, refresh, evidence, approval, retry/cancel, audit,
+metrics, and recovery tools. Do not give the operator profile to ordinary implementation agents;
+it has the same control-plane authority as the integration host.
 
 ### Require exact verification and approval
 
@@ -273,6 +298,16 @@ npx merge-broker doctor
 Look for unmet dependencies, overlapping scopes, an outstanding batch, expired leases, failed
 validators, an unreachable base, or missing forge authentication.
 
+To attach diagnostics to a support request:
+
+```bash
+npx merge-broker doctor --support-bundle > merge-broker-support.json
+```
+
+The bundle includes platform information, doctor output, and the latest 50 audit events. Repository
+and home paths, URLs, and secret-bearing fields are redacted, but validator output and project
+metadata can still be sensitive. Review the file before sharing it.
+
 ## Production checklist
 
 - Commit `.merge-broker/config.json`, `.merge-broker/agent-instructions.md`, and `AGENTS.md`; review
@@ -287,5 +322,5 @@ validators, an unreachable base, or missing forge authentication.
   before sharing.
 - Back up the provenance signing key and test the recovery procedure.
 
-Continue with [Architecture](ARCHITECTURE.md) for invariants and [Protocol](PROTOCOL.md) when building
-an adapter.
+Continue with [Compatibility and current limits](COMPATIBILITY.md) for the supported boundary,
+[Architecture](ARCHITECTURE.md) for invariants, and [Protocol](PROTOCOL.md) when building an adapter.

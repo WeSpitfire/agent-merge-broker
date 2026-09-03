@@ -55,6 +55,7 @@ export default defineConfig({
     project,
     nav: [
       { text: "Docs", link: "/docs/getting-started", activeMatch: "/docs/" },
+      { text: "Compatibility", link: "/docs/compatibility" },
       { text: "npm", link: "https://www.npmjs.com/package/agent-merge-broker" },
       { text: "Changelog", link: `${REPO}/blob/main/CHANGELOG.md` },
     ],
@@ -69,9 +70,14 @@ export default defineConfig({
           items: [
             { text: "Architecture", link: "/docs/architecture" },
             { text: "Protocol", link: "/docs/protocol" },
+            { text: "Compatibility & limits", link: "/docs/compatibility" },
             { text: "Security", link: "/docs/security" },
             { text: "Releasing", link: "/docs/releasing" },
           ],
+        },
+        {
+          text: "Help",
+          items: [{ text: "Support", link: "/docs/support" }],
         },
       ],
     },
@@ -84,6 +90,8 @@ export default defineConfig({
           "docs/protocol.md": "docs/PROTOCOL.md",
           "docs/security.md": "docs/SECURITY.md",
           "docs/releasing.md": "docs/RELEASING.md",
+          "docs/compatibility.md": "docs/COMPATIBILITY.md",
+          "docs/support.md": "SUPPORT.md",
         };
         return `https://github.com/WeSpitfire/agent-merge-broker/edit/main/${sources[filePath] ?? filePath}`;
       },

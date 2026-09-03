@@ -24,6 +24,10 @@
     "examples",
     "docs",
     "README.md",
+    "CHANGELOG.md",
+    "SUPPORT.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
     "LICENSE"
   ],
   "scripts": {

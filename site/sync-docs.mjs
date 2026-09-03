@@ -25,11 +25,14 @@ const INTERNAL = [
   [/\]\(docs\/PROTOCOL\.md\)/g, "](/docs/protocol)"],
   [/\]\(docs\/SECURITY\.md\)/g, "](/docs/security)"],
   [/\]\(docs\/RELEASING\.md\)/g, "](/docs/releasing)"],
+  [/\]\(docs\/COMPATIBILITY\.md\)/g, "](/docs/compatibility)"],
+  [/\]\(SUPPORT\.md\)/g, "](/docs/support)"],
   [/\]\(GETTING_STARTED\.md\)/g, "](/docs/getting-started)"],
   [/\]\(ARCHITECTURE\.md\)/g, "](/docs/architecture)"],
   [/\]\(PROTOCOL\.md\)/g, "](/docs/protocol)"],
   [/\]\(SECURITY\.md\)/g, "](/docs/security)"],
   [/\]\(RELEASING\.md\)/g, "](/docs/releasing)"],
+  [/\]\(COMPATIBILITY\.md\)/g, "](/docs/compatibility)"],
 ];
 
 const PAGES = [
@@ -38,6 +41,8 @@ const PAGES = [
   { from: "docs/PROTOCOL.md", to: "protocol.md" },
   { from: "docs/SECURITY.md", to: "security.md" },
   { from: "docs/RELEASING.md", to: "releasing.md" },
+  { from: "docs/COMPATIBILITY.md", to: "compatibility.md" },
+  { from: "SUPPORT.md", to: "support.md" },
 ];
 
 function rewrite(markdown) {

@@ -66,6 +66,9 @@ The on-disk state, receipt, and provenance formats are versioned, but compatibil
 Windows, macOS, and Linux are supported and release-gating in CI. Windows validation defaults to
 non-profile PowerShell; background operation uses a per-user Windows Scheduled Task.
 
+See [Compatibility and current limits](docs/COMPATIBILITY.md) for the exact platform matrix,
+Windows service behavior, built-in integrations, and functionality the project does not provide.
+
 ## Install
 
 Install it as a development tool:
@@ -574,12 +577,21 @@ The scheduler uses a deterministic weighted greedy heuristic. It does not claim 
 
 Configuration is trusted repository code: validator commands can execute arbitrary shell commands. Review configuration changes with the same care as CI workflows. See [`docs/SECURITY.md`](docs/SECURITY.md).
 
+The broker is intentionally a single-authority, filesystem-backed coordinator. Independent clones
+do not automatically share leases or state; the bundled MCP transport is local stdio; GitHub is the
+only built-in pull-request adapter; and the project does not start agents, host a dashboard, or
+resolve conflicts automatically. The complete supported/unsupported boundary is documented in
+[Compatibility and current limits](docs/COMPATIBILITY.md).
+
 ## Documentation
 
+- [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) — installation and production rollout
+- [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) — platform matrix, Windows notes, and current limits
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — invariants, state model, scheduling, and transactions
 - [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — lifecycle and adapter contract
 - [`docs/SECURITY.md`](docs/SECURITY.md) — trust boundaries and hardening
 - [`docs/RELEASING.md`](docs/RELEASING.md) — registry and release procedure
+- [`SUPPORT.md`](SUPPORT.md) — safe diagnostics and support channels
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development and pull requests
 
 ## License
