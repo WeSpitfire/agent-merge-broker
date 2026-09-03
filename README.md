@@ -46,10 +46,10 @@ It is deliberately **not** an agent framework and **not** a replacement for prot
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.9.0` is current. Publication and integration recover safely across interrupted state changes,
-validators run with bounded output and process-group timeouts, and `doctor` inspects the full
-operational toolchain. The Node API now accepts an injectable forge publisher while retaining the
-built-in GitHub CLI adapter.
+`0.10.0` is current. Installation now detects declared repository validation, installs the agent
+contract, provisions authenticated provenance, and remains idempotent on repeat runs. Native
+architecture execution and isolated transaction caches prevent cross-architecture Swift build
+contamination without rerunning the same complete gate.
 
 The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
@@ -79,10 +79,19 @@ npm run build
 npm link
 ```
 
-`init` writes two portable files into the application:
+`init` writes three portable files into the application:
 
 - `.merge-broker/config.json` — repository policy and commands
 - `.merge-broker/agent-instructions.md` — a reusable worker contract
+- `AGENTS.md` — a managed pointer that makes repository agents use that contract
+
+Initialization deterministically selects existing `verify`, `ci`, `check`, `lint`, `typecheck`,
+`test`, and `build` scripts from JavaScript package manifests, plus SwiftPM tests. It never creates
+commands, Xcode schemes, destinations, or project policy that the repository did not declare.
+Anything it cannot prove is printed as an explicit configuration item. Re-running `init` repairs
+missing generated integration files and old unsigned defaults, but preserves configured validators
+and owner-written `AGENTS.md` content. Use `--no-detect` or `--no-agent-contract` only when an
+installer or repository template owns those concerns itself.
 
 It also creates an Ed25519 provenance private key, mode `0600`, under Git's common runtime directory.
 Only its public key is written to the committed configuration. Runtime state, receipt records,
@@ -94,11 +103,11 @@ worktree sees the same broker authority.
 For a guided rollout—including validator, publication, service, recovery, and protected-branch
 recipes—start with [Getting started](docs/GETTING_STARTED.md).
 
-Initialize an existing Git repository and edit its generated configuration:
+Initialize an existing Git repository, review the detected policy, and commit the installation:
 
 ```bash
 merge-broker init --base main --base-ref origin/main --remote origin
-git add .merge-broker && git commit -m 'Configure authenticated merge brokerage'
+git add .merge-broker AGENTS.md && git commit -m 'Configure authenticated merge brokerage'
 merge-broker doctor
 ```
 
@@ -215,7 +224,7 @@ installing dependencies:
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v0.9.0
+- uses: WeSpitfire/agent-merge-broker/verify@v0.10.0
 ```
 
 The check verifies the Ed25519 signature, branch and batch identity, real base history, one-file
@@ -444,6 +453,7 @@ Validators receive these environment variables:
 - `MERGE_BROKER_BASE_SHA`
 - `MERGE_BROKER_HEAD_SHA`
 - `MERGE_BROKER_BATCH_ID`
+- `MERGE_BROKER_CACHE_DIR`, an isolated cache shared by validators in one integration transaction
 
 Commands may also use the shell-safe placeholders `{taskId}` and `{files}`. Validator output is
 captured with a fixed memory bound and retained in state with that cap. A timeout terminates the
@@ -453,6 +463,12 @@ validator process group on POSIX rather than leaving shell descendants behind.
 can get the local integration answer before submitting rather than a weaker approximation of it. It reports
 `MERGE_BROKER_BATCH_ID=local`, which a validator can branch on if it needs to behave differently
 outside a batch.
+
+A validator may set `"executionArchitecture": "native"` to run under the hardware architecture on
+macOS when Node itself is translated by Rosetta. Detected SwiftPM validators use this mode and put
+their scratch build under `MERGE_BROKER_CACHE_DIR`, preventing Intel and Apple Silicon artifacts
+from contaminating each other without rebuilding between the focused and authoritative stages of
+the same integration transaction.
 
 The JSON schemas in [`schemas/`](schemas/) can be used by editors, adapters, and independent receipt producers.
 

@@ -37,6 +37,8 @@ export interface ValidatorConfig {
   paths?: string[];
   timeoutSeconds?: number;
   env?: Record<string, string>;
+  /** Run through the host's native architecture instead of the Node process architecture. */
+  executionArchitecture?: "process" | "native";
 }
 
 export interface BrokerConfig {

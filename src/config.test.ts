@@ -21,6 +21,22 @@ test("accepts the generated default configuration", () => {
   assert.deepEqual(validateConfig(config), config);
 });
 
+test("accepts native validator execution and rejects unknown architecture policies", () => {
+  const config = defaultConfig();
+  config.validation.authoritative = [{
+    name: "native Swift",
+    command: "swift test",
+    executionArchitecture: "native",
+  }];
+  assert.deepEqual(validateConfig(config), config);
+  const invalid = config.validation.authoritative[0] as { executionArchitecture: string };
+  invalid.executionArchitecture = "arm64";
+  assert.throws(
+    () => validateConfig(config),
+    (error: unknown) => error instanceof BrokerError && /executionArchitecture/u.test(error.message),
+  );
+});
+
 test("rejects state directories that escape Git's common directory", () => {
   const config = defaultConfig();
   config.stateDirectory = "../outside";

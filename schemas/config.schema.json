@@ -268,7 +268,11 @@
         "command": { "type": "string", "minLength": 1 },
         "paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
         "timeoutSeconds": { "type": "integer", "minimum": 1 },
-        "env": { "type": "object", "additionalProperties": { "type": "string" } }
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "executionArchitecture": {
+          "enum": ["process", "native"],
+          "description": "Run the validator under the Node process architecture or the host's native architecture."
+        }
       }
     }
   }

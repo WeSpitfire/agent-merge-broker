@@ -22,6 +22,14 @@ export {
   type ServiceOptions,
 } from "./service.js";
 export { defaultConfig, initializeConfig, loadConfig, validateConfig, writeConfig } from "./config.js";
+export {
+  applyBootstrapPlan,
+  detectBootstrapPlan,
+  hasAgentContract,
+  installAgentContract,
+  type AgentContractResult,
+  type BootstrapPlan,
+} from "./bootstrap.js";
 export { scheduleTasks } from "./scheduler.js";
 export {
   githubCliPublisher,

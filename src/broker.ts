@@ -4,11 +4,23 @@ import { readFile } from "node:fs/promises";
 import { BrokerError, CommandError, ValidationError } from "./errors.js";
 import { GitRepository } from "./git.js";
 import { initializeConfig, loadConfig, writeConfig } from "./config.js";
+import {
+  applyBootstrapPlan,
+  detectBootstrapPlan,
+  hasAgentContract,
+  installAgentContract,
+  type AgentContractResult,
+  type BootstrapPlan,
+} from "./bootstrap.js";
 import { patternSetsMayOverlap, unexpectedPaths } from "./patterns.js";
 import { scheduleTasks } from "./scheduler.js";
 import { StateStore, type AuditRecorder, type LockStatus } from "./store.js";
-import { runValidators } from "./validation.js";
-import { runCommand } from "./process.js";
+import {
+  createValidationCacheDirectory,
+  removeValidationCacheDirectory,
+  runValidators,
+} from "./validation.js";
+import { nativeArchitecture, runCommand } from "./process.js";
 import {
   githubCliPublisher,
   type ForgePublisher,
@@ -494,8 +506,24 @@ export class MergeBroker {
 
   static async initialize(
     cwd = process.cwd(),
-    options: { baseBranch?: string; baseRef?: string; remote?: string; force?: boolean } = {},
-  ): Promise<{ repoRoot: string; configPath: string; created: boolean }> {
+    options: {
+      baseBranch?: string;
+      baseRef?: string;
+      remote?: string;
+      force?: boolean;
+      detect?: boolean;
+      agentContract?: boolean;
+    } = {},
+  ): Promise<{
+    repoRoot: string;
+    configPath: string;
+    created: boolean;
+    updated: boolean;
+    operational: boolean;
+    signingConfigured: boolean;
+    bootstrap?: BootstrapPlan;
+    agentContract?: AgentContractResult;
+  }> {
     const repo = await GitRepository.discover(cwd);
     const initialized = await initializeConfig(repo.root, options);
     const store = new StateStore(
@@ -504,14 +532,34 @@ export class MergeBroker {
       initialized.config.leases.lockTimeoutSeconds,
     );
     await store.initialize();
+    let configChanged = false;
+    const bootstrap = options.detect === false ? undefined : await detectBootstrapPlan(repo.root);
+    if (bootstrap) configChanged = applyBootstrapPlan(initialized.config, bootstrap) || configChanged;
     const provenance = initialized.config.integration.provenance;
-    if (initialized.created && provenance?.enabled) {
+    if (provenance?.enabled && (!provenance.requireSignature || !provenance.publicKey)) {
       const identity = await store.provisionProvenanceSigningKey();
       provenance.requireSignature = true;
       provenance.publicKey = identity.publicKey;
-      await writeConfig(repo.root, initialized.config);
+      configChanged = true;
     }
-    return { repoRoot: repo.root, configPath: initialized.path, created: initialized.created };
+    if (configChanged) await writeConfig(repo.root, initialized.config);
+    const agentContract = options.agentContract === false ? undefined : await installAgentContract(repo.root);
+    const validationReady = initialized.config.validation.authority === "required-ci"
+      || initialized.config.validation.authoritative.length > 0;
+    const signingConfigured = Boolean(
+      !provenance?.enabled || (provenance.requireSignature && provenance.publicKey),
+    );
+    return {
+      repoRoot: repo.root,
+      configPath: initialized.path,
+      created: initialized.created,
+      updated: !initialized.created && (configChanged || Boolean(agentContract?.changed)),
+      operational: validationReady && signingConfigured
+        && (options.agentContract === false || Boolean(agentContract)),
+      signingConfigured,
+      ...(bootstrap ? { bootstrap } : {}),
+      ...(agentContract ? { agentContract } : {}),
+    };
   }
 
   /**
@@ -1116,10 +1164,12 @@ export class MergeBroker {
 
       let worktreeAdded = false;
       let keepWorktree = false;
+      let validationCacheDirectory: string | undefined;
       // Set while work is attributable to a single task, so one bad commit fails that task instead
       // of the whole batch. Cleared before authoritative validation, which indicts the batch.
       let culpritTaskId: string | undefined;
       try {
+        validationCacheDirectory = await createValidationCacheDirectory();
         await this.repo.addDetachedWorktree(worktree, baseSha);
         worktreeAdded = true;
         for (const task of plan.selected) {
@@ -1146,6 +1196,7 @@ export class MergeBroker {
             baseSha,
             headSha,
             batchId: id,
+            cacheDirectory: validationCacheDirectory,
             ...(this.config.validation.shell ? { shell: this.config.validation.shell } : {}),
           });
           batch.validations.push(...focused);
@@ -1161,6 +1212,7 @@ export class MergeBroker {
           baseSha,
           headSha,
           batchId: id,
+          cacheDirectory: validationCacheDirectory,
           ...(this.config.validation.shell ? { shell: this.config.validation.shell } : {}),
         });
         batch.validations.push(...authoritative);
@@ -1316,6 +1368,9 @@ export class MergeBroker {
         await this.store.writeBatchManifest(id, { batch, error: batch.error });
         throw error;
       } finally {
+        if (validationCacheDirectory) {
+          await removeValidationCacheDirectory(validationCacheDirectory).catch(() => undefined);
+        }
         if (worktreeAdded && !keepWorktree) await this.repo.removeWorktree(worktree);
       }
 
@@ -2023,7 +2078,9 @@ export class MergeBroker {
 
       const signingPrivateKey = await this.provenanceSigningPrivateKey();
       let added = false;
+      let validationCacheDirectory: string | undefined;
       try {
+        validationCacheDirectory = await createValidationCacheDirectory();
         await this.repo.addDetachedWorktree(worktree, baseSha);
         added = true;
         for (const task of tasks) {
@@ -2049,6 +2106,7 @@ export class MergeBroker {
               baseSha,
               headSha: focusedHead,
               batchId: nextBatch.id,
+              cacheDirectory: validationCacheDirectory,
               ...(this.config.validation.shell ? { shell: this.config.validation.shell } : {}),
             })),
           );
@@ -2064,6 +2122,7 @@ export class MergeBroker {
             baseSha,
             headSha,
             batchId: nextBatch.id,
+            cacheDirectory: validationCacheDirectory,
             ...(this.config.validation.shell ? { shell: this.config.validation.shell } : {}),
           })),
         );
@@ -2104,6 +2163,9 @@ export class MergeBroker {
         nextBatch.finishedAt = now();
         nextBatch.candidate = makeCandidate(this.config, headSha, baseSha, revision);
       } finally {
+        if (validationCacheDirectory) {
+          await removeValidationCacheDirectory(validationCacheDirectory).catch(() => undefined);
+        }
         if (added) await this.repo.removeWorktree(worktree);
       }
       delete nextBatch.worktree;
@@ -2827,7 +2889,20 @@ export class MergeBroker {
   }
 
   async doctor(): Promise<Record<string, unknown>> {
-    const [baseResolution, clean, worktrees, locks, state, gitVersionResult, remoteUrlResult, trackedConfig, hooksPath] =
+    const [
+      baseResolution,
+      clean,
+      worktrees,
+      locks,
+      state,
+      gitVersionResult,
+      remoteUrlResult,
+      trackedConfig,
+      cleanConfig,
+      trackedAgentContract,
+      cleanAgentContract,
+      hooksPath,
+    ] =
       await Promise.all([
         this.repo.resolveCommit(this.config.baseRef).then(
           (sha) => ({ sha }),
@@ -2844,6 +2919,9 @@ export class MergeBroker {
           this.repo.root,
           true,
         ),
+        this.repo.git(["diff", "--quiet", "HEAD", "--", ".merge-broker/config.json"], this.repo.root, true),
+        this.repo.git(["ls-files", "--error-unmatch", "AGENTS.md"], this.repo.root, true),
+        this.repo.git(["diff", "--quiet", "HEAD", "--", "AGENTS.md"], this.repo.root, true),
         this.repo.git(["config", "--get", "core.hooksPath"], this.repo.root, true),
       ]);
     const warnings: string[] = [];
@@ -2899,7 +2977,7 @@ export class MergeBroker {
       if (!this.config.integration.refreshBase) ok = false;
     }
 
-    const configCommitted = trackedConfig.exitCode === 0;
+    const configCommitted = trackedConfig.exitCode === 0 && cleanConfig.exitCode === 0;
     if (!configCommitted) {
       warnings.push(".merge-broker/config.json is not committed, so collaborators and remote verification cannot share its policy.");
       if (this.config.publish.mode === "pull-request" || this.config.validation.authority === "required-ci") ok = false;
@@ -2952,7 +3030,9 @@ export class MergeBroker {
         "Provenance signatures are not required, so remote verification can confirm structure but cannot authenticate which broker created it. Run `merge-broker provenance setup-signing`.",
       );
     }
-    if (this.config.validation.authority === "broker" && this.config.validation.authoritative.length === 0) {
+    const validationReady = this.config.validation.authority === "required-ci"
+      || this.config.validation.authoritative.length > 0;
+    if (!validationReady) {
       warnings.push(
         "validation.authority is broker, but no authoritative validators are configured. Add validation.authoritative commands or explicitly delegate the complete decision to required CI.",
       );
@@ -2991,6 +3071,15 @@ export class MergeBroker {
       () => false,
     );
     const hooksInstalled = configuredHooksPath === ".githooks" && hookOwned;
+    const agentContractInstalled = await hasAgentContract(this.repo.root);
+    const agentContractCommitted = trackedAgentContract.exitCode === 0 && cleanAgentContract.exitCode === 0;
+    if (!agentContractInstalled) {
+      warnings.push(
+        "The root AGENTS.md does not contain the Merge Broker contract, so coding agents may bypass the broker. Re-run `merge-broker init`.",
+      );
+    } else if (!agentContractCommitted) {
+      warnings.push("The root AGENTS.md contract is not committed, so other agents will not receive it.");
+    }
     let service: { supported: boolean; installed: boolean; owned: boolean; file?: string } = {
       supported: false,
       installed: false,
@@ -3013,8 +3102,18 @@ export class MergeBroker {
     } catch (error) {
       if (!(error instanceof BrokerError && error.code === "UNSUPPORTED_PLATFORM")) throw error;
     }
+    const provenanceReady = Boolean(
+      !provenance?.enabled || (provenance.requireSignature && signingKeyId),
+    );
+    const operational = ok
+      && validationReady
+      && provenanceReady
+      && configCommitted
+      && agentContractInstalled
+      && agentContractCommitted;
     return {
       ok,
+      operational,
       warnings,
       locks,
       repository: this.repo.root,
@@ -3032,7 +3131,12 @@ export class MergeBroker {
         baseFresh,
       },
       tools: {
-        node: { version: nodeVersion, supported: nodeSupported },
+        node: {
+          version: nodeVersion,
+          supported: nodeSupported,
+          processArchitecture: process.arch,
+          nativeArchitecture: nativeArchitecture(),
+        },
         git: { version: gitVersion, supported: gitSupported },
         githubCli: { required: forgeRequired, available: ghAvailable, authenticated: ghAuthenticated },
       },
@@ -3040,6 +3144,7 @@ export class MergeBroker {
       worktreeCount: worktrees.length,
       publishMode: this.config.publish.mode,
       validationAuthority: this.config.validation.authority,
+      validationReady,
       focusedValidators: this.config.validation.focused.map((validator) => validator.name),
       authoritativeValidators: this.config.validation.authoritative.map((validator) => validator.name),
       provenanceAuthenticated: Boolean(provenance?.enabled && provenance.requireSignature && signingKeyId),
@@ -3047,6 +3152,11 @@ export class MergeBroker {
       runningBatches,
       pendingCandidateRevisions,
       policy: { configCommitted },
+      agentContract: {
+        installed: agentContractInstalled,
+        committed: agentContractCommitted,
+        file: path.join(this.repo.root, "AGENTS.md"),
+      },
       hooks: { installed: hooksInstalled, configuredPath: configuredHooksPath, file: hookFile },
       service,
     };

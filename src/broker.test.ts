@@ -29,6 +29,50 @@ async function createRepository(): Promise<string> {
   return repo;
 }
 
+test("initialization is turnkey and a second run is a no-op", async (context) => {
+  const repo = await mkdtemp(path.join(tmpdir(), "merge-broker-init-"));
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await git(repo, "init", "-b", "main");
+  await git(repo, "config", "user.name", "Merge Broker Test");
+  await git(repo, "config", "user.email", "test@merge-broker.invalid");
+  await writeFile(path.join(repo, "package.json"), JSON.stringify({
+    packageManager: "npm@10.0.0",
+    scripts: { lint: "node --check index.js", verify: "npm run lint" },
+  }), "utf8");
+  await writeFile(path.join(repo, "package-lock.json"), "{}\n", "utf8");
+  await writeFile(path.join(repo, "index.js"), "export const ready = true;\n", "utf8");
+  await git(repo, "add", "package.json", "package-lock.json", "index.js");
+  await git(repo, "commit", "-m", "initial");
+
+  const first = await MergeBroker.initialize(repo);
+  assert.equal(first.created, true);
+  assert.equal(first.operational, true);
+  assert.equal(first.signingConfigured, true);
+  assert.deepEqual(first.bootstrap?.authoritative.map((item) => item.name), ["workspace verify"]);
+  const firstConfig = await readFile(configPath(repo), "utf8");
+  const firstContract = await readFile(path.join(repo, "AGENTS.md"), "utf8");
+  const firstKey = await readFile((await MergeBroker.open(repo)).store.provenanceSigningKeyFile, "utf8");
+
+  const second = await MergeBroker.initialize(repo);
+  assert.equal(second.created, false);
+  assert.equal(second.updated, false);
+  assert.equal(second.operational, true);
+  assert.equal(await readFile(configPath(repo), "utf8"), firstConfig);
+  assert.equal(await readFile(path.join(repo, "AGENTS.md"), "utf8"), firstContract);
+  assert.equal(await readFile((await MergeBroker.open(repo)).store.provenanceSigningKeyFile, "utf8"), firstKey);
+
+  const legacy = JSON.parse(firstConfig) as { integration: { provenance: { requireSignature: boolean; publicKey?: string } } };
+  legacy.integration.provenance.requireSignature = false;
+  delete legacy.integration.provenance.publicKey;
+  await writeFile(configPath(repo), `${JSON.stringify(legacy, null, 2)}\n`, "utf8");
+  const repaired = await MergeBroker.initialize(repo);
+  assert.equal(repaired.updated, true);
+  assert.equal(await readFile(configPath(repo), "utf8"), firstConfig);
+  assert.equal(await readFile((await MergeBroker.open(repo)).store.provenanceSigningKeyFile, "utf8"), firstKey);
+});
+
 async function commitFile(repo: string, branch: string, file: string, contents: string): Promise<string> {
   await git(repo, "switch", "-c", branch, "main");
   const target = path.join(repo, file);
@@ -901,9 +945,9 @@ test("validates a working tree against the configured validators before anything
     timeoutSeconds: 5,
   });
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  // An adopter commits its broker configuration; the fixture has to as well, or the working-tree
-  // diff legitimately reports it as new work.
-  await git(repo, "add", ".merge-broker");
+  // An adopter commits its broker configuration and root agent contract; the fixture has to as
+  // well, or the working-tree diff legitimately reports them as new work.
+  await git(repo, "add", ".merge-broker", "AGENTS.md");
   await git(repo, "commit", "-m", "configure merge broker");
   const broker = await MergeBroker.open(repo);
 
