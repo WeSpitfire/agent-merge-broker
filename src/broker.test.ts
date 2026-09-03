@@ -391,7 +391,7 @@ test("returns tasks to the queue when authoritative validation fails", async (co
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
     name: "reject marker",
-    command: `node --input-type=commonjs -e 'process.exit(require("node:fs").existsSync("fail.txt") ? 1 : 0)'`,
+    command: `node --input-type=commonjs -e "process.exit(require('node:fs').existsSync('fail.txt') ? 1 : 0)"`,
     timeoutSeconds: 5,
   });
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -422,7 +422,7 @@ test("required CI authority prepares a signed batch after focused preflight", as
   config.validation.focused.push({
     name: "changed-scope preflight",
     paths: ["src/**"],
-    command: `node --input-type=commonjs -e 'process.exit(require("node:fs").existsSync("src/fast.ts") ? 0 : 1)'`,
+    command: `node --input-type=commonjs -e "process.exit(require('node:fs').existsSync('src/fast.ts') ? 0 : 1)"`,
     timeoutSeconds: 5,
   });
   config.publish.mode = "pull-request";
@@ -880,7 +880,7 @@ test("a failing dry run leaves the queue exactly as it found it", async (context
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
     name: "reject marker",
-    command: `node --input-type=commonjs -e 'process.exit(require("node:fs").existsSync("fail.txt") ? 1 : 0)'`,
+    command: `node --input-type=commonjs -e "process.exit(require('node:fs').existsSync('fail.txt') ? 1 : 0)"`,
     timeoutSeconds: 5,
   });
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -946,7 +946,7 @@ test("a failed task can widen its scope to fix what validation caught", async (c
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
     name: "reject marker",
-    command: `node --input-type=commonjs -e 'process.exit(require("node:fs").existsSync("fail.txt") ? 1 : 0)'`,
+    command: `node --input-type=commonjs -e "process.exit(require('node:fs').existsSync('fail.txt') ? 1 : 0)"`,
     timeoutSeconds: 5,
   });
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -971,7 +971,7 @@ test("validates a working tree against the configured validators before anything
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
     name: "reject marker",
-    command: `node --input-type=commonjs -e 'process.exit(require("node:fs").existsSync("fail.txt") ? 1 : 0)'`,
+    command: `node --input-type=commonjs -e "process.exit(require('node:fs').existsSync('fail.txt') ? 1 : 0)"`,
     timeoutSeconds: 5,
   });
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
