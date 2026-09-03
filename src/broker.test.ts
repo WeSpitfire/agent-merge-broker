@@ -85,6 +85,19 @@ async function commitFile(repo: string, branch: string, file: string, contents: 
   return sha;
 }
 
+test("refuses to install a publishing service while publication is disabled", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const broker = await MergeBroker.open(repo);
+
+  await assert.rejects(
+    broker.installService(),
+    (error: unknown) => error instanceof BrokerError && error.code === "SERVICE_PUBLISH_DISABLED",
+  );
+});
+
 test("claims, submits, verifies, and transactionally batches independent commits", async (context) => {
   const repo = await createRepository();
   context.after(async () => {
@@ -378,7 +391,7 @@ test("returns tasks to the queue when authoritative validation fails", async (co
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
     name: "reject marker",
-    command: "test ! -f fail.txt",
+    command: `node --input-type=commonjs -e "process.exit(require('node:fs').existsSync('fail.txt') ? 1 : 0)"`,
     timeoutSeconds: 5,
   });
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -409,7 +422,7 @@ test("required CI authority prepares a signed batch after focused preflight", as
   config.validation.focused.push({
     name: "changed-scope preflight",
     paths: ["src/**"],
-    command: "test -f src/fast.ts",
+    command: `node --input-type=commonjs -e "process.exit(require('node:fs').existsSync('src/fast.ts') ? 0 : 1)"`,
     timeoutSeconds: 5,
   });
   config.publish.mode = "pull-request";
@@ -815,6 +828,10 @@ test("retires completed records but keeps dependencies of active work", async (c
   });
   const activeCommit = await commitFile(repo, "branch-active", "src/active.ts", "export const active = 1;\n");
   await broker.submitTask("ACTIVE", [activeCommit], active.token);
+  const metricsBefore = await broker.metrics() as {
+    tasks: { total: number; merged: number };
+    batches: { total: number; merged: number };
+  };
 
   const preview = await broker.prune({ olderThanDays: 0, dryRun: true });
   assert.deepEqual(preview.tasks, ["DONE-B"]);
@@ -838,6 +855,19 @@ test("retires completed records but keeps dependencies of active work", async (c
   assert.deepEqual(Object.keys(archived.tasks), ["DONE-B"]);
   assert.deepEqual(Object.keys(archived.batches), [prunedBatch]);
 
+  // Housekeeping must not make historical throughput disappear from the metrics command.
+  const metricsAfter = await broker.metrics() as {
+    records: { archivedTasks: number; archivedBatches: number };
+    tasks: { total: number; merged: number };
+    batches: { total: number; merged: number };
+  };
+  assert.equal(metricsAfter.tasks.total, metricsBefore.tasks.total);
+  assert.equal(metricsAfter.tasks.merged, metricsBefore.tasks.merged);
+  assert.equal(metricsAfter.batches.total, metricsBefore.batches.total);
+  assert.equal(metricsAfter.batches.merged, metricsBefore.batches.merged);
+  assert.equal(metricsAfter.records.archivedTasks, 1);
+  assert.equal(metricsAfter.records.archivedBatches, 1);
+
   // A pruned dependency would strand its dependents, so the surviving one still plans.
   assert.deepEqual((await broker.plan()).selected.map((task) => task.id), ["ACTIVE"]);
 });
@@ -850,7 +880,7 @@ test("a failing dry run leaves the queue exactly as it found it", async (context
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
     name: "reject marker",
-    command: "test ! -f fail.txt",
+    command: `node --input-type=commonjs -e "process.exit(require('node:fs').existsSync('fail.txt') ? 1 : 0)"`,
     timeoutSeconds: 5,
   });
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -916,7 +946,7 @@ test("a failed task can widen its scope to fix what validation caught", async (c
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
     name: "reject marker",
-    command: "test ! -f fail.txt",
+    command: `node --input-type=commonjs -e "process.exit(require('node:fs').existsSync('fail.txt') ? 1 : 0)"`,
     timeoutSeconds: 5,
   });
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -941,7 +971,7 @@ test("validates a working tree against the configured validators before anything
   const config = await loadConfig(repo);
   config.validation.authoritative.push({
     name: "reject marker",
-    command: "test ! -f fail.txt",
+    command: `node --input-type=commonjs -e "process.exit(require('node:fs').existsSync('fail.txt') ? 1 : 0)"`,
     timeoutSeconds: 5,
   });
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");

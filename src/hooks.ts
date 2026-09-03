@@ -54,6 +54,13 @@ async function configuredHooksPath(repo: GitRepository): Promise<string | undefi
   return result.exitCode === 0 && value !== "" ? value : undefined;
 }
 
+function repositoryHooksPath(repo: GitRepository, configured: string): string | undefined {
+  if (path.isAbsolute(configured) || configured.startsWith("~")) return undefined;
+  const resolved = path.resolve(repo.root, configured);
+  const relative = path.relative(repo.root, resolved);
+  return relative.startsWith("..") || path.isAbsolute(relative) ? undefined : resolved;
+}
+
 /**
  * Hooks already living in Git's default directory stop running the moment core.hooksPath moves.
  * Silently disabling somebody's existing tooling is not an acceptable side effect of installing a
@@ -79,32 +86,37 @@ export async function installHooks(options: {
 }): Promise<HookInstallation> {
   const { repo, branchPrefix, force = false } = options;
   const current = await configuredHooksPath(repo);
-  if (current !== undefined && current !== HOOKS_DIRECTORY && !force) {
+  const composable = current && current !== HOOKS_DIRECTORY
+    ? repositoryHooksPath(repo, current)
+    : undefined;
+  if (current !== undefined && current !== HOOKS_DIRECTORY && !composable && !force) {
     throw new BrokerError(
       "HOOKS_PATH_CONFLICT",
-      `core.hooksPath is already set to ${current}. Installing would disable those hooks. Re-run with --force to replace it, or add the pre-push guard to ${current} yourself.`,
+      `core.hooksPath is already set outside this repository at ${current}. Re-run with --force to replace it, or add the pre-push guard there yourself.`,
       { current },
     );
   }
-  if (current === undefined) {
-    const inherited = await existingDefaultHooks(repo);
-    if (inherited.length > 0 && !force) {
-      throw new BrokerError(
-        "HOOKS_PATH_CONFLICT",
-        `This repository already has Git hooks that would stop running once core.hooksPath moves: ${inherited.join(
-          ", ",
-        )}. Move them into ${HOOKS_DIRECTORY}/ and re-run with --force.`,
-        { hooks: inherited },
-      );
-    }
-  }
 
-  const hooksPath = path.join(repo.root, HOOKS_DIRECTORY);
+  const inherited = current === undefined ? await existingDefaultHooks(repo) : [];
+  const hooksPath = composable
+    ?? (current === HOOKS_DIRECTORY ? path.join(repo.root, HOOKS_DIRECTORY) : undefined)
+    ?? (current === undefined && inherited.length > 0 && !force ? path.join(repo.commonGitDir, "hooks") : undefined)
+    ?? path.join(repo.root, HOOKS_DIRECTORY);
   const hookFile = path.join(hooksPath, "pre-push");
+  const existing = await readFile(hookFile, "utf8").catch(() => undefined);
+  if (existing !== undefined && !existing.includes(MARKER) && !force) {
+    throw new BrokerError(
+      "HOOKS_PATH_CONFLICT",
+      `A pre-push hook already exists at ${hookFile}. Keep it intact and compose the broker guard manually; run \`merge-broker install-hooks --print\` to inspect the guard.`,
+      { hookFile },
+    );
+  }
   await mkdir(hooksPath, { recursive: true });
   await writeFile(hookFile, prePushHook(branchPrefix), { encoding: "utf8", mode: 0o755 });
   await chmod(hookFile, 0o755).catch(() => undefined);
-  await repo.git(["config", "core.hooksPath", HOOKS_DIRECTORY]);
+  if (hooksPath === path.join(repo.root, HOOKS_DIRECTORY)) {
+    await repo.git(["config", "core.hooksPath", HOOKS_DIRECTORY]);
+  }
   return {
     hooksPath,
     hookFile,
@@ -114,7 +126,10 @@ export async function installHooks(options: {
 }
 
 export async function uninstallHooks(repo: GitRepository): Promise<HookInstallation> {
-  const hooksPath = path.join(repo.root, HOOKS_DIRECTORY);
+  const current = await configuredHooksPath(repo);
+  const hooksPath = current
+    ? repositoryHooksPath(repo, current) ?? path.join(repo.root, HOOKS_DIRECTORY)
+    : path.join(repo.commonGitDir, "hooks");
   const hookFile = path.join(hooksPath, "pre-push");
   let ours = false;
   try {
@@ -125,7 +140,6 @@ export async function uninstallHooks(repo: GitRepository): Promise<HookInstallat
   // Only ever remove the broker's own hook; a hand-written one at the same path is not ours to
   // delete.
   if (ours) await rm(hookFile, { force: true });
-  const current = await configuredHooksPath(repo);
   if (current === HOOKS_DIRECTORY) {
     const remaining = await readdir(hooksPath).catch(() => [] as string[]);
     if (remaining.length === 0) await repo.git(["config", "--unset", "core.hooksPath"], repo.root, true);

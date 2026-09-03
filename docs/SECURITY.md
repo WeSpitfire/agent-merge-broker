@@ -70,11 +70,21 @@ refresh`, which reruns validation and produces a new signed manifest.
 
 Configuration is trusted. `{files}` and `{taskId}` placeholders are shell-quoted, and structured metadata is also supplied as environment variables. Prefer environment variables when composing complex commands.
 
-Validators run under a fixed interpreter — `/bin/sh` by default, or `validation.shell` — and never under a login shell. Sourcing an operator's personal profile would make an integration decision depend on whose machine assembled the batch, and would let a compromised dotfile influence what the broker reports as validated. Quoting follows the configured shell; POSIX shells are the supported and tested surface.
+Validators run under a fixed interpreter — `/bin/sh` on macOS/Linux, non-profile PowerShell on
+Windows, or `validation.shell` — and never under a login shell. Sourcing an operator's personal
+profile would make an integration decision depend on whose machine assembled the batch, and would
+let a compromised dotfile influence what the broker reports as validated. Quoting follows the
+selected shell. Explicit `cmd.exe` policy remains subject to cmd's percent-expansion semantics, so
+PowerShell or package scripts are preferred on Windows.
 
-Validator timeouts terminate the spawned process group on POSIX so a shell child cannot leave a
-grandchild running after the decision has failed. Repository configuration remains trusted code and
-can deliberately start detached work beyond that process group; do not run untrusted fork policy.
+Validator timeouts terminate the spawned process tree: a process group on POSIX and `taskkill /t`
+on Windows. Repository configuration remains trusted code and can deliberately start detached work
+beyond that tree; do not run untrusted fork policy.
+
+The MCP adapter enforces capability separation at server startup. The worker profile never registers
+integration, publication, evidence, or approval tools and never returns stored lease tokens. The
+operator profile is a control-plane credential: expose it only to a trusted client with the same
+authority as the integration host.
 
 Task and batch metadata must still be treated as untrusted display text by external dashboards. The bundled GitHub publisher constructs command arguments without a shell and sends PR content through stdin.
 

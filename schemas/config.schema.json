@@ -128,7 +128,7 @@
         "shell": {
           "type": "string",
           "minLength": 1,
-          "description": "Interpreter used to run validator commands. Defaults to /bin/sh, or ComSpec on Windows. Never a login shell: validation must not depend on personal dotfiles."
+          "description": "Interpreter used to run validator commands. Defaults to /bin/sh on macOS/Linux and non-profile PowerShell on Windows. Never a login shell: validation must not depend on personal dotfiles."
         },
         "focused": { "type": "array", "items": { "$ref": "#/$defs/validator" } },
         "authoritative": { "type": "array", "items": { "$ref": "#/$defs/validator" } }
@@ -266,6 +266,12 @@
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "command": { "type": "string", "minLength": 1 },
+        "workingDirectory": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$",
+          "description": "Repository-relative directory in which the validator runs."
+        },
         "paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
         "timeoutSeconds": { "type": "integer", "minimum": 1 },
         "env": { "type": "object", "additionalProperties": { "type": "string" } },

@@ -34,6 +34,8 @@ export type BatchStatus = "running" | "verified" | "prepared" | "published" | "m
 export interface ValidatorConfig {
   name: string;
   command: string;
+  /** Repository-relative directory in which the validator runs. */
+  workingDirectory?: string;
   paths?: string[];
   timeoutSeconds?: number;
   env?: Record<string, string>;

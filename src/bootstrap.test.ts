@@ -31,8 +31,8 @@ test("detects a declared package manager and repository verify script determinis
   const second = await detectBootstrapPlan(root);
   assert.deepEqual(second, first);
   assert.deepEqual(first.ecosystems, ["pnpm:workspace"]);
-  assert.deepEqual(first.authoritative.map((item) => item.command), ["pnpm run 'verify'"]);
-  assert.deepEqual(first.focused.map((item) => item.command), ["pnpm run 'lint'"]);
+  assert.deepEqual(first.authoritative.map((item) => item.command), ["pnpm run verify"]);
+  assert.deepEqual(first.focused.map((item) => item.command), ["pnpm run lint"]);
   assert.deepEqual(first.serializedPatterns, ["pnpm-lock.yaml"]);
   assert.deepEqual(first.unresolved, []);
 });
@@ -50,9 +50,41 @@ test("treats a root verify script as the complete monorepo gate without duplicat
   }), "utf8");
 
   const plan = await detectBootstrapPlan(root);
-  assert.deepEqual(plan.authoritative.map((item) => item.command), ["pnpm run 'verify'"]);
-  assert.deepEqual(plan.focused.map((item) => item.command), ["pnpm --dir 'apps/web' run 'lint'"]);
+  assert.deepEqual(plan.authoritative.map((item) => item.command), ["pnpm run verify"]);
+  assert.deepEqual(plan.focused.map((item) => item.command), ["pnpm run lint"]);
+  assert.equal(plan.focused[0]?.workingDirectory, "apps/web");
   assert.deepEqual(plan.focused[0]?.paths, ["apps/web/**"]);
+});
+
+test("detects declared Go, Rust, and Python validation without inventing project policy", async (context) => {
+  const root = await fixture(context);
+  await mkdir(path.join(root, "services", "api"), { recursive: true });
+  await mkdir(path.join(root, "crates", "worker"), { recursive: true });
+  await mkdir(path.join(root, "python"), { recursive: true });
+  await writeFile(path.join(root, "services", "api", "go.mod"), "module example.invalid/api\n", "utf8");
+  await writeFile(path.join(root, "services", "api", "go.sum"), "", "utf8");
+  await writeFile(path.join(root, "crates", "worker", "Cargo.toml"), "[package]\nname='worker'\nversion='0.1.0'\n", "utf8");
+  await writeFile(path.join(root, "crates", "worker", "Cargo.lock"), "", "utf8");
+  await writeFile(path.join(root, "python", "pyproject.toml"), "[tool.pytest.ini_options]\n[tool.ruff]\n", "utf8");
+  await writeFile(path.join(root, "python", "uv.lock"), "", "utf8");
+
+  const plan = await detectBootstrapPlan(root);
+  assert.deepEqual(plan.ecosystems, ["go:services/api", "python:python", "rust:crates/worker"]);
+  assert.deepEqual(
+    plan.authoritative.map((item) => [item.command, item.workingDirectory]),
+    [
+      ["go test ./...", "services/api"],
+      ["cargo test --workspace", "crates/worker"],
+      ["uv run pytest", "python"],
+      ["uv run ruff check .", "python"],
+    ],
+  );
+  assert.deepEqual(plan.serializedPatterns, [
+    "crates/worker/Cargo.lock",
+    "python/uv.lock",
+    "services/api/go.sum",
+  ]);
+  assert.deepEqual(plan.unresolved, []);
 });
 
 test("isolates Swift builds and reports Xcode details it cannot safely infer", async (context) => {
@@ -66,7 +98,7 @@ test("isolates Swift builds and reports Xcode details it cannot safely infer", a
   assert.deepEqual(plan.ecosystems, ["swift:Desktop"]);
   assert.equal(plan.focused[0]?.executionArchitecture, "native");
   assert.equal(plan.authoritative[0]?.executionArchitecture, "native");
-  assert.match(plan.authoritative[0]?.command ?? "", /MERGE_BROKER_CACHE_DIR\/swift/u);
+  assert.equal(plan.authoritative[0]?.command, "swift test --scratch-path {validatorCacheDir}");
   assert.deepEqual(plan.serializedPatterns, ["Desktop/Package.resolved"]);
   assert.equal(plan.unresolved.length, 1);
   assert.match(plan.unresolved[0] ?? "", /no destination or scheme was inferred/u);

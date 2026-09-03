@@ -24,33 +24,22 @@ jobs:
             node: 26
           - os: macos-latest
             node: 24
+          - os: windows-latest
+            node: 24
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
+      # Dependabot owns advisory reporting; avoid making every matrix lane wait on npm's audit API.
+      - run: npm ci --no-audit --no-fund
+      - if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
       - run: npm run verify
       # The example is the acceptance test: it drives the documented worker flow end to end.
       - run: npm run example
       - if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm pack --dry-run
-
-  # Windows is best-effort, not a supported platform: the shell selection and command quoting
-  # differ, and the surrounding toolchain (git worktree, gh) is the operator's responsibility. This
-  # job reports the real state without gating a release, so the gap stays visible instead of being
-  # discovered by the first Windows user.
-  windows:
-    continue-on-error: true
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: git config --global core.autocrlf false
-      - run: npm ci
-      - run: npm run verify

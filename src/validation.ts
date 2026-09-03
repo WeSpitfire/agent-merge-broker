@@ -1,5 +1,6 @@
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolveShell, runShell, type ResolvedShell } from "./process.js";
 import { matchesAny } from "./patterns.js";
@@ -21,10 +22,12 @@ function renderCommand(
   taskId: string | undefined,
   files: string[],
   shell: ResolvedShell,
+  validatorCacheDirectory: string,
 ): string {
   return command
     .replaceAll("{taskId}", shell.quote(taskId ?? ""))
-    .replaceAll("{files}", files.map(shell.quote).join(" "));
+    .replaceAll("{files}", files.map(shell.quote).join(" "))
+    .replaceAll("{validatorCacheDir}", shell.quote(validatorCacheDirectory));
 }
 
 /**
@@ -70,10 +73,20 @@ export async function runValidators(options: {
       ) {
         continue;
       }
-      const command = renderCommand(validator.command, options.taskId, options.files, shell);
+      const validatorCwd = path.resolve(options.cwd, validator.workingDirectory ?? ".");
+      const relativeFiles = validator.workingDirectory
+        ? options.files.map((file) => path.relative(validatorCwd, path.resolve(options.cwd, file)).split(path.sep).join("/"))
+        : options.files;
+      const validatorCacheKey = createHash("sha256")
+        .update(`${validator.workingDirectory ?? "."}\0${validator.name}`)
+        .digest("hex")
+        .slice(0, 12);
+      const validatorCacheDirectory = path.join(cacheDirectory, validatorCacheKey);
+      await mkdir(validatorCacheDirectory, { recursive: true });
+      const command = renderCommand(validator.command, options.taskId, relativeFiles, shell, validatorCacheDirectory);
       const startedAt = new Date();
       const result = await runShell(command, {
-        cwd: options.cwd,
+        cwd: validatorCwd,
         allowFailure: true,
         timeoutMs: (validator.timeoutSeconds ?? 900) * 1_000,
         maxOutputBytes: OUTPUT_LIMIT_BYTES,
@@ -83,7 +96,7 @@ export async function runValidators(options: {
         env: {
           ...validatorEnvironment(validator.env),
           MERGE_BROKER_TASK_ID: options.taskId ?? "",
-          MERGE_BROKER_FILES: options.files.join("\n"),
+          MERGE_BROKER_FILES: relativeFiles.join("\n"),
           MERGE_BROKER_BASE_SHA: options.baseSha,
           MERGE_BROKER_HEAD_SHA: options.headSha,
           MERGE_BROKER_BATCH_ID: options.batchId,

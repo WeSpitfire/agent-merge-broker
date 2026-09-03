@@ -7,10 +7,12 @@ import {
   currentServicePlatform,
   launchdPlist,
   installService,
+  quoteWindowsArgument,
   serviceFilePath,
   serviceName,
   systemdUnit,
   uninstallService,
+  windowsTaskXml,
   type ServiceOptions,
 } from "./service.js";
 import { BrokerError } from "./errors.js";
@@ -24,6 +26,7 @@ function options(overrides: Partial<ServiceOptions> = {}): ServiceOptions {
     eager: true,
     pathEntries: ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"],
     logFile: "/Users/dev/Library/Logs/merge-broker/serve.log",
+    userId: "S-1-5-21-1000",
     ...overrides,
   };
 }
@@ -84,6 +87,30 @@ test("quotes systemd arguments so a spaced path stays one argument", () => {
   assert.match(unit, /Restart=always/);
 });
 
+test("the Windows scheduled task is per-user, restartable, logged, and safely quoted", () => {
+  const xml = windowsTaskXml(options({
+    repositoryRoot: "/Users/dev/Two Words & Co",
+    cliPath: "/Users/dev/Two Words & Co/dist/cli.js",
+  }));
+  assert.match(xml, /<LogonType>InteractiveToken<\/LogonType>/u);
+  assert.match(xml, /<UserId>[^<]+<\/UserId>/u);
+  assert.match(xml, /<RunLevel>LeastPrivilege<\/RunLevel>/u);
+  assert.match(xml, /<RestartOnFailure>/u);
+  assert.match(xml, /<Interval>PT1M<\/Interval><Count>255<\/Count>/u);
+  assert.match(xml, /--log-file/u);
+  assert.match(xml, /Two Words &amp; Co/u);
+  assert.equal(quoteWindowsArgument("C:\\Program Files\\nodejs\\"), '"C:\\Program Files\\nodejs\\\\"');
+});
+
+test("requires a Windows user SID rather than guessing a service identity", () => {
+  const missingIdentity = options();
+  delete missingIdentity.userId;
+  assert.throws(
+    () => windowsTaskXml(missingIdentity),
+    (error: unknown) => error instanceof BrokerError && error.code === "INVALID_SERVICE_USER",
+  );
+});
+
 test("rejects an invalid service interval before writing a supervisor file", () => {
   assert.throws(
     () => systemdUnit(options({ intervalSeconds: 0 })),
@@ -104,12 +131,17 @@ test("installs into the per-user location, never a system one", () => {
     serviceFilePath("systemd", "merge-broker.serve.x.0000ffff", "/home/dev"),
     path.join("/home/dev", ".config", "systemd", "user", "merge-broker.serve.x.0000ffff.service"),
   );
+  assert.equal(
+    serviceFilePath("windows", "merge-broker.serve.x.0000ffff", "C:\\Users\\dev"),
+    "C:\\Users\\dev\\AppData\\Local\\AgentMergeBroker\\Tasks\\merge-broker.serve.x.0000ffff.xml",
+  );
 });
 
-test("refuses a platform it cannot supervise instead of writing a file nothing reads", () => {
+test("selects a supported per-user service supervisor on every host platform", () => {
   assert.equal(currentServicePlatform("darwin"), "launchd");
   assert.equal(currentServicePlatform("linux"), "systemd");
-  assert.throws(() => currentServicePlatform("win32"), (error: unknown) => {
+  assert.equal(currentServicePlatform("win32"), "windows");
+  assert.throws(() => currentServicePlatform("freebsd"), (error: unknown) => {
     assert.ok(error instanceof BrokerError);
     assert.equal(error.code, "UNSUPPORTED_PLATFORM");
     return true;
@@ -118,7 +150,6 @@ test("refuses a platform it cannot supervise instead of writing a file nothing r
 
 test(
   "refuses to overwrite or remove a supervisor file it does not own",
-  { skip: process.platform === "win32" ? "No supported Windows supervisor" : false },
   async (context) => {
     const root = await mkdtemp(path.join(tmpdir(), "merge-broker-service-"));
     const home = path.join(root, "home");

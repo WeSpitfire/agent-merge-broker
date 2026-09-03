@@ -2799,6 +2799,12 @@ export class MergeBroker {
     logFile?: string;
   } = {}): Promise<ServiceInstallation | { name: string; file: string; removed: boolean }> {
     if (options.uninstall) return await uninstallService(this.repo.root);
+    if (this.config.publish.mode === "none") {
+      throw new BrokerError(
+        "SERVICE_PUBLISH_DISABLED",
+        "The background service publishes completed batches, but publish.mode is none. Configure branch or pull-request publication before installing it.",
+      );
+    }
     const nodePath = options.nodePath ?? process.execPath;
     const cliPath = options.cliPath ?? process.argv[1] ?? "";
     if (!path.isAbsolute(cliPath)) {
@@ -2846,9 +2852,13 @@ export class MergeBroker {
   }
 
   async metrics(): Promise<Record<string, unknown>> {
-    const state = await this.store.read();
-    const tasks = Object.values(state.tasks);
-    const batches = Object.values(state.batches);
+    const [state, archived] = await Promise.all([this.store.read(), this.store.readArchivedState()]);
+    const activeTasks = Object.values(state.tasks);
+    const activeBatches = Object.values(state.batches);
+    const archivedTasks = archived.flatMap((slice) => Object.values(slice.tasks));
+    const archivedBatches = archived.flatMap((slice) => Object.values(slice.batches));
+    const tasks = [...archivedTasks, ...activeTasks];
+    const batches = [...archivedBatches, ...activeBatches];
     const statusCounts = Object.fromEntries(
       [...new Set(tasks.map((task) => task.status))]
         .sort()
@@ -2861,6 +2871,12 @@ export class MergeBroker {
     const validations = batches.flatMap((batch) => batch.validations);
     return {
       generatedAt: now(),
+      records: {
+        activeTasks: activeTasks.length,
+        archivedTasks: archivedTasks.length,
+        activeBatches: activeBatches.length,
+        archivedBatches: archivedBatches.length,
+      },
       tasks: {
         total: tasks.length,
         byStatus: statusCounts,
@@ -3098,6 +3114,12 @@ export class MergeBroker {
       if (service.installed && !service.owned) {
         ok = false;
         warnings.push(`The repository's computed service file exists but is not broker-owned: ${file}`);
+      }
+      if (service.installed && service.owned && this.config.publish.mode === "none") {
+        ok = false;
+        warnings.push(
+          "The installed background service uses publication, but publish.mode is none. Configure publication or remove it with `merge-broker install-service --uninstall`.",
+        );
       }
     } catch (error) {
       if (!(error instanceof BrokerError && error.code === "UNSUPPORTED_PLATFORM")) throw error;

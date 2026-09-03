@@ -46,10 +46,14 @@ It is deliberately **not** an agent framework and **not** a replacement for prot
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.10.0` is current. Installation now detects declared repository validation, installs the agent
+`0.10.0` is the current release. Installation detects declared repository validation, installs the agent
 contract, provisions authenticated provenance, and remains idempotent on repeat runs. Native
 architecture execution and isolated transaction caches prevent cross-architecture Swift build
 contamination without rerunning the same complete gate.
+
+The development line adds actionable status and sanitized support bundles, archive-aware metrics,
+broader JavaScript/Swift/Go/Rust/Python bootstrap detection, composable hooks, permission-separated
+MCP servers, and first-class Windows support.
 
 The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
@@ -59,8 +63,8 @@ The on-disk state, receipt, and provenance formats are versioned, but compatibil
 - Git 2.31 or newer with worktree support
 - GitHub CLI only when `publish.mode` is `pull-request`
 
-Linux and macOS are the supported platforms and are covered by CI. Windows runs as an informational
-CI job: shell selection and command quoting differ there and are not yet supported.
+Windows, macOS, and Linux are supported and release-gating in CI. Windows validation defaults to
+non-profile PowerShell; background operation uses a per-user Windows Scheduled Task.
 
 ## Install
 
@@ -86,8 +90,9 @@ npm link
 - `AGENTS.md` — a managed pointer that makes repository agents use that contract
 
 Initialization deterministically selects existing `verify`, `ci`, `check`, `lint`, `typecheck`,
-`test`, and `build` scripts from JavaScript package manifests, plus SwiftPM tests. It never creates
-commands, Xcode schemes, destinations, or project policy that the repository did not declare.
+`test`, and `build` scripts from JavaScript package manifests, plus declared SwiftPM, Go, Rust, and
+Python checks. Nested packages run from their own repository-relative working directory. It never
+creates commands, Xcode schemes, destinations, or project policy that the repository did not declare.
 Anything it cannot prove is printed as an explicit configuration item. Re-running `init` repairs
 missing generated integration files and old unsigned defaults, but preserves configured validators
 and owner-written `AGENTS.md` content. Use `--no-detect` or `--no-agent-contract` only when an
@@ -110,6 +115,10 @@ merge-broker init --base main --base-ref origin/main --remote origin
 git add .merge-broker AGENTS.md && git commit -m 'Configure authenticated merge brokerage'
 merge-broker doctor
 ```
+
+`merge-broker status` now includes the safe next command for each active task and batch. For a bug
+report, `merge-broker doctor --support-bundle` emits diagnostics and recent audit events with paths,
+URLs, and secret-bearing fields redacted; review the JSON before sharing it.
 
 An orchestrator or worker claims a narrowly scoped task:
 
@@ -176,7 +185,7 @@ merge-broker batch sync <batch-id>
 
 ```bash
 npm run build
-sh examples/two-agents/run.sh
+npm run example
 ```
 
 [`examples/two-agents`](examples/two-agents/) builds a throwaway repository, runs two workers in
@@ -194,9 +203,10 @@ A local guard refuses direct pushes of implementation branches:
 merge-broker install-hooks
 ```
 
-This sets `core.hooksPath`, so it refuses to run when the repository already has hooks that would
-stop working, and `--uninstall` puts everything back. `MERGE_BROKER_ALLOW_DIRECT_PUSH=1` is the
-deliberate emergency bypass.
+The installer reuses a repository-local `core.hooksPath` such as `.husky` when its `pre-push` slot
+is free, or installs beside existing default Git hooks without disabling them. If another tool owns
+`pre-push`, `merge-broker install-hooks --print` emits the guard for explicit composition.
+`MERGE_BROKER_ALLOW_DIRECT_PUSH=1` is the deliberate emergency bypass.
 
 ### Publishing without a terminal
 
@@ -209,8 +219,8 @@ per-user service instead:
 merge-broker install-service
 ```
 
-This writes a launchd agent on macOS or a systemd user unit on Linux, one per repository, and starts
-it. It is deliberately a *user* service on both platforms: a system daemon would need root and would
+This writes a launchd agent on macOS, a systemd user unit on Linux, or a per-user Scheduled Task on
+Windows, one per repository, and starts it. It is deliberately a *user* service: a system daemon would need root and would
 run as the wrong user for the repository's SSH and forge credentials. `--uninstall` removes it, and
 the service writes to `$(git rev-parse --git-common-dir)/merge-broker/serve.log`, including when it
 was installed from a linked worktree whose `.git` is a file.
@@ -232,6 +242,27 @@ manifest commit, integrated diff, submitted commit trail, and recorded validatio
 provenance commit must remain the branch head. Even a normal base-update merge can carry arbitrary
 conflict resolution, so any post-assembly merge is rejected; re-cut a stale batch with `batch
 refresh` instead.
+
+### MCP clients
+
+The package includes a stdio server for agents that speak Model Context Protocol:
+
+```json
+{
+  "mcpServers": {
+    "merge-broker": {
+      "command": "npx",
+      "args": ["--no-install", "merge-broker-mcp", "-C", "/absolute/repository/path", "--profile", "worker"]
+    }
+  }
+}
+```
+
+Use `npx.cmd` when a Windows MCP host does not resolve command shims automatically. The default
+`worker` profile can claim, validate, nominate, and revise leased work but cannot integrate,
+publish, record evidence, or approve. Start a separate `--profile operator` server only in a trusted
+control-plane client that should receive those tools. Lease tokens stay in the broker's local token
+vault and are never returned in MCP results.
 
 Verification policy is read from the configuration committed on the *base* branch, never from the
 change under review. Repositories initialized before `0.6.0` must run `merge-broker provenance
@@ -363,7 +394,7 @@ merge-broker prune --older-than 30 --dry-run
 merge-broker prune --older-than 30
 ```
 
-Retired tasks and batches move to `<state>/archive/`, and the audit stream rotates into the same place once the active file grows large. Nothing is deleted. A completed task is kept in active state for as long as any retained task still declares it as a dependency, because the scheduler cannot distinguish a pruned dependency from one that has never merged.
+Retired tasks and batches move to `<state>/archive/`, and the audit stream rotates into the same place once the active file grows large. Nothing is deleted. `events` and `metrics` include archived segments, so housekeeping no longer erases operational history. A completed task is kept in active state for as long as any retained task still declares it as a dependency, because the scheduler cannot distinguish a pruned dependency from one that has never merged.
 
 ## Configuration
 
@@ -407,7 +438,6 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
   },
   "validation": {
     "authority": "broker",
-    "shell": "/bin/sh",
     "focused": [
       {
         "name": "related tests",
@@ -439,9 +469,9 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
 }
 ```
 
-Validator commands run inside the isolated integration worktree, under `/bin/sh` unless
-`validation.shell` names another interpreter. The shell is deliberately fixed and is never a login
-shell: an integration decision must not depend on whose machine assembled the batch. The environment
+Validator commands run inside the isolated integration worktree, under `/bin/sh` on macOS/Linux or
+non-profile PowerShell on Windows unless `validation.shell` names another interpreter. The shell is
+deliberately fixed and is never a login shell: an integration decision must not depend on whose machine assembled the batch. The environment
 is inherited from the process that invoked the broker, minus `MERGE_BROKER_TOKEN`,
 `MERGE_BROKER_SIGNING_KEY`, and `MERGE_BROKER_SIGNING_KEY_FILE`, so PATH and toolchain managers work
 while broker credentials stay out of repository-defined commands.
@@ -455,9 +485,11 @@ Validators receive these environment variables:
 - `MERGE_BROKER_BATCH_ID`
 - `MERGE_BROKER_CACHE_DIR`, an isolated cache shared by validators in one integration transaction
 
-Commands may also use the shell-safe placeholders `{taskId}` and `{files}`. Validator output is
-captured with a fixed memory bound and retained in state with that cap. A timeout terminates the
-validator process group on POSIX rather than leaving shell descendants behind.
+Commands may also use the shell-safe placeholders `{taskId}`, `{files}`, and
+`{validatorCacheDir}` (a stable validator-specific directory inside the transaction cache). `workingDirectory` can
+place a validator in a repository-relative package directory; file placeholders and environment
+paths are then relative to that directory. Validator output is captured with a fixed memory bound
+and retained in state with that cap. A timeout terminates the validator process tree.
 
 `merge-broker validate` runs these same broker-side validators against a working tree, so a worker
 can get the local integration answer before submitting rather than a weaker approximation of it. It reports
@@ -466,7 +498,7 @@ outside a batch.
 
 A validator may set `"executionArchitecture": "native"` to run under the hardware architecture on
 macOS when Node itself is translated by Rosetta. Detected SwiftPM validators use this mode and put
-their scratch build under `MERGE_BROKER_CACHE_DIR`, preventing Intel and Apple Silicon artifacts
+their scratch build under `{validatorCacheDir}`, preventing Intel and Apple Silicon artifacts
 from contaminating each other without rebuilding between the focused and authoritative stages of
 the same integration transaction.
 
@@ -508,9 +540,9 @@ retains a branch, preserving the original behavior.
 
 ```text
 merge-broker init
-merge-broker doctor
+merge-broker doctor [--support-bundle]
 merge-broker provenance setup-signing [--private-key <path>] [--rotate]
-merge-broker install-hooks [--force] [--uninstall]
+merge-broker install-hooks [--force] [--uninstall] [--print]
 merge-broker install-service [--uninstall] [--interval <seconds>] [--no-eager]
 merge-broker verify-provenance --branch <ref> --head <sha> --base <sha>
 merge-broker validate [--task <id>] [--scope focused|authoritative|all] [--base <ref>] [--cwd <path>]
@@ -525,7 +557,8 @@ merge-broker events
 merge-broker prune [--older-than <days>] [--dry-run]
 merge-broker unlock [state|integration] [--force]
 merge-broker recover
-merge-broker serve [--publish] [--eager]
+merge-broker serve [--publish] [--eager] [--log-file <path>]
+merge-broker-mcp -C <directory> [--profile worker|operator]
 ```
 
 Every command accepts `--json` for adapters and `-C <directory>` for explicit repository discovery. Lease-aware commands also accept `MERGE_BROKER_TOKEN`.

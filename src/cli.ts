@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import os from "node:os";
 import path from "node:path";
-import { readFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
+import { mkdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Command, Option } from "commander";
 import { BrokerError, CommandError } from "./errors.js";
@@ -14,6 +15,9 @@ import {
 } from "./serve-log.js";
 import { MergeBroker } from "./broker.js";
 import { GitRepository } from "./git.js";
+import { prePushHook } from "./hooks.js";
+import { formatBrokerStatus } from "./status.js";
+import { createSupportBundle } from "./support.js";
 import { policyFromBase, verifyProvenance } from "./verify.js";
 import type {
   BatchRecord,
@@ -129,19 +133,6 @@ function publicState(state: BrokerState): Record<string, unknown> {
     ...state,
     tasks: Object.fromEntries(Object.entries(state.tasks).map(([id, value]) => [id, publicTask(value)])),
   };
-}
-
-function stateHuman(state: BrokerState): string {
-  const tasks = Object.values(state.tasks).sort((a, b) => a.id.localeCompare(b.id));
-  if (tasks.length === 0) return "No broker tasks.";
-  return tasks
-    .map(
-      (task) =>
-        `${task.id.padEnd(24)} ${task.status.padEnd(12)} commits=${String(task.commits.length).padEnd(3)} ${
-          task.lease ? `lease=${task.lease.holder}` : ""
-        }`,
-    )
-    .join("\n");
 }
 
 function planHuman(plan: SchedulePlan): string {
@@ -273,8 +264,19 @@ program
 program
   .command("doctor")
   .description("verify repository discovery, configuration, state, and base branch")
-  .action(async () => {
-    const result = await (await openBroker()).doctor();
+  .option("--support-bundle", "emit sanitized diagnostics and recent events for a support request")
+  .action(async (options: { supportBundle?: boolean }) => {
+    const broker = await openBroker();
+    const result = await broker.doctor();
+    if (options.supportBundle) {
+      output(createSupportBundle({
+        brokerVersion: PACKAGE_VERSION,
+        repositoryRoot: broker.repo.root,
+        diagnostics: result,
+        recentEvents: await broker.store.readAudit(50),
+      }));
+      return;
+    }
     const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
     output(
       result,
@@ -612,8 +614,9 @@ program
   .command("status")
   .description("show broker task and batch state")
   .action(async () => {
-    const state = await (await openBroker()).state();
-    output(publicState(state), stateHuman(state));
+    const broker = await openBroker();
+    const state = await broker.state();
+    output(publicState(state), formatBrokerStatus(state, broker.config));
   });
 
 program
@@ -874,8 +877,14 @@ program
   .description("install the pre-push guard that keeps implementation branches out of the forge")
   .option("--force", "replace an existing hooks path, disabling the hooks it holds")
   .option("--uninstall", "remove the guard and restore the previous hooks path")
-  .action(async (options: { force?: boolean; uninstall?: boolean }) => {
-    const result = await (await openBroker()).installHooks({
+  .option("--print", "print the guard for manual composition without changing Git configuration")
+  .action(async (options: { force?: boolean; uninstall?: boolean; print?: boolean }) => {
+    const broker = await openBroker();
+    if (options.print) {
+      output({ script: prePushHook(broker.config.integration.branchPrefix) }, prePushHook(broker.config.integration.branchPrefix));
+      return;
+    }
+    const result = await broker.installHooks({
       force: options.force ?? false,
       uninstall: options.uninstall ?? false,
     });
@@ -885,7 +894,7 @@ program
         ? [
             `Installed the pre-push guard at ${result.hookFile}.`,
             ...(result.previousHooksPath ? [`Replaced core.hooksPath ${result.previousHooksPath}.`] : []),
-            "Commit .githooks/ so every clone of this repository is covered.",
+            "Commit the hook when its directory is version-controlled so every clone is covered.",
           ].join("\n")
         : "Removed the pre-push guard.",
     );
@@ -1069,16 +1078,20 @@ program
   .option("--publish", "publish each successful batch")
   .option("--eager", "integrate immediately instead of waiting for a full or aged batch")
   .option("--once", "perform one polling cycle and exit")
+  .option("--log-file <path>", "append service output to this file instead of stdout/stderr")
   .action(
-    async (options: { interval: string; publish?: boolean; eager?: boolean; once?: boolean }) => {
+    async (options: { interval: string; publish?: boolean; eager?: boolean; once?: boolean; logFile?: string }) => {
       const intervalSeconds = positiveNumberOption(options.interval, "--interval");
       let stopping = false;
       const json = program.opts<{ json?: boolean }>().json ?? false;
+      const logFile = options.logFile ? path.resolve(options.logFile) : undefined;
+      if (logFile) await mkdir(path.dirname(logFile), { recursive: true });
       let lastOutputAt = Date.now();
       const say = (event: ServeEvent): void => {
         const now = new Date();
         const line = json ? serveEventJson(event, now) : formatServeEvent(event, now);
-        if (isErrorEvent(event)) console.error(line);
+        if (logFile) appendFileSync(logFile, `${line}\n`, "utf8");
+        else if (isErrorEvent(event)) console.error(line);
         else console.log(line);
         lastOutputAt = now.getTime();
       };

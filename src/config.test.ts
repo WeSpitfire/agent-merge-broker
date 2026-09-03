@@ -37,6 +37,17 @@ test("accepts native validator execution and rejects unknown architecture polici
   );
 });
 
+test("accepts repository-relative validator working directories and rejects escapes", () => {
+  const config = defaultConfig();
+  config.validation.authoritative = [{ name: "nested", command: "test", workingDirectory: "apps/api" }];
+  assert.equal(validateConfig(config).validation.authoritative[0]?.workingDirectory, "apps/api");
+
+  for (const workingDirectory of ["../outside", "/absolute", "C:\\absolute", "C:drive-relative", "\\\\server\\share"]) {
+    config.validation.authoritative[0]!.workingDirectory = workingDirectory;
+    assert.throws(() => validateConfig(config), /workingDirectory must stay inside the repository/u);
+  }
+});
+
 test("rejects state directories that escape Git's common directory", () => {
   const config = defaultConfig();
   config.stateDirectory = "../outside";

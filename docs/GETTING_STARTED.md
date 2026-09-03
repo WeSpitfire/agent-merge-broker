@@ -12,6 +12,9 @@ You need:
 - a clean Git repository with a known base branch; and
 - GitHub CLI (`gh`) only if the broker will create pull requests.
 
+Windows, macOS, and Linux are supported. On Windows, make sure Git and Node are available to the
+same user account that will run the broker or its Scheduled Task.
+
 The broker treats checked-in configuration as executable policy. Validator commands run on the
 integration host, so review `.merge-broker/config.json` like a CI workflow.
 
@@ -61,9 +64,10 @@ and repairs only missing managed files or a legacy unsigned default. Pass `--no-
 
 Initialization detects existing package manifests and selects declared `verify`, `ci`, or `check`
 scripts as complete gates. When none exists, it composes the declared `lint`, `typecheck`, `test`,
-and `build` scripts. It also detects SwiftPM packages. It does not invent missing scripts, Xcode
-schemes, simulator destinations, or repository policy; those are reported as unresolved items in
-the command output.
+and `build` scripts. It also detects declared SwiftPM, Go, Rust, and Python checks, including nested
+packages through repository-relative `workingDirectory` values. It does not invent missing scripts,
+Xcode schemes, simulator destinations, or repository policy; those are reported as unresolved
+items in the command output.
 
 Review the result and make sure it answers the same question your protected branch asks. For
 example:
@@ -94,6 +98,14 @@ example:
 Focused validators run after each task is applied. Authoritative validators run against the complete
 batch. `{files}` and `{taskId}` are shell-quoted, and the same values are available through
 `MERGE_BROKER_FILES` and `MERGE_BROKER_TASK_ID`.
+
+`{validatorCacheDir}` expands to a shell-quoted, validator-specific directory within the shared
+transaction cache. Auto-detected SwiftPM checks use it without relying on platform-specific
+environment-variable syntax.
+
+Commands use fixed non-login `/bin/sh` on macOS/Linux and non-profile PowerShell on Windows by
+default. Prefer package-manager commands and repository scripts when one policy must run unchanged
+on every platform.
 
 Every integration transaction also receives a unique `MERGE_BROKER_CACHE_DIR`, shared across its
 focused and authoritative stages and removed afterward. `executionArchitecture: "native"` runs a
@@ -197,9 +209,10 @@ For a maintained integration host, install the per-user background service:
 npx merge-broker install-service
 ```
 
-The service uses launchd on macOS and a systemd user unit on Linux. Both write to the log path
-reported by the command. The installer refuses to overwrite or remove a service file without the
-broker ownership marker.
+The service uses launchd on macOS, a systemd user unit on Linux, and a per-user Windows Scheduled
+Task. Each writes to the log path reported by the command. The installer refuses to overwrite or
+remove a service file without the broker ownership marker. Service installation also refuses while
+`publish.mode` is `none`, because an unattended loop that cannot publish would only strand work.
 
 You can also run one cycle from CI or a scheduler:
 
@@ -214,6 +227,14 @@ npx merge-broker serve --once --publish
 Initialize once from any checkout. Claims, tokens, state, and locks live in Git's common directory,
 so every linked worktree sees the same scheduler. Pass `--worktree` only when the task's checkout is
 not the command's current directory.
+
+### Connect an MCP coding agent
+
+Run `merge-broker-mcp -C <repository> --profile worker` as a stdio MCP server. Worker tools can
+claim, validate, nominate, and revise their own leased work; lease tokens remain in the local vault
+and are not returned in MCP messages. A trusted integration controller can run a separate
+`--profile operator` server for planning, integration, publication, evidence, and approval. Do not
+give the operator profile to ordinary implementation agents.
 
 ### Require exact verification and approval
 
@@ -262,6 +283,8 @@ validators, an unreachable base, or missing forge authentication.
 - Install the local pre-push guard if it helps workers follow the intended path.
 - Install or schedule the integration loop; submission alone does not run a batch.
 - Run `merge-broker doctor` after cloning, changing policy, rotating keys, or moving hosts.
+- Use `merge-broker doctor --support-bundle` for a sanitized diagnostic attachment, and review it
+  before sharing.
 - Back up the provenance signing key and test the recovery procedure.
 
 Continue with [Architecture](ARCHITECTURE.md) for invariants and [Protocol](PROTOCOL.md) when building

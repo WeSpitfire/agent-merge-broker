@@ -71,7 +71,7 @@ test(
   },
 );
 
-test("refuses to silently disable hooks a repository already has", async (context) => {
+test("composes with repository-local hook directories without disabling existing hooks", async (context) => {
   const repo = await repository();
   context.after(async () => {
     await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -82,20 +82,24 @@ test("refuses to silently disable hooks a repository already has", async (contex
   await chmod(hookFile, 0o755);
 
   const broker = await MergeBroker.open(repo);
-  await assert.rejects(
-    broker.installHooks(),
-    (error: unknown) => error instanceof BrokerError && error.code === "HOOKS_PATH_CONFLICT",
-  );
+  const defaultComposed = await broker.installHooks();
+  assert.match(defaultComposed.hooksPath, /[/\\]\.git[/\\]hooks$/u);
+  assert.match(await readFile(hookFile, "utf8"), /exit 0/u);
+  assert.match(await readFile(defaultComposed.hookFile, "utf8"), /Installed by Agent Merge Broker/u);
+  await broker.installHooks({ uninstall: true });
 
-  // And refuses to hijack an explicitly configured hooks directory.
-  await rm(hookFile, { force: true });
+  // A repository-local configured directory such as Husky is used in place without changing it.
   await runCommand("git", ["config", "core.hooksPath", ".husky"], { cwd: repo });
+  const husky = await broker.installHooks();
+  assert.match(husky.hooksPath, /[/\\]\.husky$/u);
+  assert.equal(await git(repo, "config", "--get", "core.hooksPath"), ".husky");
+  await broker.installHooks({ uninstall: true });
+
+  // An existing hook at the same entry point is never overwritten implicitly.
+  await mkdir(path.join(repo, ".husky"), { recursive: true });
+  await writeFile(path.join(repo, ".husky", "pre-push"), "#!/bin/sh\necho owner\n", "utf8");
   await assert.rejects(
     broker.installHooks(),
     (error: unknown) => error instanceof BrokerError && error.code === "HOOKS_PATH_CONFLICT",
   );
-
-  const forced = await broker.installHooks({ force: true });
-  assert.equal(forced.previousHooksPath, ".husky");
-  assert.match(await readFile(forced.hookFile, "utf8"), /Installed by Agent Merge Broker/u);
 });
