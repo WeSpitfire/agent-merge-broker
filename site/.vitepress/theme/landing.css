@@ -244,12 +244,19 @@ html.dark .amb-landing {
   text-transform: uppercase; color: var(--muted); margin-bottom: 0.35rem;
 }
 .amb-landing .fact dd { margin: 0; font-family: var(--mono); font-size: 1.0625rem; font-variant-numeric: tabular-nums; }
+.amb-landing .boundary { margin-top: var(--s3); }
+.amb-landing .release-note {
+  margin-top: var(--s2); padding: 0.75rem 0.9rem; border-left: 2px solid var(--signal);
+  background: var(--signal-soft); font-family: var(--mono); font-size: 0.78rem;
+}
 
 /* ── docs ───────────────────────────────────────────── */
 .amb-landing .docs {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin-top: var(--s4);
 }
+@media (max-width: 52rem) { .amb-landing .docs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 34rem) { .amb-landing .docs { grid-template-columns: 1fr; } }
 .amb-landing .doc { background: var(--surface); padding: 1.4rem; text-decoration: none; color: inherit; display: block; }
 .amb-landing .doc:hover { background: var(--surface-2); }
 .amb-landing .doc h3 { color: var(--signal-ink); display: flex; justify-content: space-between; gap: var(--s1); }
@@ -261,7 +268,7 @@ html.dark .amb-landing {
 .amb-landing .foot { border-top: 1px solid var(--rule); padding: var(--s4) 0 var(--s5); }
 .amb-landing .foot-grid { display: grid; grid-template-columns: 1fr auto; gap: var(--s4); align-items: start; }
 @media (max-width: 40rem) { .amb-landing .foot-grid { grid-template-columns: 1fr; } }
-.amb-landing .foot-links { display: flex; gap: var(--s4); font-family: var(--mono); font-size: 0.8125rem; }
+.amb-landing .foot-links { display: flex; flex-wrap: wrap; gap: var(--s4); font-family: var(--mono); font-size: 0.8125rem; }
 .amb-landing .foot-links ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.45rem; }
 .amb-landing .foot-links li { color: var(--muted); }
 .amb-landing .foot-links a { color: var(--muted); text-decoration: none; }

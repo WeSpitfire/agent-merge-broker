@@ -132,6 +132,22 @@ with no agent pushing anything.</span></pre>
   </div>
 </section>
 
+<section id="platforms">
+  <div class="rail">
+    <p class="eyebrow">Operating envelope</p>
+    <h2>Portable where it matters, explicit where it stops</h2>
+    <p class="col">The CLI, Node API, JSON protocol, stdio MCP server, integration worktrees, and per-user background loop run on Windows, macOS, and Linux. Repository validators use non-profile PowerShell on Windows and <code>/bin/sh</code> on macOS and Linux.</p>
+    <dl class="facts">
+      <div class="fact"><dt>Hosts</dt><dd>Windows · macOS · Linux</dd></div>
+      <div class="fact"><dt>Agent access</dt><dd>CLI · Node · MCP stdio</dd></div>
+      <div class="fact"><dt>Supervision</dt><dd>Task Scheduler · launchd · systemd</dd></div>
+      <div class="fact"><dt>Built-in PR forge</dt><dd>GitHub via gh</dd></div>
+    </dl>
+    <p class="col boundary">It is not a hosted dashboard, distributed database, remote HTTP MCP service, agent runner, or automatic conflict resolver. Independent clones do not silently share leases. <a href="/agent-merge-broker/docs/compatibility">Read the full compatibility matrix and current limits →</a></p>
+    <p class="col release-note">This site documents <code>main</code>. Features listed as <strong>Unreleased</strong> in the changelog ship in the next npm release, not the currently displayed package version.</p>
+  </div>
+</section>
+
 <section>
   <div class="rail">
     <p class="eyebrow">Verification</p>
@@ -167,6 +183,14 @@ with no agent pushing anything.</span></pre>
         <h3>Security <span class="arrow">→</span></h3>
         <p>Trust boundaries, what configuration can execute, and hardening.</p>
       </a>
+      <a class="doc" href="/agent-merge-broker/docs/compatibility">
+        <h3>Compatibility <span class="arrow">→</span></h3>
+        <p>Platform matrix, Windows behavior, integrations, and current limits.</p>
+      </a>
+      <a class="doc" href="/agent-merge-broker/docs/support">
+        <h3>Support <span class="arrow">→</span></h3>
+        <p>Create a safe diagnostic bundle and choose the right support channel.</p>
+      </a>
     </div>
   </div>
 </section>
@@ -198,6 +222,12 @@ with no agent pushing anything.</span></pre>
           <li>Node 20.12+</li>
           <li>Git 2.31+</li>
           <li>gh (PR mode only)</li>
+        </ul>
+        <ul>
+          <li class="head">Supported</li>
+          <li>Windows</li>
+          <li>macOS</li>
+          <li>Linux</li>
         </ul>
       </div>
     </div>

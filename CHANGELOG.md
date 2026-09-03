@@ -19,6 +19,9 @@
 - Hook installation composes with repository-local hook directories and preserves unrelated default
   hooks. `install-hooks --print` supports explicit composition when another tool owns `pre-push`.
 - Background-service installation fails early when publication is disabled.
+- Documentation now publishes a platform matrix, Windows operating notes, MCP capability guidance,
+  safe support-bundle workflow, release-availability notice, and an explicit list of functionality
+  that is not included today.
 
 ## 0.10.0 — 2026-09-02
 
