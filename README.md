@@ -46,14 +46,9 @@ It is deliberately **not** an agent framework and **not** a replacement for prot
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.10.0` is the current release. Installation detects declared repository validation, installs the agent
-contract, provisions authenticated provenance, and remains idempotent on repeat runs. Native
-architecture execution and isolated transaction caches prevent cross-architecture Swift build
-contamination without rerunning the same complete gate.
-
-The development line adds actionable status and sanitized support bundles, archive-aware metrics,
-broader JavaScript/Swift/Go/Rust/Python bootstrap detection, composable hooks, permission-separated
-MCP servers, and first-class Windows support.
+`0.11.0` is the current release. It adds first-class Windows support, permission-separated MCP
+servers, actionable status and sanitized support bundles, archive-aware metrics, composable hooks,
+and broader JavaScript, Swift, Go, Rust, and Python bootstrap detection.
 
 The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
@@ -237,7 +232,7 @@ installing dependencies:
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v0.10.0
+- uses: WeSpitfire/agent-merge-broker/verify@v0.11.0
 ```
 
 The check verifies the Ed25519 signature, branch and batch identity, real base history, one-file
