@@ -7,7 +7,7 @@ test("gives every validator an isolated cache directory and removes it afterward
   const [result] = await runValidators({
     validators: [{
       name: "cache",
-      command: `node -e "process.stdout.write(process.env.MERGE_BROKER_CACHE_DIR || '')"`,
+      command: "node -p process.env.MERGE_BROKER_CACHE_DIR",
     }],
     scope: "authoritative",
     cwd: process.cwd(),
@@ -16,6 +16,7 @@ test("gives every validator an isolated cache directory and removes it afterward
     headSha: "head",
     batchId: "batch",
   });
-  assert.ok(result?.stdout.includes("agent-merge-broker-validator-"));
-  await assert.rejects(access(result?.stdout ?? ""));
+  const cacheDirectory = result?.stdout.trim() ?? "";
+  assert.ok(cacheDirectory.includes("agent-merge-broker-validator-"));
+  await assert.rejects(access(cacheDirectory));
 });
