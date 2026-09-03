@@ -46,10 +46,10 @@ It is deliberately **not** an agent framework and **not** a replacement for prot
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.9.0` is current. Publication and integration recover safely across interrupted state changes,
-validators run with bounded output and process-group timeouts, and `doctor` inspects the full
-operational toolchain. The Node API now accepts an injectable forge publisher while retaining the
-built-in GitHub CLI adapter.
+`0.10.0` is current. Installation now detects declared repository validation, installs the agent
+contract, provisions authenticated provenance, and remains idempotent on repeat runs. Native
+architecture execution and isolated transaction caches prevent cross-architecture Swift build
+contamination without rerunning the same complete gate.
 
 The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
@@ -224,7 +224,7 @@ installing dependencies:
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v0.9.0
+- uses: WeSpitfire/agent-merge-broker/verify@v0.10.0
 ```
 
 The check verifies the Ed25519 signature, branch and batch identity, real base history, one-file
