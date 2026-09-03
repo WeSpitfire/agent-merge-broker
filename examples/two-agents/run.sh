@@ -78,7 +78,7 @@ config.validation.authoritative = [
 config.publish.autoMerge = false;
 writeFileSync(target, `${JSON.stringify(config, null, 2)}\n`);
 JS
-git add .merge-broker
+git add .merge-broker AGENTS.md
 git commit -qm "add broker policy"
 
 # ----------------------------------------------------------------------------------------------

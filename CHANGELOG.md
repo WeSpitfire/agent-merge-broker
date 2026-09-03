@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `init` now detects declared JavaScript and SwiftPM validation entry points, installs a managed
+  root `AGENTS.md` contract, reports unresolved project-specific configuration, and returns an
+  explicit operational-readiness result.
+- Validators can request native hardware execution on translated macOS processes and receive an
+  isolated `MERGE_BROKER_CACHE_DIR` shared across one integration transaction.
+
+### Changed
+
+- Initialization is idempotent for existing repositories: it preserves configured validation and
+  owner instructions while repairing missing managed files and legacy unsigned provenance.
+- `doctor` distinguishes component health from operational readiness and reports the process and
+  native host architectures, validation readiness, and whether the root agent contract is installed
+  and committed.
+
 ## 0.9.0 — 2026-08-31
 
 ### Added

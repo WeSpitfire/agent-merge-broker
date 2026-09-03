@@ -79,10 +79,19 @@ npm run build
 npm link
 ```
 
-`init` writes two portable files into the application:
+`init` writes three portable files into the application:
 
 - `.merge-broker/config.json` — repository policy and commands
 - `.merge-broker/agent-instructions.md` — a reusable worker contract
+- `AGENTS.md` — a managed pointer that makes repository agents use that contract
+
+Initialization deterministically selects existing `verify`, `ci`, `check`, `lint`, `typecheck`,
+`test`, and `build` scripts from JavaScript package manifests, plus SwiftPM tests. It never creates
+commands, Xcode schemes, destinations, or project policy that the repository did not declare.
+Anything it cannot prove is printed as an explicit configuration item. Re-running `init` repairs
+missing generated integration files and old unsigned defaults, but preserves configured validators
+and owner-written `AGENTS.md` content. Use `--no-detect` or `--no-agent-contract` only when an
+installer or repository template owns those concerns itself.
 
 It also creates an Ed25519 provenance private key, mode `0600`, under Git's common runtime directory.
 Only its public key is written to the committed configuration. Runtime state, receipt records,
@@ -94,11 +103,11 @@ worktree sees the same broker authority.
 For a guided rollout—including validator, publication, service, recovery, and protected-branch
 recipes—start with [Getting started](docs/GETTING_STARTED.md).
 
-Initialize an existing Git repository and edit its generated configuration:
+Initialize an existing Git repository, review the detected policy, and commit the installation:
 
 ```bash
 merge-broker init --base main --base-ref origin/main --remote origin
-git add .merge-broker && git commit -m 'Configure authenticated merge brokerage'
+git add .merge-broker AGENTS.md && git commit -m 'Configure authenticated merge brokerage'
 merge-broker doctor
 ```
 
@@ -444,6 +453,7 @@ Validators receive these environment variables:
 - `MERGE_BROKER_BASE_SHA`
 - `MERGE_BROKER_HEAD_SHA`
 - `MERGE_BROKER_BATCH_ID`
+- `MERGE_BROKER_CACHE_DIR`, an isolated cache shared by validators in one integration transaction
 
 Commands may also use the shell-safe placeholders `{taskId}` and `{files}`. Validator output is
 captured with a fixed memory bound and retained in state with that cap. A timeout terminates the
@@ -453,6 +463,12 @@ validator process group on POSIX rather than leaving shell descendants behind.
 can get the local integration answer before submitting rather than a weaker approximation of it. It reports
 `MERGE_BROKER_BATCH_ID=local`, which a validator can branch on if it needs to behave differently
 outside a batch.
+
+A validator may set `"executionArchitecture": "native"` to run under the hardware architecture on
+macOS when Node itself is translated by Rosetta. Detected SwiftPM validators use this mode and put
+their scratch build under `MERGE_BROKER_CACHE_DIR`, preventing Intel and Apple Silicon artifacts
+from contaminating each other without rebuilding between the focused and authoritative stages of
+the same integration transaction.
 
 The JSON schemas in [`schemas/`](schemas/) can be used by editors, adapters, and independent receipt producers.
 

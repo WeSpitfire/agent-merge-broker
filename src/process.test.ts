@@ -3,7 +3,34 @@ import test from "node:test";
 import path from "node:path";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { runCommand } from "./process.js";
+import { commandForArchitecture, runCommand } from "./process.js";
+
+test("runs native validators through Apple's architecture launcher only when translated", () => {
+  assert.deepEqual(
+    commandForArchitecture("/bin/sh", ["-c", "swift test"], "native", {
+      platform: "darwin",
+      processArchitecture: "x64",
+      nativeArchitecture: "arm64",
+    }),
+    { executable: "/usr/bin/arch", args: ["-arm64", "/bin/sh", "-c", "swift test"] },
+  );
+  assert.deepEqual(
+    commandForArchitecture("/bin/sh", ["-c", "swift test"], "native", {
+      platform: "darwin",
+      processArchitecture: "arm64",
+      nativeArchitecture: "arm64",
+    }),
+    { executable: "/bin/sh", args: ["-c", "swift test"] },
+  );
+  assert.deepEqual(
+    commandForArchitecture("/bin/sh", ["-c", "swift test"], "process", {
+      platform: "darwin",
+      processArchitecture: "x64",
+      nativeArchitecture: "arm64",
+    }),
+    { executable: "/bin/sh", args: ["-c", "swift test"] },
+  );
+});
 
 test("bounds command output while retaining the beginning and end", async () => {
   const result = await runCommand(

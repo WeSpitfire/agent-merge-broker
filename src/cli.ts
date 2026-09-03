@@ -230,16 +230,43 @@ program
   .option("--base-ref <revision>", "Git revision used as the integration base")
   .option("--remote <name>", "Git remote", "origin")
   .option("--force", "replace the existing configuration")
-  .action(async (options: { base: string; baseRef?: string; remote: string; force?: boolean }) => {
+  .option("--no-detect", "do not detect repository validation commands")
+  .option("--no-agent-contract", "do not install the managed root AGENTS.md contract")
+  .action(async (options: {
+    base: string;
+    baseRef?: string;
+    remote: string;
+    force?: boolean;
+    detect: boolean;
+    agentContract: boolean;
+  }) => {
     const result = await MergeBroker.initialize(globalOptions().cwd, {
       baseBranch: options.base,
       ...(options.baseRef ? { baseRef: options.baseRef } : {}),
       remote: options.remote,
       force: options.force ?? false,
+      detect: options.detect,
+      agentContract: options.agentContract,
     });
+    const action = result.created ? "Initialized" : result.updated ? "Updated" : "Already initialized";
+    const bootstrap = result.bootstrap;
     output(
       result,
-      `${result.created ? "Initialized" : "Already initialized"} Merge Broker at ${result.configPath}`,
+      [
+        `${action} Merge Broker at ${result.configPath}`,
+        `Authenticated provenance: ${result.signingConfigured ? "configured" : "not configured"}`,
+        ...(bootstrap
+          ? [
+              `Detected ecosystems: ${bootstrap.ecosystems.join(", ") || "none"}`,
+              `Validators: ${bootstrap.focused.length} focused, ${bootstrap.authoritative.length} authoritative`,
+              ...bootstrap.unresolved.map((item) => `Needs configuration: ${item}`),
+            ]
+          : []),
+        ...(result.agentContract ? [`Agent contract: ${result.agentContract.path}`] : []),
+        result.operational
+          ? "Installation is operational. Commit the generated policy and agent contract."
+          : "Installation is incomplete. Resolve the items above before integrating work.",
+      ].join("\n"),
     );
   });
 
@@ -252,7 +279,7 @@ program
     output(
       result,
       [
-        result.ok === false ? "Merge Broker needs attention." : "Merge Broker is ready.",
+        result.operational === false ? "Merge Broker needs attention." : "Merge Broker is ready.",
         `Repository: ${String(result.repository)}`,
         `State: ${String(result.stateDirectory)}`,
         ...warnings.map((warning) => `Warning: ${warning}`),

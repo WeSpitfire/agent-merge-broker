@@ -38,7 +38,7 @@ From the repository you want to coordinate:
 ```bash
 npm install --save-dev agent-merge-broker
 npx merge-broker init --base main --base-ref origin/main --remote origin
-git add .merge-broker
+git add .merge-broker AGENTS.md
 git commit -m 'Configure Agent Merge Broker'
 npx merge-broker doctor
 ```
@@ -46,16 +46,27 @@ npx merge-broker doctor
 Initialization writes:
 
 - `.merge-broker/config.json`, the shared repository policy;
-- `.merge-broker/agent-instructions.md`, a worker-facing contract; and
+- `.merge-broker/agent-instructions.md`, a worker-facing contract;
+- a managed block in root `AGENTS.md`, which directs repository agents to that contract; and
 - a private provenance key under Git's common runtime directory, never in the worktree.
 
 Runtime state, receipts, tokens, audit events, temporary worktrees, and private keys are owner-only
 inside Git's common directory. Every linked worktree shares that authority.
 
-## 3. Configure a real validation gate
+Re-running the command is safe: it preserves owner policy and surrounding `AGENTS.md` instructions,
+and repairs only missing managed files or a legacy unsigned default. Pass `--no-detect` or
+`--no-agent-contract` when a higher-level installer owns that output.
 
-New configurations do not auto-merge and do not invent test commands. Add commands that answer the
-same question your protected branch asks. For example:
+## 3. Review the detected validation gate
+
+Initialization detects existing package manifests and selects declared `verify`, `ci`, or `check`
+scripts as complete gates. When none exists, it composes the declared `lint`, `typecheck`, `test`,
+and `build` scripts. It also detects SwiftPM packages. It does not invent missing scripts, Xcode
+schemes, simulator destinations, or repository policy; those are reported as unresolved items in
+the command output.
+
+Review the result and make sure it answers the same question your protected branch asks. For
+example:
 
 ```json
 {
@@ -83,6 +94,12 @@ same question your protected branch asks. For example:
 Focused validators run after each task is applied. Authoritative validators run against the complete
 batch. `{files}` and `{taskId}` are shell-quoted, and the same values are available through
 `MERGE_BROKER_FILES` and `MERGE_BROKER_TASK_ID`.
+
+Every integration transaction also receives a unique `MERGE_BROKER_CACHE_DIR`, shared across its
+focused and authoritative stages and removed afterward. `executionArchitecture: "native"` runs a
+validator under the Mac's hardware architecture when Node is running through Rosetta. Auto-detected
+SwiftPM validators use both features, keeping Swift build artifacts architecture-isolated while
+reusing them inside one transaction.
 
 Run the configured checks against current work before submitting anything:
 
@@ -237,7 +254,8 @@ validators, an unreachable base, or missing forge authentication.
 
 ## Production checklist
 
-- Commit `.merge-broker/config.json` and review validator changes like CI changes.
+- Commit `.merge-broker/config.json`, `.merge-broker/agent-instructions.md`, and `AGENTS.md`; review
+  validator changes like CI changes.
 - Configure at least one complete validation authority.
 - Protect the base branch and require provenance verification for broker pull requests.
 - Keep lease tokens, the provenance private key, and forge credentials off worker branches.

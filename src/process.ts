@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { CommandError } from "./errors.js";
 
 export interface CommandResult {
@@ -18,6 +18,8 @@ export interface RunOptions {
   maxOutputBytes?: number;
   /** Terminate descendants as well as the immediate process when a timeout expires. */
   killProcessTree?: boolean;
+  /** Use the host's native architecture when the Node process is translated. */
+  executionArchitecture?: "process" | "native";
 }
 
 export interface ResolvedShell {
@@ -59,6 +61,33 @@ export function resolveShell(configured?: string): ResolvedShell {
 
 function quoteForDisplay(value: string): string {
   return /[\s"'\\]/u.test(value) ? JSON.stringify(value) : value;
+}
+
+export function nativeArchitecture(
+  platform: NodeJS.Platform = process.platform,
+  processArchitecture: string = process.arch,
+): string {
+  if (platform !== "darwin" || processArchitecture === "arm64") return processArchitecture;
+  const probe = spawnSync("/usr/sbin/sysctl", ["-n", "hw.optional.arm64"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return probe.status === 0 && probe.stdout.trim() === "1" ? "arm64" : processArchitecture;
+}
+
+export function commandForArchitecture(
+  executable: string,
+  args: string[],
+  executionArchitecture: "process" | "native" = "process",
+  host: { platform?: NodeJS.Platform; processArchitecture?: string; nativeArchitecture?: string } = {},
+): { executable: string; args: string[] } {
+  if (executionArchitecture !== "native") return { executable, args };
+  const platform = host.platform ?? process.platform;
+  const processArchitecture = host.processArchitecture ?? process.arch;
+  const hostArchitecture = host.nativeArchitecture ?? nativeArchitecture(platform, processArchitecture);
+  if (platform !== "darwin" || hostArchitecture === processArchitecture) return { executable, args };
+  const archFlag = hostArchitecture === "x64" ? "-x86_64" : `-${hostArchitecture}`;
+  return { executable: "/usr/bin/arch", args: [archFlag, executable, ...args] };
 }
 
 class OutputCapture {
@@ -122,10 +151,11 @@ export async function runCommand(
   args: string[],
   options: RunOptions,
 ): Promise<CommandResult> {
-  const rendered = [executable, ...args].map(quoteForDisplay).join(" ");
+  const command = commandForArchitecture(executable, args, options.executionArchitecture);
+  const rendered = [command.executable, ...command.args].map(quoteForDisplay).join(" ");
 
   return await new Promise<CommandResult>((resolve, reject) => {
-    const child = spawn(executable, args, {
+    const child = spawn(command.executable, command.args, {
       cwd: options.cwd,
       env: options.env ?? process.env,
       shell: false,

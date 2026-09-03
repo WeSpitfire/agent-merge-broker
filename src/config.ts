@@ -422,7 +422,14 @@ export function validateConfig(value: unknown): BrokerConfig {
       throw new BrokerError("INVALID_CONFIG", `validation.${scope} must be an array.`);
     }
     for (const validator of validators) {
-      assertAllowedKeys(validator, `validation.${scope}[]`, ["name", "command", "paths", "timeoutSeconds", "env"]);
+      assertAllowedKeys(validator, `validation.${scope}[]`, [
+        "name",
+        "command",
+        "paths",
+        "timeoutSeconds",
+        "env",
+        "executionArchitecture",
+      ]);
       assertString(validator.name, `validation.${scope}.name`);
       assertString(validator.command, `validation.${scope}.command`);
       if (validator.paths !== undefined) assertStringArray(validator.paths, `validation.${scope}.paths`);
@@ -436,6 +443,16 @@ export function validateConfig(value: unknown): BrokerConfig {
           Object.values(validator.env).some((item) => typeof item !== "string"))
       ) {
         throw new BrokerError("INVALID_CONFIG", `validation.${scope}.env must contain only string values.`);
+      }
+      if (
+        validator.executionArchitecture !== undefined &&
+        validator.executionArchitecture !== "process" &&
+        validator.executionArchitecture !== "native"
+      ) {
+        throw new BrokerError(
+          "INVALID_CONFIG",
+          `validation.${scope}.executionArchitecture must be process or native.`,
+        );
       }
     }
   }
