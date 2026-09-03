@@ -164,6 +164,10 @@ function assertAllowedKeys(value: unknown, key: string, allowed: string[]): void
   }
 }
 
+function isPortableAbsolute(value: string): boolean {
+  return path.posix.isAbsolute(value) || path.win32.isAbsolute(value) || /^[A-Za-z]:/u.test(value);
+}
+
 function assertSafeGitName(value: string, key: string, allowTrailingSlash = false): void {
   const candidate = allowTrailingSlash ? value.replace(/\/+$/u, "") : value;
   if (
@@ -207,7 +211,7 @@ export function validateConfig(value: unknown): BrokerConfig {
   assertSafeGitName(config.remote, "remote");
   assertString(config.stateDirectory, "stateDirectory");
   if (
-    path.isAbsolute(config.stateDirectory) ||
+    isPortableAbsolute(config.stateDirectory) ||
     config.stateDirectory === "." ||
     config.stateDirectory.split(/[\\/]/u).some((part) => part === "..") ||
     new Set(["branches", "hooks", "info", "logs", "objects", "refs", "worktrees"]).has(
@@ -297,7 +301,7 @@ export function validateConfig(value: unknown): BrokerConfig {
     }
     const directory = config.integration.provenance.directory.replaceAll("\\", "/");
     if (
-      path.isAbsolute(directory) ||
+      isPortableAbsolute(directory) ||
       directory === "." ||
       directory.split("/").some((part) => part === ".." || part === ".git")
     ) {
@@ -425,6 +429,7 @@ export function validateConfig(value: unknown): BrokerConfig {
       assertAllowedKeys(validator, `validation.${scope}[]`, [
         "name",
         "command",
+        "workingDirectory",
         "paths",
         "timeoutSeconds",
         "env",
@@ -432,6 +437,18 @@ export function validateConfig(value: unknown): BrokerConfig {
       ]);
       assertString(validator.name, `validation.${scope}.name`);
       assertString(validator.command, `validation.${scope}.command`);
+      if (validator.workingDirectory !== undefined) {
+        assertString(validator.workingDirectory, `validation.${scope}.workingDirectory`);
+        if (
+          isPortableAbsolute(validator.workingDirectory) ||
+          validator.workingDirectory.split(/[\\/]/u).some((part) => part === "..")
+        ) {
+          throw new BrokerError(
+            "INVALID_CONFIG",
+            `validation.${scope}.workingDirectory must stay inside the repository.`,
+          );
+        }
+      }
       if (validator.paths !== undefined) assertStringArray(validator.paths, `validation.${scope}.paths`);
       if (validator.timeoutSeconds !== undefined) {
         assertPositiveInteger(validator.timeoutSeconds, `validation.${scope}.timeoutSeconds`);

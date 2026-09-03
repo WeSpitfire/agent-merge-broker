@@ -12,6 +12,12 @@ A worker needs only five capabilities:
 
 All CLI commands support `--json`. Successful commands write one JSON value to stdout and exit zero. Errors write a stable code, message, and optional details to stderr and exit nonzero.
 
+The package also supplies `merge-broker-mcp`, a stdio MCP adapter. Its default `worker` profile
+registers only task/status/validation capabilities and keeps lease tokens in the local vault. The
+`operator` profile additionally registers planning, integration, publication, synchronization,
+verification, approval, audit, metrics, and recovery. Profiles are chosen when the server starts,
+not by tool input, so a worker cannot request promotion.
+
 ## Claim
 
 ```bash

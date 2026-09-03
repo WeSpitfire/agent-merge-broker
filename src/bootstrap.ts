@@ -1,5 +1,4 @@
 import path from "node:path";
-import { createHash } from "node:crypto";
 import { access, readFile, readdir, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import type { BrokerConfig, ValidatorConfig } from "./types.js";
@@ -53,10 +52,6 @@ function posix(relativePath: string): string {
   return relativePath.split(path.sep).join("/");
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
 async function discoverFiles(root: string, maxDepth = 4): Promise<string[]> {
   const files: string[] = [];
   async function visit(directory: string, depth: number): Promise<void> {
@@ -77,7 +72,18 @@ async function discoverFiles(root: string, maxDepth = 4): Promise<string[]> {
   return files.sort();
 }
 
-const PACKAGE_LOCKS = ["pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "package-lock.json"];
+const PACKAGE_LOCKS = [
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "bun.lockb",
+  "package-lock.json",
+  "Cargo.lock",
+  "go.sum",
+  "uv.lock",
+  "poetry.lock",
+  "Pipfile.lock",
+];
 
 function packageManager(
   files: Set<string>,
@@ -101,22 +107,8 @@ function packageManager(
   return "npm";
 }
 
-function runScript(manager: string, script: string, directory: string): string {
-  const prefix = directory === "." ? "" : ` --dir ${shellQuote(directory)}`;
-  if (manager === "pnpm") return `pnpm${prefix} run ${shellQuote(script)}`;
-  if (manager === "yarn") {
-    return directory === "."
-      ? `yarn run ${shellQuote(script)}`
-      : `yarn --cwd ${shellQuote(directory)} run ${shellQuote(script)}`;
-  }
-  if (manager === "bun") {
-    return directory === "."
-      ? `bun run ${shellQuote(script)}`
-      : `bun --cwd ${shellQuote(directory)} run ${shellQuote(script)}`;
-  }
-  return directory === "."
-    ? `npm run ${shellQuote(script)}`
-    : `npm --prefix ${shellQuote(directory)} run ${shellQuote(script)}`;
+function runScript(manager: string, script: string): string {
+  return `${manager} run ${script}`;
 }
 
 function packagePaths(directory: string): string[] {
@@ -159,7 +151,8 @@ async function packageValidators(
     for (const script of selected) {
       const validator: ValidatorConfig = {
         name: `${label} ${script}`,
-        command: runScript(manager, script, directory),
+        command: runScript(manager, script),
+        ...(directory === "." ? {} : { workingDirectory: directory }),
         timeoutSeconds: script === "build" ? 1_200 : 900,
       };
       if (script === "lint" || script === "typecheck" || script === "type-check") {
@@ -171,7 +164,8 @@ async function packageValidators(
       if (directory === "." || !rootComplete) {
         authoritative.push({
           name: `${label} ${completeScript}`,
-          command: runScript(manager, completeScript, directory),
+          command: runScript(manager, completeScript),
+          ...(directory === "." ? {} : { workingDirectory: directory }),
           timeoutSeconds: 1_200,
         });
       }
@@ -179,7 +173,8 @@ async function packageValidators(
     } else if (!rootComplete) {
       authoritative.push(...selected.map((script) => ({
         name: `${label} ${script}`,
-        command: runScript(manager, script, directory),
+        command: runScript(manager, script),
+        ...(directory === "." ? {} : { workingDirectory: directory }),
         timeoutSeconds: script === "build" ? 1_200 : 900,
       })));
     }
@@ -194,11 +189,10 @@ function swiftValidators(packageFiles: string[]): ValidatorConfig[] {
   return packageFiles.map((packageFile) => {
     const directory = posix(path.dirname(packageFile));
     const label = directory === "." ? "Swift workspace" : `Swift ${directory}`;
-    const packageArgument = directory === "." ? "" : ` --package-path ${shellQuote(directory)}`;
-    const cacheKey = createHash("sha256").update(directory).digest("hex").slice(0, 12);
     return {
       name: `${label} tests`,
-      command: `swift test${packageArgument} --scratch-path "$MERGE_BROKER_CACHE_DIR/swift-${cacheKey}"`,
+      command: "swift test --scratch-path {validatorCacheDir}",
+      ...(directory === "." ? {} : { workingDirectory: directory }),
       paths: directory === "."
         ? ["**/*.swift", "Package.swift", "Package.resolved"]
         : [`${directory}/**/*.swift`, `${directory}/Package.swift`, `${directory}/Package.resolved`],
@@ -208,10 +202,106 @@ function swiftValidators(packageFiles: string[]): ValidatorConfig[] {
   });
 }
 
+function manifestScope(manifest: string, extensions: string[]): string[] {
+  const directory = posix(path.dirname(manifest));
+  const within = (name: string) => directory === "." ? name : `${directory}/${name}`;
+  return [...extensions.map((extension) => within(`**/*.${extension}`)), manifest];
+}
+
+function goValidators(moduleFiles: string[]): ValidatorConfig[] {
+  return moduleFiles.map((manifest) => {
+    const directory = posix(path.dirname(manifest));
+    return {
+      name: `${directory === "." ? "Go workspace" : `Go ${directory}`} tests`,
+      command: "go test ./...",
+      ...(directory === "." ? {} : { workingDirectory: directory }),
+      paths: [
+        ...manifestScope(manifest, ["go"]),
+        ...(directory === "." ? ["go.sum"] : [`${directory}/go.sum`]),
+      ],
+      timeoutSeconds: 1_200,
+    };
+  });
+}
+
+function rustValidators(manifestFiles: string[]): ValidatorConfig[] {
+  return manifestFiles.map((manifest) => {
+    const directory = posix(path.dirname(manifest));
+    return {
+      name: `${directory === "." ? "Rust workspace" : `Rust ${directory}`} tests`,
+      command: "cargo test --workspace",
+      ...(directory === "." ? {} : { workingDirectory: directory }),
+      paths: [
+        ...manifestScope(manifest, ["rs"]),
+        ...(directory === "." ? ["Cargo.lock"] : [`${directory}/Cargo.lock`]),
+      ],
+      timeoutSeconds: 1_200,
+    };
+  });
+}
+
+async function pythonValidators(root: string, discovered: string[]): Promise<{
+  ecosystems: string[];
+  focused: ValidatorConfig[];
+  authoritative: ValidatorConfig[];
+  unresolved: string[];
+}> {
+  const manifests = discovered.filter((file) => path.posix.basename(file) === "pyproject.toml");
+  const special = discovered.filter((file) => ["pytest.ini", "tox.ini", "noxfile.py"].includes(path.posix.basename(file)));
+  const directories = [...new Set([...manifests, ...special].map((file) => posix(path.dirname(file))))].sort();
+  const focused: ValidatorConfig[] = [];
+  const authoritative: ValidatorConfig[] = [];
+  const unresolved: string[] = [];
+  for (const directory of directories) {
+    const within = (name: string) => directory === "." ? name : `${directory}/${name}`;
+    const pyproject = within("pyproject.toml");
+    const source = manifests.includes(pyproject) ? await readFile(path.join(root, pyproject), "utf8") : "";
+    const runner = discovered.includes(within("uv.lock"))
+      ? "uv run "
+      : discovered.includes(within("poetry.lock")) || /\[tool\.poetry\]/u.test(source)
+        ? "poetry run "
+        : "";
+    const common = {
+      ...(directory === "." ? {} : { workingDirectory: directory }),
+      paths: [within("**/*.py"), ...(manifests.includes(pyproject) ? [pyproject] : [])],
+      timeoutSeconds: 1_200,
+    };
+    const label = directory === "." ? "Python workspace" : `Python ${directory}`;
+    if (discovered.includes(within("tox.ini"))) {
+      authoritative.push({ name: `${label} tox`, command: `${runner}tox`, ...common });
+      continue;
+    }
+    if (discovered.includes(within("noxfile.py"))) {
+      authoritative.push({ name: `${label} nox`, command: `${runner}nox`, ...common });
+      continue;
+    }
+    const declared: ValidatorConfig[] = [];
+    if (discovered.includes(within("pytest.ini")) || /\[tool\.pytest\./u.test(source)) {
+      declared.push({ name: `${label} tests`, command: `${runner}pytest`, ...common });
+    }
+    if (/\[tool\.ruff(?:\.|\])/u.test(source)) {
+      const validator = { name: `${label} ruff`, command: `${runner}ruff check .`, ...common };
+      focused.push(validator);
+      declared.push(validator);
+    }
+    if (/\[tool\.mypy(?:\.|\])/u.test(source)) {
+      const validator = { name: `${label} mypy`, command: `${runner}mypy .`, ...common };
+      focused.push(validator);
+      declared.push(validator);
+    }
+    if (declared.length === 0) {
+      unresolved.push(`${pyproject} declares no supported pytest, Ruff, mypy, tox, or nox validation entry point.`);
+    } else {
+      authoritative.push(...declared);
+    }
+  }
+  return { ecosystems: directories.map((directory) => `python:${directory}`), focused, authoritative, unresolved };
+}
+
 function deduplicateValidators(validators: ValidatorConfig[]): ValidatorConfig[] {
   const seen = new Set<string>();
   return validators.filter((validator) => {
-    const key = `${validator.command}\0${JSON.stringify(validator.paths ?? [])}`;
+    const key = `${validator.workingDirectory ?? "."}\0${validator.command}\0${JSON.stringify(validator.paths ?? [])}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -227,17 +317,30 @@ export async function detectBootstrapPlan(root: string): Promise<BootstrapPlan> 
   const packages = await packageValidators(root, packageFiles, files);
   const swiftPackages = discovered.filter((file) => file === "Package.swift" || file.endsWith("/Package.swift"));
   const swift = swiftValidators(swiftPackages);
-  const ecosystems = [...packages.ecosystems, ...swiftPackages.map((file) => `swift:${posix(path.dirname(file))}`)].sort();
-  const focused = deduplicateValidators([...packages.focused, ...swift]);
+  const goModules = discovered.filter((file) => file === "go.mod" || file.endsWith("/go.mod"));
+  const go = goValidators(goModules);
+  const rustManifests = discovered.filter((file) => file === "Cargo.toml" || file.endsWith("/Cargo.toml"));
+  const rust = rustValidators(rustManifests);
+  const python = await pythonValidators(root, discovered);
+  const ecosystems = [
+    ...packages.ecosystems,
+    ...swiftPackages.map((file) => `swift:${posix(path.dirname(file))}`),
+    ...goModules.map((file) => `go:${posix(path.dirname(file))}`),
+    ...rustManifests.map((file) => `rust:${posix(path.dirname(file))}`),
+    ...python.ecosystems,
+  ].sort();
+  const focused = deduplicateValidators([...packages.focused, ...swift, ...go, ...rust, ...python.focused]);
   const authoritative = deduplicateValidators([
     ...packages.authoritative,
-    ...(packages.rootComplete ? [] : swift.map(({ paths: _paths, ...item }) => item)),
+    ...(packages.rootComplete
+      ? []
+      : [...swift, ...go, ...rust, ...python.authoritative].map(({ paths: _paths, ...item }) => item)),
   ]);
   const serializedPatterns = [
     ...discovered.filter((file) => PACKAGE_LOCKS.includes(path.posix.basename(file))),
     ...swiftPackages.map((file) => posix(path.join(path.dirname(file), "Package.resolved"))),
   ].sort();
-  const unresolved = [...packages.unresolved];
+  const unresolved = [...packages.unresolved, ...python.unresolved];
   if (discovered.some((file) => file.endsWith(".xcodeproj/project.pbxproj") || file.endsWith(".xcworkspace/contents.xcworkspacedata"))) {
     unresolved.push("Xcode project detected, but no destination or scheme was inferred. Add an explicit xcodebuild validator.");
   }

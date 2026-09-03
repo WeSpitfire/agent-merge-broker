@@ -1,6 +1,6 @@
 export { MergeBroker, type ClaimTaskInput, type RegisterTaskInput } from "./broker.js";
 export { GitRepository, type WorktreeInfo } from "./git.js";
-export { StateStore, type LockStatus } from "./store.js";
+export { StateStore, type ArchivedStateSlice, type LockStatus } from "./store.js";
 export { installHooks, prePushHook, uninstallHooks, type HookInstallation } from "./hooks.js";
 export {
   describeServeEvent,
@@ -16,10 +16,13 @@ export {
   serviceFilePath,
   serviceName,
   systemdUnit,
+  windowsTaskXml,
+  quoteWindowsArgument,
   uninstallService,
   type ServiceDefinition,
   type ServiceInstallation,
   type ServiceOptions,
+  type ServicePlatform,
 } from "./service.js";
 export { defaultConfig, initializeConfig, loadConfig, validateConfig, writeConfig } from "./config.js";
 export {
@@ -31,6 +34,9 @@ export {
   type BootstrapPlan,
 } from "./bootstrap.js";
 export { scheduleTasks } from "./scheduler.js";
+export { formatBrokerStatus } from "./status.js";
+export { createSupportBundle, sanitizeSupportData, type SupportBundle } from "./support.js";
+export { createMcpServer, mcpToolNames, type McpProfile } from "./mcp.js";
 export {
   githubCliPublisher,
   type ForgePublisher,

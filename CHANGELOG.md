@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- First-class Windows support: non-profile PowerShell validation, process-tree timeout cleanup,
+  per-user Task Scheduler services, a cross-platform Node acceptance demo, and release-gating CI.
+- A stdio MCP adapter with separate worker and operator tool profiles. Worker calls use locally held
+  lease tokens without returning them to the model, and merge-authorizing tools exist only in the
+  operator profile.
+- Actionable human status, sanitized `doctor --support-bundle` output, and archive-aware audit and
+  metrics reads.
+- Conservative Go, Rust, and Python bootstrap detection plus repository-relative validator working
+  directories for nested packages.
+
+### Changed
+
+- Hook installation composes with repository-local hook directories and preserves unrelated default
+  hooks. `install-hooks --print` supports explicit composition when another tool owns `pre-push`.
+- Background-service installation fails early when publication is disabled.
+
 ## 0.10.0 — 2026-09-02
 
 ### Added

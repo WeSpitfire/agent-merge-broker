@@ -32,13 +32,12 @@ function quotePosix(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-/**
- * cmd.exe has no escape for a literal `%`, so a path containing one can still be expanded as an
- * environment reference. Git paths that contain `%` or `"` are pathological; POSIX shells are the
- * supported and tested surface.
- */
 function quoteCmd(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function quotePowerShell(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 /**
@@ -47,15 +46,29 @@ function quoteCmd(value: string): string {
  * depend on whose machine assembled the batch. The environment still comes from the calling
  * process, so PATH and toolchain managers work; a validator that needs more can set `env`.
  */
-export function resolveShell(configured?: string): ResolvedShell {
+export function resolveShell(
+  configured?: string,
+  hostPlatform: NodeJS.Platform = process.platform,
+): ResolvedShell {
   if (configured) {
     const isCmd = /(^|[\\/])cmd(\.exe)?$/iu.test(configured);
-    return isCmd
-      ? { executable: configured, args: ["/d", "/s", "/c"], quote: quoteCmd }
-      : { executable: configured, args: ["-c"], quote: quotePosix };
+    if (isCmd) return { executable: configured, args: ["/d", "/s", "/c"], quote: quoteCmd };
+    const isPowerShell = /(^|[\\/])(powershell|pwsh)(\.exe)?$/iu.test(configured);
+    if (isPowerShell) {
+      return {
+        executable: configured,
+        args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+        quote: quotePowerShell,
+      };
+    }
+    return { executable: configured, args: ["-c"], quote: quotePosix };
   }
-  return process.platform === "win32"
-    ? { executable: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c"], quote: quoteCmd }
+  return hostPlatform === "win32"
+    ? {
+        executable: "powershell.exe",
+        args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+        quote: quotePowerShell,
+      }
     : { executable: "/bin/sh", args: ["-c"], quote: quotePosix };
 }
 

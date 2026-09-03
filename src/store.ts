@@ -8,6 +8,7 @@ import {
   chmod,
   mkdir,
   open,
+  readdir,
   readFile,
   rename,
   rm,
@@ -56,6 +57,13 @@ export type AuditRecorder = (
   event: string,
   fields?: Omit<AuditEvent, "sequence" | "at" | "event">,
 ) => void;
+
+export interface ArchivedStateSlice {
+  archivedAt?: string;
+  cutoff?: string;
+  tasks: BrokerState["tasks"];
+  batches: BrokerState["batches"];
+}
 
 export class StateStore {
   readonly directory: string;
@@ -287,14 +295,9 @@ export class StateStore {
     return target;
   }
 
-  /**
-   * Reads the tail of the active audit stream. Deliberately tolerant: a tail read can begin
-   * mid-line, and a crash between writing and flushing can leave a truncated final line. Neither is
-   * a reason to make the whole audit trail unreadable, which is exactly when it is needed most.
-   */
-  async readAudit(limit = 100): Promise<AuditEvent[]> {
-    if (!(await exists(this.auditFile))) return [];
-    const handle = await open(this.auditFile, "r");
+  private async readAuditFile(target: string, limit: number): Promise<AuditEvent[]> {
+    if (!(await exists(target))) return [];
+    const handle = await open(target, "r");
     let text: string;
     let partialStart: boolean;
     try {
@@ -320,6 +323,51 @@ export class StateStore {
       }
     }
     return events.slice(-limit);
+  }
+
+  /**
+   * Reads the newest audit events across the active stream and rotated segments. Deliberately
+   * tolerant: a tail read can begin mid-line, and a crash between writing and flushing can leave a
+   * truncated final line. Neither is a reason to make the audit trail unreadable.
+   */
+  async readAudit(limit = 100): Promise<AuditEvent[]> {
+    const active = await this.readAuditFile(this.auditFile, limit);
+    if (active.length >= limit) return active.slice(-limit);
+    const archived = await readdir(this.archiveDirectory).catch(() => [] as string[]);
+    const segments = archived
+      .filter((file) => file.startsWith("audit-") && file.endsWith(".jsonl"))
+      .sort()
+      .reverse();
+    const older: AuditEvent[] = [];
+    for (const segment of segments) {
+      older.unshift(...await this.readAuditFile(path.join(this.archiveDirectory, segment), limit - active.length));
+      if (older.length + active.length >= limit) break;
+    }
+    return [...older, ...active]
+      .sort((left, right) => left.sequence - right.sequence)
+      .slice(-limit);
+  }
+
+  /** Completed state is archived in disjoint slices. Metrics use these so housekeeping is not data loss. */
+  async readArchivedState(): Promise<ArchivedStateSlice[]> {
+    const archived = await readdir(this.archiveDirectory).catch(() => [] as string[]);
+    const slices: ArchivedStateSlice[] = [];
+    for (const file of archived.filter((item) => item.startsWith("state-") && item.endsWith(".json")).sort()) {
+      try {
+        const value = JSON.parse(await readFile(path.join(this.archiveDirectory, file), "utf8")) as Partial<ArchivedStateSlice>;
+        if (!value.tasks || !value.batches) continue;
+        slices.push({
+          ...(typeof value.archivedAt === "string" ? { archivedAt: value.archivedAt } : {}),
+          ...(typeof value.cutoff === "string" ? { cutoff: value.cutoff } : {}),
+          tasks: value.tasks,
+          batches: value.batches,
+        });
+      } catch {
+        // A bad historical slice must not hide current operational metrics. Its file remains for
+        // manual recovery, while the audit trail still records that pruning occurred.
+      }
+    }
+    return slices;
   }
 
   /**

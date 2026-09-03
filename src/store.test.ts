@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { appendFile, chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, rename, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { StateStore } from "./store.js";
 import { BrokerError } from "./errors.js";
@@ -50,6 +50,28 @@ test("reads the audit trail past a line truncated by a crash", async (context) =
   assert.deepEqual(
     (await store.readAudit(100)).map((event) => event.event),
     ["first.event", "second.event"],
+  );
+});
+
+test("reads recent audit events across rotated segments", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const store = new StateStore(directory, "state", 10);
+  await store.transaction((_state, audit) => {
+    audit("before.rotation.one");
+    audit("before.rotation.two");
+  });
+  await rename(
+    path.join(store.directory, "audit.jsonl"),
+    path.join(store.archiveDirectory, "audit-2026-09-03T12-00-00-000Z.jsonl"),
+  );
+  await store.transaction((_state, audit) => audit("after.rotation"));
+
+  assert.deepEqual(
+    (await store.readAudit(3)).map((event) => event.event),
+    ["before.rotation.one", "before.rotation.two", "after.rotation"],
   );
 });
 

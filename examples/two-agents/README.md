@@ -5,8 +5,11 @@ credentials.
 
 ```bash
 npm run build
-sh examples/two-agents/run.sh
+npm run example
 ```
+
+The Node-based example runs on Windows, macOS, and Linux. The original `run.sh` remains available
+for contributors who prefer to inspect the same flow as a shell script.
 
 Pass `KEEP=1` to leave the throwaway repository in place for inspection.
 

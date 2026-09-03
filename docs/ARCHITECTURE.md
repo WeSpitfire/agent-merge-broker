@@ -211,9 +211,13 @@ trail. The manifest records which mode produced it so a verifier knows which gua
 
 The first failing cherry-pick identifies a commit and task. Focused validation identifies a task-scoped failure. An authoritative failure identifies the complete batch but may represent an interaction between otherwise valid tasks. Version 0.1 deliberately stops and marks the bounded batch failed rather than automatically guessing a resolution. Operators can requeue the unchanged receipt explicitly. Automatic delta debugging can be layered on without weakening the transaction invariant.
 
-## Future adapters
+## Adapters
 
-Adapters should translate their native task system into the protocol rather than receive Git administration privileges. Natural additions are MCP, GitHub Actions, Codex, Claude Code, and generic webhook adapters. The core state machine must remain usable without them.
+Adapters translate their native task system into the protocol rather than receive unnecessary Git
+administration privileges. The bundled MCP stdio adapter has distinct worker and operator profiles;
+the worker server does not register integration, publication, evidence, or approval tools. GitHub
+Actions, other agent clients, and webhook systems can use the JSON CLI or exported Node API. The
+core state machine remains usable without any adapter.
 
 Forge publication is an explicit exported boundary. `MergeBroker.open` accepts a `ForgePublisher`;
 the GitHub CLI implementation is the default. An alternative forge adapter owns pull-request

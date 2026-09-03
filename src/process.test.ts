@@ -3,7 +3,19 @@ import test from "node:test";
 import path from "node:path";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { commandForArchitecture, runCommand } from "./process.js";
+import { commandForArchitecture, resolveShell, runCommand } from "./process.js";
+
+test("uses non-profile PowerShell with literal-safe placeholders on Windows", () => {
+  const shell = resolveShell(undefined, "win32");
+  assert.equal(shell.executable, "powershell.exe");
+  assert.deepEqual(shell.args, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+  assert.equal(shell.quote("src/O'Brien & Co/file.ts"), "'src/O''Brien & Co/file.ts'");
+});
+
+test("recognizes configured PowerShell and cmd interpreters", () => {
+  assert.equal(resolveShell("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe").quote("100%"), "'100%'");
+  assert.deepEqual(resolveShell("C:\\Windows\\System32\\cmd.exe").args, ["/d", "/s", "/c"]);
+});
 
 test("runs native validators through Apple's architecture launcher only when translated", () => {
   assert.deepEqual(

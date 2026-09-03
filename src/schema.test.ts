@@ -16,11 +16,24 @@ test("the generated default configuration satisfies the published JSON schema", 
 
 test("the JSON schema supports process-relative and native validator execution", () => {
   const config = defaultConfig();
-  config.validation.authoritative = [{ name: "Swift", command: "swift test", executionArchitecture: "native" }];
+  config.validation.authoritative = [{
+    name: "Swift",
+    command: "swift test",
+    workingDirectory: "Desktop",
+    executionArchitecture: "native",
+  }];
   assert.equal(validate(config), true, JSON.stringify(validate.errors));
   const validator = config.validation.authoritative[0] as { executionArchitecture: string };
   validator.executionArchitecture = "arm64";
   assert.equal(validate(config), false);
+});
+
+test("the JSON schema rejects validator working directories outside the repository", () => {
+  for (const workingDirectory of ["../outside", "/absolute", "C:\\absolute", "C:drive-relative", "\\\\server\\share"]) {
+    const config = defaultConfig();
+    config.validation.authoritative = [{ name: "invalid", command: "test", workingDirectory }];
+    assert.equal(validate(config), false, `${workingDirectory} should not satisfy the schema`);
+  }
 });
 
 test("the JSON schema rejects auto-merge unless publication creates a non-draft pull request", () => {
