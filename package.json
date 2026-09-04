@@ -68,7 +68,7 @@
   "homepage": "https://wespitfire.github.io/agent-merge-broker/",
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
-    "commander": "^14.0.3",
+    "commander": "^15.0.0",
     "picomatch": "^4.0.2",
     "zod": "^4.5.4"
   },
