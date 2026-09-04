@@ -76,7 +76,9 @@ configuration-injection or transport-command overrides. The match is case-insens
 `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` pairs. Proxy variables, `GIT_HTTP_*`, `GIT_SSL_*`, and
 ambient curl/OpenSSL CA overrides are refused too. Configured `core.sshCommand`, `core.gitProxy`,
 `url.*.insteadOf`/`pushInsteadOf`, and HTTP proxy/TLS/routing overrides are also refused before exact
-transport; HTTP authorization headers remain supported, but `Host`/`:authority` overrides do not. An exact locator
+transport. The one TLS-setting exception is Git for Windows' standard unscoped
+`http.sslBackend=schannel`; URL-scoped or alternate backend settings remain refused. HTTP
+authorization headers remain supported, but `Host`/`:authority` overrides do not. An exact locator
 must not collide with an effective local/global/system `remote.*` subsection or Git's legacy remote
 shorthands. Gate policy validators cannot declare the environment keys in `env`; internal Git and
 validator child environments have inherited values removed defensively.

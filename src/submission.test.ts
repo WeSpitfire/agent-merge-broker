@@ -757,7 +757,7 @@ test("recovery repairs a swapped Gate gitfile without removing its sibling workt
   config.validation.authoritative = [{
     name: "swap worktree administration",
     command:
-      `node --input-type=commonjs -e "require('node:fs').copyFileSync(process.argv[1], '.git')" ${JSON.stringify(decoyGitFile)}`,
+      `node --input-type=commonjs -e "const fs=require('node:fs'),data=fs.readFileSync(process.argv[1]),fd=fs.openSync('.git','r+'); try{fs.ftruncateSync(fd,0);fs.writeSync(fd,data,0,data.length,0)}finally{fs.closeSync(fd)}" ${JSON.stringify(decoyGitFile)}`,
   }];
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   await git(repo, "add", ".merge-broker/config.json");

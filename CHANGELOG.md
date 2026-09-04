@@ -30,6 +30,11 @@
   establishment and later loss, bounds untracked-path diagnostics, and serializes authority
   replacement against adoption and recovery.
 
+### Fixed
+
+- Kept exact-target checks compatible with Git for Windows' standard unscoped Schannel TLS backend,
+  and made lock release retry transient Windows sharing violations without weakening nonce fencing.
+
 ## 0.12.1 — 2026-09-04
 
 ### Added

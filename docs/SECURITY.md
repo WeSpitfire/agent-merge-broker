@@ -119,9 +119,10 @@ selection through `GIT_EXEC_PATH`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_SSH_VARIAN
 `GIT_PROXY_COMMAND`; standard proxy variables, `GIT_HTTP_*`, `GIT_SSL_*`, `CURL_CA_BUNDLE`,
 `SSL_CERT_FILE`, and `SSL_CERT_DIR` are denied as well. Names are matched case-insensitively.
 Configured `core.sshCommand`, `core.gitProxy`, `url.*.insteadOf`/`pushInsteadOf`, and HTTP
-proxy/TLS/routing overrides are refused before bound fetches and publication pushes. HTTP
-authorization headers remain supported, but configured `Host` or `:authority` replacement is
-refused. Exact locators that Git could reinterpret through an effective
+proxy/TLS/routing overrides are refused before bound fetches and publication pushes, except for Git
+for Windows' standard unscoped `http.sslBackend=schannel`; URL-scoped or alternate backend
+settings remain refused. HTTP authorization headers remain supported, but configured `Host` or
+`:authority` replacement is refused. Exact locators that Git could reinterpret through an effective
 local/global/system `remote.*` subsection or legacy remote shorthand are refused as well. A
 protected-base Gate validator whose `env` declares any denied environment key is also rejected, even
 if its value is empty; Gate-internal Git commands and every Gate validator child environment remove

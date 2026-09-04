@@ -39,6 +39,8 @@ const AUDIT_TAIL_BYTES = 1_024 * 1_024;
 /** Size at which the active audit file is rotated into an archive segment. */
 const AUDIT_ROTATE_BYTES = 16 * 1_024 * 1_024;
 const GATE_AUTHORITY_LOCK_NAME = "merge-broker-gate-authority";
+/** Windows can transiently refuse a directory rename while another process closes a child handle. */
+const WINDOWS_LOCK_RENAME_RETRY_MS = 2_000;
 
 export interface LockStatus {
   name: string;
@@ -624,18 +626,19 @@ export class StateStore {
     while (true) {
       if (await this.tryAcquireLock(lockDirectory, owner)) break;
       const lockStat = await stat(lockDirectory).catch(() => undefined);
-      const currentOwner = lockStat ? await this.readLockOwner(lockDirectory) : undefined;
       // Time is not proof that a holder stopped. Reclaim only a process proven dead on this host;
       // foreign or unreadable owners require the explicit force-unlock path. Moving an old owner's
       // directory to a nonce-specific tombstone prevents two delayed reclaimers from deleting a
-      // successor's lock.
-      if (
-        lockStat &&
-        Date.now() - lockStat.mtimeMs > 2_000 &&
-        this.lockOwnerCrashed(currentOwner) &&
-        await this.reclaimLock(lockDirectory, currentOwner)
-      ) {
-        continue;
+      // successor's lock. Do not open owner.json for a fresh lock: on Windows, that reader can
+      // transiently prevent the live owner from renaming its directory during release.
+      if (lockStat && Date.now() - lockStat.mtimeMs > 2_000) {
+        const currentOwner = await this.readLockOwner(lockDirectory);
+        if (
+          this.lockOwnerCrashed(currentOwner) &&
+          await this.reclaimLock(lockDirectory, currentOwner)
+        ) {
+          continue;
+        }
       }
       if (Date.now() - startedAt > this.lockTimeoutMs) {
         throw new BrokerError("LOCK_TIMEOUT", `Timed out waiting for the ${name} lock.`, { lockDirectory });
@@ -707,14 +710,26 @@ export class StateStore {
 
   /** Removes only the active lock carrying this exact ownership nonce. */
   private async releaseOwnedLock(lockDirectory: string, ownerNonce: string): Promise<boolean> {
-    const current = await this.readLockOwner(lockDirectory);
-    if (current?.nonce !== ownerNonce) return false;
     const retired = `${lockDirectory}.released-${ownerNonce}`;
-    try {
-      await rename(lockDirectory, retired);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-      throw error;
+    const startedAt = Date.now();
+    while (true) {
+      // Recheck before every attempt so a delayed Windows retry can never retire a successor's
+      // lock after an out-of-protocol forced replacement.
+      const current = await this.readLockOwner(lockDirectory);
+      if (current?.nonce !== ownerNonce) return false;
+      try {
+        await rename(lockDirectory, retired);
+        break;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") return false;
+        const retryableWindowsSharingViolation =
+          process.platform === "win32" && (code === "EPERM" || code === "EBUSY");
+        if (!retryableWindowsSharingViolation || Date.now() - startedAt >= WINDOWS_LOCK_RENAME_RETRY_MS) {
+          throw error;
+        }
+        await delay(10 + Math.floor(Math.random() * 40));
+      }
     }
     const moved = await this.readLockOwner(retired);
     if (moved?.nonce !== ownerNonce) {

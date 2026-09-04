@@ -136,7 +136,8 @@ proxy/TLS/routing rewrites (including `Host`/`:authority` headers), and
 refuse a locator that Git could reinterpret through any effective or legacy remote definition. Local
 paths are bound to their physical target with filesystem-order component resolution. Ambient proxy,
 `GIT_HTTP_*`, `GIT_SSL_*`, curl/OpenSSL CA settings, and equivalent Git HTTP configuration must be
-removed for exact transport; ordinary HTTP authorization headers remain supported. Ambiguous
+removed for exact transport, except for the standard unscoped Git-for-Windows
+`http.sslBackend=schannel` setting; ordinary HTTP authorization headers remain supported. Ambiguous
 Windows drive-relative locators are unsupported. For `file://` remotes, raw control/backslash bytes,
 pipe bytes, explicit authorities, edge spaces, query/fragment suffixes, and literal or encoded dot segments are rejected because Git
 and web-URL normalization can otherwise select different repositories; use an unambiguous absolute
@@ -171,7 +172,9 @@ configuration-injection or transport-command overrides. Matching is case-insensi
 `GIT_EXEC_PATH`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_SSH_VARIANT`, `GIT_PROXY_COMMAND`, and indexed
 `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` pairs. Configured `core.sshCommand`, `core.gitProxy`, and
 `url.*.insteadOf`/`pushInsteadOf` are refused too, as are proxy variables, `GIT_HTTP_*`, `GIT_SSL_*`,
-curl/OpenSSL CA overrides, and effective HTTP proxy/TLS/routing configuration. Exact transport locators also cannot collide with
+curl/OpenSSL CA overrides, and effective HTTP proxy/TLS/routing configuration. Git for Windows'
+standard unscoped `http.sslBackend=schannel` is the sole TLS-setting exception; URL-scoped or
+alternate backend settings remain refused. Exact transport locators also cannot collide with
 effective local/global/system or legacy remote definitions. A protected-base Gate validator cannot declare
 the environment keys in `validator.env`; Gate scrubs them from internal Git and validator child
 environments. It disables Git promisor lazy fetching, so a missing object fails instead of silently

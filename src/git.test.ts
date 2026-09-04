@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, open, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { deflateSync } from "node:zlib";
 import { BrokerError } from "./errors.js";
 import {
@@ -703,7 +704,13 @@ test("rejects a Gate worktree marker swapped to a byte-identical sibling", async
   const repository = await GitRepository.discover(repo);
   await repository.addRawDetachedWorktree(first, head);
   await repository.addRawDetachedWorktree(sibling, head);
-  await writeFile(path.join(first, ".git"), await readFile(path.join(sibling, ".git")));
+  const firstMarker = await open(path.join(first, ".git"), "r+");
+  try {
+    await firstMarker.truncate(0);
+    await firstMarker.writeFile(await readFile(path.join(sibling, ".git")));
+  } finally {
+    await firstMarker.close();
+  }
 
   assert.equal(await git(first, "rev-parse", "HEAD"), head);
   assert.equal(await readFile(path.join(first, "payload.txt"), "utf8"), "identical bytes\n");
@@ -948,7 +955,7 @@ test("Gate does not lazy-fetch a missing blob from a partial-clone promisor", as
     "--no-local",
     "--filter=blob:none",
     "--no-checkout",
-    `file://${source}`,
+    pathToFileURL(source).href,
     partial,
   );
 
@@ -1116,6 +1123,9 @@ test("refuses configured Git transport commands before an exact remote fetch", a
     ["core.gitProxy", "attacker-proxy"],
     ["http.proxy", "http://127.0.0.1:9"],
     ["http.sslVerify", "false"],
+    ["http.sslBackend", "openssl"],
+    ["http.schannelCheckRevoke", "false"],
+    ["http.https://honest.invalid/.sslBackend", "schannel"],
     ["http.https://honest.invalid/.curloptResolve", "honest.invalid:443:127.0.0.1"],
     ["http.extraHeader", "Host: evil.invalid"],
     ["http.https://honest.invalid/.extraHeader", "Host;"],
@@ -1128,6 +1138,17 @@ test("refuses configured Git transport commands before an exact remote fetch", a
     await git(repo, "config", "--unset", key);
   }
 });
+
+test(
+  "allows Git for Windows to use its standard unscoped Schannel TLS backend",
+  { skip: process.platform !== "win32" ? "Git-for-Windows configuration" : false },
+  async (context) => {
+    const { repo, remote, repository } = await publicationRepository(context);
+    await git(repo, "config", "http.sslBackend", "schannel");
+
+    assert.equal(await repository.remoteFetchUrl("origin"), await realpath(remote));
+  },
+);
 
 test("allows non-routing HTTP authorization headers during exact target checks", async (context) => {
   const { repo, remote, repository } = await publicationRepository(context);
@@ -1315,29 +1336,33 @@ test("canonicalizes a relative filesystem remote before Git can reinterpret it a
   assert.notEqual(wrongTarget.exitCode, 0);
 });
 
-test("preserves legal trailing spaces in a local remote pathname", async (context) => {
-  const { repo, remote, repository, first } = await publicationRepository(context);
-  const spaced = `${remote} `;
-  await git(path.dirname(remote), "init", "--bare", spaced);
-  await git(repo, "remote", "set-url", "origin", spaced);
+test(
+  "preserves legal trailing spaces in a local remote pathname",
+  { skip: process.platform === "win32" ? "Windows paths cannot retain trailing spaces" : false },
+  async (context) => {
+    const { repo, remote, repository, first } = await publicationRepository(context);
+    const spaced = `${remote} `;
+    await git(path.dirname(remote), "init", "--bare", spaced);
+    await git(repo, "remote", "set-url", "origin", spaced);
 
-  const bound = await repository.remotePushUrl("origin");
-  assert.equal(bound, await realpath(spaced));
-  await repository.push(bound, "merge-broker/spaced-target", first, { exactRemote: true });
-  assert.equal(await git(spaced, "rev-parse", "refs/heads/merge-broker/spaced-target"), first);
-  const wrongTarget = await runCommand(
-    "git",
-    ["show-ref", "--verify", "--quiet", "refs/heads/merge-broker/spaced-target"],
-    { cwd: remote, allowFailure: true },
-  );
-  assert.notEqual(wrongTarget.exitCode, 0);
+    const bound = await repository.remotePushUrl("origin");
+    assert.equal(bound, await realpath(spaced));
+    await repository.push(bound, "merge-broker/spaced-target", first, { exactRemote: true });
+    assert.equal(await git(spaced, "rev-parse", "refs/heads/merge-broker/spaced-target"), first);
+    const wrongTarget = await runCommand(
+      "git",
+      ["show-ref", "--verify", "--quiet", "refs/heads/merge-broker/spaced-target"],
+      { cwd: remote, allowFailure: true },
+    );
+    assert.notEqual(wrongTarget.exitCode, 0);
 
-  await git(repo, "remote", "set-url", "origin", `${remote}\r`);
-  await assert.rejects(
-    repository.remotePushUrl("origin"),
-    (error: unknown) => error instanceof BrokerError && error.code === "REMOTE_URL_UNKNOWN",
-  );
-});
+    await git(repo, "remote", "set-url", "origin", `${remote}\r`);
+    await assert.rejects(
+      repository.remotePushUrl("origin"),
+      (error: unknown) => error instanceof BrokerError && error.code === "REMOTE_URL_UNKNOWN",
+    );
+  },
+);
 
 test("rejects a remote URL whose non-UTF-8 bytes would decode ambiguously", async (context) => {
   const { repo, repository } = await publicationRepository(context);

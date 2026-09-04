@@ -442,7 +442,7 @@ export class GitRepository {
         "--includes",
         "--null",
         "--get-regexp",
-        "^(url\\..*\\.(insteadof|pushinsteadof)|core\\.(sshcommand|gitproxy)|http(\\..*)?\\.(proxy|proxyauthmethod|ssl[^.]*|curloptresolve|followredirects))$",
+        "^(url\\..*\\.(insteadof|pushinsteadof)|core\\.(sshcommand|gitproxy)|http(\\..*)?\\.(proxy|proxyauthmethod|proxyssl[^.]*|ssl[^.]*|schannel[^.]*|curloptresolve|followredirects))$",
       ],
       {
         cwd: this.root,
@@ -455,11 +455,30 @@ export class GitRepository {
       await this.assertNoHttpRoutingHeaders(code);
       return;
     }
-    if (result.exitCode === 0 && result.stdout.length > 0) {
+    if (result.exitCode === 0 && !result.stdout.includes("... output truncated by Merge Broker ...")) {
+      const configuredRules = splitNull(result.stdout);
+      const forbiddenRules = configuredRules.filter((record) => {
+        const separator = record.indexOf("\n");
+        if (separator < 0) return true;
+        const name = record.slice(0, separator).toLowerCase();
+        const value = record.slice(separator + 1).toLowerCase();
+        // Git for Windows installs this backend selection at system scope by default. It keeps TLS
+        // verification in the operating system trust store; URL-scoped or alternate backends are
+        // still mutable transport policy and remain forbidden.
+        return !(
+          process.platform === "win32" &&
+          name === "http.sslbackend" &&
+          value === "schannel"
+        );
+      });
+      if (forbiddenRules.length === 0) {
+        await this.assertNoHttpRoutingHeaders(code);
+        return;
+      }
       throw new BrokerError(
         code,
         "Git transport, proxy, TLS, or URL rewrite rules can redirect or weaken the broker's exact remote locator; remove the reported settings before retrying.",
-        { configuredRules: splitNull(result.stdout).map((item) => item.split("\n", 1)[0]) },
+        { configuredRules: forbiddenRules.map((item) => item.split("\n", 1)[0]) },
       );
     }
     throw new BrokerError(
