@@ -11,7 +11,7 @@ const releaseGuide = await readFile(new URL("../docs/RELEASING.md", import.meta.
 
 test("release surfaces run the exact npm package version they advertise", () => {
   const version = packageMetadata.version.replaceAll(".", "\\.");
-  assert.match(action, new RegExp(`\\n\\s+default: ${version}\\n`, "u"));
+  assert.match(action, new RegExp(`\\r?\\n\\s+default: ${version}\\r?\\n`, "u"));
   assert.match(readme, new RegExp(`verify@v${version}`, "u"));
   assert.match(releaseGuide, new RegExp(`verify@v${version}`, "u"));
 });

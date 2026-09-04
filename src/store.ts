@@ -534,9 +534,14 @@ export class StateStore {
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         // The destination can disappear immediately after rename reports that another owner holds
-        // it. Classify the atomic collision itself rather than relying only on a later existence
-        // check, which otherwise turns ordinary high-contention handoff into a spurious ENOTEMPTY.
-        if (code === "EEXIST" || code === "ENOTEMPTY") return false;
+        // it. Windows reports this directory collision as EPERM, while POSIX filesystems normally
+        // use EEXIST or ENOTEMPTY. Classify the atomic result instead of relying only on a later
+        // existence check, which otherwise turns ordinary high-contention handoff into an error.
+        if (
+          code === "EEXIST" ||
+          code === "ENOTEMPTY" ||
+          (process.platform === "win32" && code === "EPERM")
+        ) return false;
         if (await exists(lockDirectory)) return false;
         throw error;
       }
