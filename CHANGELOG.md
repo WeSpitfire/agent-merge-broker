@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.12.0 — 2026-09-04
+
+### Added
+
+- Durable journals for publication, auto-merge enablement and revocation, candidate revision, and
+  stale-base refresh operations, allowing unattended service restarts to finish interrupted work.
+- Per-batch operation serialization, recoverable lock ownership, and an operator-visible recovery
+  path for abandoned dynamic batch locks.
+- Durable Git remote fingerprints and host-qualified forge selectors so publication remains bound
+  to the repository and target selected when a batch was assembled.
+
+### Changed
+
+- `serve --publish` now reconciles and safely retries prepared batches, partial publication,
+  auto-merge hand-offs, policy changes, and stale bases before integrating more work.
+- The exported `ForgePublisher` contract now requires exact pull-request identity and explicit
+  observed auto-merge state, including an `undefined` result when the forge cannot prove it.
+- Broker-generated Git commits use a stable broker identity with signing and ambient repository
+  hooks disabled, making integration behavior consistent across clean Windows, macOS, and Linux
+  hosts.
+
+### Security
+
+- Auto-merge authorization remains bound to the exact candidate SHA, base SHA, policy revision,
+  required evidence, authorized actor, pull-request target, and durably recorded forge repository.
+- Merge reconciliation proves the accepted fast-forward, squash, two-parent merge, or linear rebase
+  topology before releasing dependent tasks.
+- Revocation, reviewer closure, force-push, reopened pull request, remote retargeting, and
+  configuration-downgrade races now fail closed without leaving a possibly-live merge queue behind.
+
+### Fixed
+
+- Publication and refresh failures no longer strand the queue or create duplicate pull requests.
+- Validators can no longer validate bytes different from the retained candidate through worktree
+  mutation or ambient Git hooks.
+- Stale bases, policy drift, interrupted refreshes, and approval retries now converge to an
+  auditable terminal or retryable state after a process restart.
+
 ## 0.11.0 — 2026-09-03
 
 ### Added

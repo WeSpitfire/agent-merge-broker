@@ -141,12 +141,17 @@ Start with local branches:
 
 Use `branch` to push the broker branch without opening a pull request. Use `pull-request` for GitHub
 publication. Auto-merge is opt-in and every merge request is bound to the exact candidate head SHA.
+The broker derives the GitHub repository from a hosted Git remote and records it with the batch. If
+`remote` points to a local mirror or proxy, add `"repository": "owner/repository"` (or
+`"host/owner/repository"` for GitHub Enterprise) inside `publish`; it never falls back to `gh`'s
+ambient default repository.
 
 For a protected GitHub repository, a useful progression is:
 
 1. Set `publish.mode` to `pull-request` and keep `autoMerge` false.
 2. Install and authenticate `gh` on the integration host.
-3. Require the repository's tests and provenance verification in branch protection.
+3. Require the repository's tests and provenance verification in branch protection, and require the
+   branch to be up to date before merging (or use a merge queue).
 4. Enable `autoMerge` only after `merge-broker doctor` reports the host ready.
 
 See [Security](SECURITY.md) before delegating authoritative validation to required CI or enabling

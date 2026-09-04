@@ -76,6 +76,18 @@ changing the scheduler or transaction model. The repository does not currently s
 GitLab, Bitbucket, Azure DevOps, Gerrit, or other forge adapters. MCP is local stdio only; there is no
 built-in HTTP transport, remote MCP authentication layer, or multi-user MCP service.
 
+A custom `ForgePublisher` is part of the merge-safety boundary. `inspectPullRequest` must bind one
+forge observation to the exact `headRefOid`, `baseRefOid`, and `baseRefName`, and must return
+`autoMergeEnabled: true` only when the queue is observed enabled, `false` only when it is observed
+disabled, or `undefined` when the forge cannot determine the queue state. Unknown state must never be
+coerced to `false`. Publication, enable, disable, inspection, body update, and close operations must
+be safe to retry after a lost response. In particular, `disableAutoMerge` returns `true` only after
+the queue is confirmed disabled (or the PR is confirmed closed), returns `false` only when the PR is
+confirmed merged, and throws when the outcome is ambiguous. `closePullRequest` returns `true` only
+when this broker close is confirmed, returns `false` for a retryable non-close, and must distinguish
+an unrelated reviewer close from replay of its own durable close marker. An adapter that cannot
+provide these identities and terminal outcomes must fail closed rather than guess.
+
 ## State and deployment model
 
 Linked Git worktrees are the supported parallel-work model. They share one Git common directory,

@@ -25,6 +25,15 @@ export type ServeEvent =
   | { kind: "integrating"; tasks: string[] }
   | { kind: "recovered"; batches: string[]; tasks: string[] }
   | { kind: "integrated"; batchId: string; state: string; published: boolean }
+  | { kind: "publication-retrying"; batchId: string; reason: string }
+  | {
+      kind: "publication-retried";
+      batchId: string;
+      state: string;
+      autoMergeEnabled?: boolean;
+    }
+  | { kind: "batch-refreshed"; batchId: string; replacementBatchId: string; state: string }
+  | { kind: "publication-failed"; batchId: string; message: string }
   | { kind: "merged"; batchId: string }
   | { kind: "closed"; batchId: string }
   | { kind: "failed"; message: string }
@@ -36,7 +45,12 @@ export type ServeEvent =
 export const HEARTBEAT_INTERVAL_MS = 600_000;
 
 export function isErrorEvent(event: ServeEvent): boolean {
-  return event.kind === "failed" || event.kind === "sync-failed" || event.kind === "closed";
+  return (
+    event.kind === "failed" ||
+    event.kind === "publication-failed" ||
+    event.kind === "sync-failed" ||
+    event.kind === "closed"
+  );
 }
 
 export function describeServeEvent(event: ServeEvent): string {
@@ -51,6 +65,20 @@ export function describeServeEvent(event: ServeEvent): string {
       return `recovered ${event.batches.length} abandoned batch(es); requeued ${event.tasks.length} task(s)`;
     case "integrated":
       return `batch ${event.batchId} ${event.state}${event.published ? " and published" : ""}`;
+    case "publication-retrying":
+      return `retrying ${event.reason} for batch ${event.batchId}`;
+    case "publication-retried":
+      return `batch ${event.batchId} publication retry completed (${event.state}${
+        event.autoMergeEnabled === undefined
+          ? ""
+          : event.autoMergeEnabled
+            ? ", auto-merge enabled"
+            : ", auto-merge pending"
+      })`;
+    case "batch-refreshed":
+      return `batch ${event.batchId} was stale; replacement ${event.replacementBatchId} is ${event.state}`;
+    case "publication-failed":
+      return `could not finish publishing batch ${event.batchId}: ${event.message}`;
     case "merged":
       return `batch ${event.batchId} merged`;
     case "closed":

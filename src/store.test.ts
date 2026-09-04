@@ -1,10 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { appendFile, chmod, mkdir, mkdtemp, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { StateStore } from "./store.js";
 import { BrokerError } from "./errors.js";
+
+function batchLockPath(store: StateStore, batchId: string): string {
+  const readable = batchId.replace(/[^a-zA-Z0-9._-]/gu, "-").slice(0, 96);
+  const digest = createHash("sha256").update(batchId).digest("hex").slice(0, 12);
+  return path.join(store.directory, `batch-${readable || "record"}-${digest}.lock`);
+}
 
 test("serializes concurrent first-use state transactions without losing events", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
@@ -105,6 +124,149 @@ test("releases an abandoned lock but refuses one that may still be live", async 
   assert.equal((await store.inspectLock("integration")).abandoned, true);
   assert.equal((await store.releaseLock("integration")).held, false);
   assert.equal((await store.inspectLock("integration")).held, false);
+});
+
+test("serializes operations for the same batch and gives each holder a new fencing nonce", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const firstStore = new StateStore(directory, "state", 2);
+  const secondStore = new StateStore(directory, "state", 2);
+  let releaseFirst: (() => void) | undefined;
+  const firstRelease = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let firstEntered: (() => void) | undefined;
+  const entered = new Promise<void>((resolve) => {
+    firstEntered = resolve;
+  });
+  const events: string[] = [];
+  const nonces: string[] = [];
+
+  const first = firstStore.withBatchLock("batch/one", async (nonce) => {
+    nonces.push(nonce);
+    events.push("first-entered");
+    firstEntered?.();
+    await firstRelease;
+    events.push("first-leaving");
+  });
+  await entered;
+  const second = secondStore.withBatchLock("batch/one", (nonce) => {
+    nonces.push(nonce);
+    events.push("second-entered");
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(events, ["first-entered"]);
+  releaseFirst?.();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(events, ["first-entered", "first-leaving", "second-entered"]);
+  assert.equal(nonces.length, 2);
+  assert.notEqual(nonces[0], nonces[1]);
+});
+
+test("an old batch-lock holder cannot release a replacement owner's lock", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const oldStore = new StateStore(directory, "state", 2);
+  const replacementStore = new StateStore(directory, "state", 2);
+  const lockDirectory = batchLockPath(oldStore, "replacement-race");
+  let releaseReplacement: (() => void) | undefined;
+  const replacementRelease = new Promise<void>((resolve) => {
+    releaseReplacement = resolve;
+  });
+  let replacementEntered: (() => void) | undefined;
+  const replacementReady = new Promise<void>((resolve) => {
+    replacementEntered = resolve;
+  });
+  let replacement: Promise<void> | undefined;
+
+  await oldStore.withBatchLock("replacement-race", async () => {
+    // Simulate an operator replacing a lock while its former process is suspended. The old holder's
+    // finally block must compare nonces and leave the replacement alone.
+    await rm(lockDirectory, { recursive: true, force: true });
+    replacement = replacementStore.withBatchLock("replacement-race", async () => {
+      replacementEntered?.();
+      await replacementRelease;
+    });
+    await replacementReady;
+  });
+
+  const owner = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as { nonce?: string };
+  assert.equal(typeof owner.nonce, "string");
+  releaseReplacement?.();
+  await replacement;
+  assert.equal(await stat(lockDirectory).then(() => true, () => false), false);
+});
+
+test("reclaims a provably crashed batch lock without exposing its successor", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const store = new StateStore(directory, "state", 2);
+  await store.initialize();
+  const lockDirectory = batchLockPath(store, "stale-batch");
+  const staleNonce = "stale-owner-nonce";
+  await mkdir(lockDirectory, { mode: 0o700 });
+  await writeFile(path.join(lockDirectory, "owner.json"), `${JSON.stringify({
+    pid: 4_294_967_295,
+    host: hostname(),
+    createdAt: "2026-01-01T00:00:00.000Z",
+    nonce: staleNonce,
+  })}\n`, "utf8");
+  const old = new Date(Date.now() - 5_000);
+  await utimes(lockDirectory, old, old);
+
+  let acquiredNonce: string | undefined;
+  await store.withBatchLock("stale-batch", (nonce) => {
+    acquiredNonce = nonce;
+  });
+
+  assert.notEqual(acquiredNonce, staleNonce);
+  const tombstones = (await readdir(store.directory)).filter((entry) =>
+    entry.startsWith(`${path.basename(lockDirectory)}.reclaimed-${staleNonce}`));
+  assert.equal(tombstones.length, 1);
+  assert.equal(await stat(lockDirectory).then(() => true, () => false), false);
+});
+
+test("never age-steals an ancient same-host batch lock held by the current process", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const ownerStore = new StateStore(directory, "state", 2);
+  const contender = new StateStore(directory, "state", 0.1);
+  await ownerStore.initialize();
+  const lockDirectory = batchLockPath(ownerStore, "ancient-live-batch");
+  const ownerContents = `${JSON.stringify({
+    pid: process.pid,
+    host: hostname(),
+    createdAt: "2000-01-01T00:00:00.000Z",
+    nonce: "ancient-live-owner",
+  })}\n`;
+  await mkdir(lockDirectory, { mode: 0o700 });
+  await writeFile(path.join(lockDirectory, "owner.json"), ownerContents, "utf8");
+  const ancient = new Date("2000-01-01T00:00:00.000Z");
+  await utimes(lockDirectory, ancient, ancient);
+
+  let entered = false;
+  await assert.rejects(
+    contender.withBatchLock("ancient-live-batch", () => {
+      entered = true;
+    }),
+    (error: unknown) => error instanceof BrokerError && error.code === "LOCK_TIMEOUT",
+  );
+
+  assert.equal(entered, false);
+  assert.equal(await readFile(path.join(lockDirectory, "owner.json"), "utf8"), ownerContents);
+  assert.equal(await stat(lockDirectory).then(() => true, () => false), true);
+  const tombstones = (await readdir(ownerStore.directory)).filter((entry) =>
+    entry.startsWith(`${path.basename(lockDirectory)}.reclaimed-`));
+  assert.deepEqual(tombstones, []);
 });
 
 test(

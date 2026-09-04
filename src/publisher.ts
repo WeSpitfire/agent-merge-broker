@@ -2,7 +2,7 @@ import path from "node:path";
 import { BrokerError, CommandError } from "./errors.js";
 import { runCommand } from "./process.js";
 import type { BatchRecord, BrokerConfig, TaskRecord } from "./types.js";
-import type { GitRepository } from "./git.js";
+import { isHostQualifiedForgeRepository, type GitRepository } from "./git.js";
 
 export interface PublicationResult {
   mode: "branch" | "pull-request";
@@ -88,16 +88,32 @@ export async function publishBatch(options: {
   if (config.publish.mode === "none") {
     throw new BrokerError("PUBLISH_DISABLED", "Publishing is disabled in .merge-broker/config.json.");
   }
-  await repo.push(config.remote, batch.branchName);
+  if (!batch.headSha) throw new BrokerError("NO_CANDIDATE", `Batch ${batch.id} has no head SHA.`);
+  if (!batch.remoteUrlFingerprint) {
+    throw new BrokerError(
+      "BATCH_TARGET_UNBOUND",
+      `Batch ${batch.id} has no durable remote URL binding and must be re-cut before publication.`,
+    );
+  }
+  const remoteName = batch.remote ?? config.remote;
+  const remote = await repo.boundRemoteUrl(remoteName, batch.remoteUrlFingerprint);
+  await repo.push(remote, batch.branchName, batch.headSha);
   if (config.publish.mode === "branch") {
     return { mode: "branch", branchName: batch.branchName };
   }
+  if (!isHostQualifiedForgeRepository(batch.forgeRepository)) {
+    throw new BrokerError(
+      "BATCH_TARGET_UNBOUND",
+      `Batch ${batch.id} has no host-qualified forge selector and must be re-cut before PR publication.`,
+    );
+  }
+  const forgeRepository = batch.forgeRepository;
 
   // Publication is retried after any partial failure, so it must not open a second pull request for
   // a branch that already has one. A lookup that *fails* is not an answer: creating one anyway is
   // how a retry during a forge outage ends up with duplicates, so refuse instead and let the
   // operator retry when the forge can answer.
-  const existing = await findOpenPullRequest(repo.root, config, batch.branchName);
+  const existing = await findPullRequest(repo.root, forgeRepository, batch.baseBranch, batch.branchName);
   if (existing) {
     return {
       mode: "pull-request",
@@ -111,8 +127,10 @@ export async function publishBatch(options: {
   const args = [
     "pr",
     "create",
+    "--repo",
+    forgeRepository,
     "--base",
-    config.baseBranch,
+    batch.baseBranch,
     "--head",
     batch.branchName,
     "--title",
@@ -144,9 +162,8 @@ export async function publishBatch(options: {
 }
 
 /**
- * Closes a superseded pull request. Best effort by design: the batch it belonged to has already been
- * replaced locally, and a forge that cannot be reached must not block that. The caller reports what
- * was left open.
+ * Closes a superseded pull request. The state check makes this idempotent across a crash after the
+ * forge closes the PR but before the broker records the replacement batch.
  */
 export async function closePullRequest(
   repoRoot: string,
@@ -158,7 +175,34 @@ export async function closePullRequest(
     ["pr", "close", pullRequestUrl, "--comment", comment],
     { cwd: repoRoot, allowFailure: true },
   );
-  return result.exitCode === 0;
+  const marker = /<!-- merge-broker-refresh:[A-Za-z0-9_-]+ -->/u.exec(comment)?.[0];
+  if (result.exitCode === 0 && !marker) return true;
+  if (!marker) return false;
+  // `gh pr close` also exits successfully when a PR was already closed, and in that case it does
+  // not post `--comment`. Always require our durable marker for refresh closes, even on exit 0, so
+  // a reviewer's rejection can never be mistaken for a completed broker side effect.
+  const status = await runCommand(
+    "gh",
+    ["pr", "view", pullRequestUrl, "--json", "state,comments"],
+    { cwd: repoRoot, allowFailure: true },
+  );
+  if (status.exitCode !== 0) return false;
+  try {
+    const value = JSON.parse(status.stdout) as { state?: unknown; comments?: Array<{ body?: unknown }> };
+    const markerPresent = Array.isArray(value.comments) &&
+      value.comments.some((item) => typeof item.body === "string" && item.body.includes(marker));
+    if (value.state === "CLOSED" && !markerPresent) {
+      throw new BrokerError(
+        "PULL_REQUEST_ALREADY_CLOSED",
+        "The pull request was already closed without this broker refresh marker.",
+        { pullRequestUrl },
+      );
+    }
+    return value.state === "CLOSED" && markerPresent;
+  } catch (error) {
+    if (error instanceof BrokerError) throw error;
+    return false;
+  }
 }
 
 /** Refreshes the informational PR body after the broker replaces a candidate on the same branch. */
@@ -183,23 +227,27 @@ export async function updatePullRequestBody(
 }
 
 /**
- * The open pull request for this branch, or null when there is provably none.
+ * The pull request for this unique batch branch, or null when there is provably none.
  *
  * Throws when the forge cannot answer. "I do not know" must not read as "there is none", because
- * the caller's response to null is to create one.
+ * the caller's response to null is to create one. Closed and merged PRs count: the process may have
+ * died after `pr create` but before recording its URL, and creating a replacement after the first PR
+ * changed state would duplicate one immutable batch on the forge.
  */
-async function findOpenPullRequest(
+async function findPullRequest(
   repoRoot: string,
-  config: BrokerConfig,
+  forgeRepository: string,
+  baseBranch: string,
   branchName: string,
 ): Promise<string | null> {
   const result = await runCommand(
     "gh",
     [
       "pr", "list",
+      "--repo", forgeRepository,
       "--head", branchName,
-      "--base", config.baseBranch,
-      "--state", "open",
+      "--base", baseBranch,
+      "--state", "all",
       "--json", "url",
       "--limit", "1",
     ],
@@ -208,7 +256,7 @@ async function findOpenPullRequest(
   if (result.exitCode !== 0) {
     throw new BrokerError(
       "PULL_REQUEST_LOOKUP_FAILED",
-      `Could not determine whether ${branchName} already has an open pull request, so publication stopped rather than risk opening a second one. The branch is pushed; retry when the forge responds.`,
+      `Could not determine whether ${branchName} already has a pull request, so publication stopped rather than risk opening a second one. The branch is pushed; retry when the forge responds.`,
       { branchName, stdout: result.stdout, stderr: result.stderr },
     );
   }
@@ -275,6 +323,12 @@ export async function enableAutoMerge(
   );
   if (result.exitCode === 0) return true;
 
+  // The request may have reached GitHub even when the CLI process lost its response. A durable
+  // broker retry must recognize the already-queued state instead of warning forever while the PR
+  // is, in fact, waiting to merge.
+  const autoMergeStatus = await readAutoMergeStatus(repoRoot, pullRequestUrl);
+  if (autoMergeStatus?.state === "MERGED" || autoMergeStatus?.enabled) return true;
+
   // GitHub refuses to queue auto-merge on a pull request that is already mergeable, which happens
   // whenever the required checks finish before publication returns. Ask GitHub what the state is
   // instead of reading the CLI's prose, which differs across gh versions and locales.
@@ -317,13 +371,34 @@ export async function disableAutoMerge(repoRoot: string, pullRequestUrl: string)
     { cwd: repoRoot, allowFailure: true },
   );
   if (result.exitCode === 0) return true;
-  const state = await readMergeState(repoRoot, pullRequestUrl);
-  if (state?.state === "MERGED") return false;
+  const status = await readAutoMergeStatus(repoRoot, pullRequestUrl);
+  if (status?.state === "MERGED") return false;
+  if (status?.state === "CLOSED") return true;
+  if (status?.state === "OPEN" && !status.enabled) return true;
   throw new BrokerError("AUTO_MERGE_DISABLE_FAILED", "Could not disable auto-merge before revoking approval.", {
     pullRequestUrl,
     stdout: result.stdout,
     stderr: result.stderr,
   });
+}
+
+async function readAutoMergeStatus(
+  repoRoot: string,
+  pullRequestUrl: string,
+): Promise<{ state: string; enabled: boolean } | undefined> {
+  const result = await runCommand(
+    "gh",
+    ["pr", "view", pullRequestUrl, "--json", "state,autoMergeRequest"],
+    { cwd: repoRoot, allowFailure: true },
+  );
+  if (result.exitCode !== 0) return undefined;
+  try {
+    const value = JSON.parse(result.stdout) as { state?: unknown; autoMergeRequest?: unknown };
+    if (typeof value.state !== "string" || !Object.hasOwn(value, "autoMergeRequest")) return undefined;
+    return { state: value.state, enabled: value.autoMergeRequest !== null };
+  } catch {
+    return undefined;
+  }
 }
 
 export interface PullRequestCheck {
@@ -335,11 +410,15 @@ export interface PullRequestCheck {
 
 export interface PullRequestState {
   state: string;
+  /** Forge-observed queue state; required so config-off reconciliation also covers pre-upgrade attempts. */
+  autoMergeEnabled: boolean | undefined;
   mergedAt?: string;
   mergeCommitSha?: string;
-  headRefOid?: string;
+  /** Immutable head identity used to bind reconciliation to the broker candidate. */
+  headRefOid: string;
   baseRefOid?: string;
-  baseRefName?: string;
+  /** Forge target branch used to prevent an unrelated pull request from completing a batch. */
+  baseRefName: string;
   mergeStateStatus?: string;
   mergeable?: string;
   reviewDecision?: string;
@@ -347,9 +426,9 @@ export interface PullRequestState {
 }
 
 const PULL_REQUEST_FIELDS =
-  "state,mergedAt,mergeCommit,headRefOid,baseRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup";
+  "state,autoMergeRequest,mergedAt,mergeCommit,headRefOid,baseRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup";
 const LEGACY_PULL_REQUEST_FIELDS =
-  "state,mergedAt,mergeCommit,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup";
+  "state,autoMergeRequest,mergedAt,mergeCommit,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup";
 
 function isUnsupportedBaseRefOid(error: unknown): error is CommandError {
   return (
@@ -417,7 +496,7 @@ async function inspectLegacyPullRequestRefs(
   if (!refs.headRefOid || !refs.baseRefOid || !refs.baseRefName) {
     throw new BrokerError(
       "PULL_REQUEST_REF_LOOKUP_FAILED",
-      "GitHub did not return the pull request head and base refs required for approval.",
+      "GitHub did not return the pull request head and base refs required for reconciliation.",
       { pullRequestUrl },
     );
   }
@@ -457,6 +536,7 @@ export async function inspectPullRequest(
   }
   const value = JSON.parse(result.stdout) as {
     state: string;
+    autoMergeRequest?: unknown;
     mergedAt?: string | null;
     mergeCommit?: { oid?: string } | null;
     headRefOid?: string;
@@ -486,13 +566,32 @@ export async function inspectPullRequest(
   const headRefOid = value.headRefOid ?? legacyRefs?.headRefOid;
   const baseRefOid = value.baseRefOid ?? legacyRefs?.baseRefOid;
   const baseRefName = value.baseRefName ?? legacyRefs?.baseRefName;
+  if (!headRefOid || !baseRefName) {
+    throw new BrokerError(
+      "PULL_REQUEST_REF_LOOKUP_FAILED",
+      "GitHub did not return the pull request head and target branch required for reconciliation.",
+      { pullRequestUrl, state: value.state, headRefOid, baseRefName },
+    );
+  }
+  if (value.state === "OPEN" && !baseRefOid) {
+    throw new BrokerError(
+      "PULL_REQUEST_REF_LOOKUP_FAILED",
+      "GitHub did not return the current base SHA required to reconcile an open pull request.",
+      { pullRequestUrl, state: value.state, headRefOid, baseRefName },
+    );
+  }
   return {
     state: value.state,
+    // Missing data is uncertainty, not proof either way. Broker revocation treats undefined as
+    // possibly live, while authorization never mistakes it for an observed enabled queue.
+    autoMergeEnabled: Object.hasOwn(value, "autoMergeRequest")
+      ? value.autoMergeRequest !== null
+      : undefined,
     ...(value.mergedAt ? { mergedAt: value.mergedAt } : {}),
     ...(value.mergeCommit?.oid ? { mergeCommitSha: value.mergeCommit.oid } : {}),
-    ...(headRefOid ? { headRefOid } : {}),
+    headRefOid,
     ...(baseRefOid ? { baseRefOid } : {}),
-    ...(baseRefName ? { baseRefName } : {}),
+    baseRefName,
     ...(value.mergeStateStatus ? { mergeStateStatus: value.mergeStateStatus } : {}),
     ...(value.mergeable ? { mergeable: value.mergeable } : {}),
     ...(value.reviewDecision ? { reviewDecision: value.reviewDecision } : {}),

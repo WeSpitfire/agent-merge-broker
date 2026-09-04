@@ -103,6 +103,8 @@ export interface BrokerConfig {
   };
   publish: {
     mode: PublishMode;
+    /** Explicit `[HOST/]OWNER/REPO` forge locator when the Git remote is a local mirror or proxy. */
+    repository?: string;
     draft: boolean;
     autoMerge: boolean;
     mergeMethod: MergeMethod;
@@ -130,6 +132,11 @@ export interface ApprovalRecord {
   policyRevision: string;
   actor: string;
   approvedAt: string;
+  /** Set only after the forge was observed open and exact after the approval became durable. */
+  confirmedAt?: string;
+  /** Durable tombstone written before a possibly-live remote auto-merge queue is disabled. */
+  revocationRequestedAt?: string;
+  revocationReason?: string;
 }
 
 export interface CandidateRecord {
@@ -198,6 +205,14 @@ export interface BatchRecord {
   taskIds: string[];
   /** Absent only on batches written before validation authority became explicit. */
   validationAuthority?: ValidationAuthority;
+  /** Forge remote selected when this immutable batch was assembled. */
+  remote?: string;
+  /** Publication policy active at assembly; absent only on legacy batches. */
+  publicationMode?: PublishMode;
+  /** SHA-256 of the exact push URL selected at assembly, without persisting embedded credentials. */
+  remoteUrlFingerprint?: string;
+  /** Host-qualified forge locator selected with the remote, immune to later config/default drift. */
+  forgeRepository?: string;
   baseBranch: string;
   baseSha: string;
   branchName?: string;
@@ -215,11 +230,26 @@ export interface BatchRecord {
   publishedAt?: string;
   pullRequestUrl?: string;
   autoMergeEnabled?: boolean;
+  /** A remote enable attempt started but its final outcome has not been durably reconciled. */
+  autoMergePending?: boolean;
+  /** Durable revocation request, written before disabling a possibly-live remote auto-merge. */
+  changeRequestIntent?: {
+    candidateSha: string;
+    baseSha: string;
+    policyRevision?: string;
+    actor: string;
+    reason: string;
+    requestedAt: string;
+  };
   /**
    * Something after the pull request went wrong -- auto-merge, usually. The batch is published and
    * real; this says what still needs a hand. Distinct from `error`, which means the batch failed.
    */
   publishWarning?: string;
+  /** The target base moved after validation; the service should re-cut this batch before retrying. */
+  refreshRequired?: boolean;
+  /** Exact broker-initiated PR close that may need local refresh finalization after a crash. */
+  refreshCloseIntent?: { pullRequestUrl: string; targetBaseSha: string; startedAt: string; nonce?: string };
   closedAt?: string;
   error?: string;
   /**
@@ -357,10 +387,11 @@ export interface LocalValidationResult {
 /**
  * The outcome of re-cutting a batch the base branch moved out from under. `refreshed: false` with
  * `reason: "already_current"` means the batch was never stale and nothing was touched.
+ * `reason: "already_terminal"` means reconciliation found it merged, closed, or failed first.
  */
 export interface RefreshResult {
   refreshed: boolean;
-  reason?: "already_current";
+  reason?: "already_current" | "already_terminal" | "pull_request_closed";
   baseSha: string;
   closed: BatchRecord;
   integration?: IntegrationResult;

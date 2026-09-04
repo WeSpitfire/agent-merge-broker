@@ -182,6 +182,15 @@
       "required": ["mode", "draft", "labels", "titleTemplate"],
       "properties": {
         "mode": { "enum": ["none", "branch", "pull-request"] },
+        "repository": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9.-]+/)?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "allOf": [
+            { "not": { "pattern": "(?:^|/)\\.\\.?(?:/|$)" } },
+            { "not": { "pattern": "\\.git$" } }
+          ],
+          "description": "Optional [HOST/]OWNER/REPO identity for local mirrors or proxy remotes. Hosted Git remotes are derived automatically."
+        },
         "draft": { "type": "boolean" },
         "autoMerge": {
           "type": "boolean",

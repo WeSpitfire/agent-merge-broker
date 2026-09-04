@@ -29,6 +29,14 @@ async function createRepository(): Promise<string> {
   return repo;
 }
 
+async function addLocalOrigin(repo: string): Promise<string> {
+  const remote = path.join(repo, ".git", "test-origin.git");
+  await runCommand("git", ["init", "--bare", remote], { cwd: repo });
+  await git(repo, "remote", "add", "origin", remote);
+  await git(repo, "push", "origin", "main");
+  return remote;
+}
+
 test("initialization is turnkey and a second run is a no-op", async (context) => {
   const repo = await mkdtemp(path.join(tmpdir(), "merge-broker-init-"));
   context.after(async () => {
@@ -417,6 +425,7 @@ test("required CI authority prepares a signed batch after focused preflight", as
   context.after(async () => {
     await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
+  await addLocalOrigin(repo);
   const config = await loadConfig(repo);
   config.validation.authority = "required-ci";
   config.validation.focused.push({
@@ -426,6 +435,7 @@ test("required CI authority prepares a signed batch after focused preflight", as
     timeoutSeconds: 5,
   });
   config.publish.mode = "pull-request";
+  config.publish.repository = "github.example.invalid/owner/repo";
   config.publish.autoMerge = true;
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -572,6 +582,19 @@ test("retries a closed pull request receipt only after an explicit operator acti
   assert.equal(retried.status, "submitted");
   assert.equal(retried.attempts, undefined);
   assert.deepEqual((await broker.plan()).selected.map((item) => item.id), ["RETRY-CLOSED"]);
+
+  const replacement = await broker.integrate();
+  await assert.rejects(
+    broker.markBatchMerged(first.batch.id),
+    (error: unknown) => error instanceof BrokerError && error.code === "BATCH_SUPERSEDED",
+  );
+  await assert.rejects(
+    broker.closeBatch(first.batch.id, "stale caller"),
+    (error: unknown) => error instanceof BrokerError && error.code === "BATCH_SUPERSEDED",
+  );
+  const stillAssigned = await broker.task("RETRY-CLOSED");
+  assert.equal(stillAssigned.status, "batched");
+  assert.equal(stillAssigned.batchId, replacement.batch.id);
 });
 
 test("publishes one integration branch and reconciles it after merge", async (context) => {
@@ -616,11 +639,16 @@ test("accepts an injected forge publisher without changing broker state semantic
   context.after(async () => {
     await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
+  await addLocalOrigin(repo);
   const config = await loadConfig(repo);
+  config.integration.refreshBase = false;
   config.publish.mode = "pull-request";
+  config.publish.repository = "github.example.invalid/owner/repo";
   config.publish.autoMerge = false;
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   const publishedIds: string[] = [];
+  let expectedHead = "";
+  let expectedBase = "";
   const broker = await MergeBroker.open(repo, {
     publisher: {
       ...githubCliPublisher,
@@ -632,17 +660,136 @@ test("accepts an injected forge publisher without changing broker state semantic
           pullRequestUrl: "https://forge.example.invalid/pulls/1",
         };
       },
+      inspectPullRequest: async () => ({
+        state: "OPEN",
+        autoMergeEnabled: false,
+        headRefOid: expectedHead,
+        baseRefOid: expectedBase,
+        baseRefName: "main",
+        checks: [],
+      }),
     },
   });
   const claim = await broker.claimTask({ id: "FORGE", holder: "agent", expectedPaths: ["src/forge.ts"] });
   const commit = await commitFile(repo, "forge", "src/forge.ts", "export const forge = true;\n");
   await broker.submitTask("FORGE", [commit], claim.token);
   const integrated = await broker.integrate();
+  expectedHead = integrated.batch.headSha ?? "";
+  expectedBase = integrated.batch.baseSha;
   const published = await broker.publishBatch(integrated.batch.id);
   assert.deepEqual(publishedIds, [integrated.batch.id]);
   assert.equal(published.status, "published");
   assert.equal(published.pullRequestUrl, "https://forge.example.invalid/pulls/1");
   assert.equal((await broker.task("FORGE")).status, "published");
+
+  // Once the URL is durable, a retry must operate on that exact PR. Re-running discovery/create
+  // can race with the PR closing and silently replace the broker's identity with a second PR.
+  const retried = await broker.publishBatch(integrated.batch.id);
+  assert.deepEqual(publishedIds, [integrated.batch.id]);
+  assert.equal(retried.pullRequestUrl, published.pullRequestUrl);
+});
+
+test("never records an unrelated pull request head or base as merged", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await addLocalOrigin(repo);
+  const config = await loadConfig(repo);
+  config.integration.refreshBase = false;
+  config.publish.mode = "pull-request";
+  config.publish.repository = "github.example.invalid/owner/repo";
+  config.publish.autoMerge = false;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const broker = await MergeBroker.open(repo, {
+    publisher: {
+      ...githubCliPublisher,
+      publishBatch: async ({ batch }) => ({
+        mode: "pull-request",
+        branchName: batch.branchName ?? "missing",
+        pullRequestUrl: "https://forge.example.invalid/pulls/wrong",
+      }),
+      inspectPullRequest: async () => ({
+        state: "MERGED",
+        autoMergeEnabled: false,
+        headRefOid: "f".repeat(40),
+        baseRefName: "release",
+        checks: [],
+      }),
+    },
+  });
+  const claim = await broker.claimTask({
+    id: "WRONG-PR",
+    holder: "agent",
+    expectedPaths: ["src/wrong-pr.ts"],
+  });
+  const commit = await commitFile(repo, "wrong-pr", "src/wrong-pr.ts", "export const safe = true;\n");
+  await broker.submitTask("WRONG-PR", [commit], claim.token);
+  const integrated = await broker.integrate();
+  await broker.publishBatch(integrated.batch.id);
+
+  const reconciled = await broker.syncBatch(integrated.batch.id);
+  assert.equal(reconciled.status, "failed");
+  assert.match(reconciled.error ?? "", /does not match validated head/u);
+  assert.equal((await broker.task("WRONG-PR")).status, "failed");
+});
+
+test("serializes publication with completion so newer merged state cannot regress", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await addLocalOrigin(repo);
+  const config = await loadConfig(repo);
+  config.integration.refreshBase = false;
+  config.publish.mode = "pull-request";
+  config.publish.repository = "github.example.invalid/owner/repo";
+  config.publish.autoMerge = false;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  let announcePublish: (() => void) | undefined;
+  const publishStarted = new Promise<void>((resolve) => {
+    announcePublish = resolve;
+  });
+  let finishPublish: (() => void) | undefined;
+  const publishRelease = new Promise<void>((resolve) => {
+    finishPublish = resolve;
+  });
+  const broker = await MergeBroker.open(repo, {
+    publisher: {
+      ...githubCliPublisher,
+      publishBatch: async ({ batch }) => {
+        announcePublish?.();
+        await publishRelease;
+        return {
+          mode: "pull-request",
+          branchName: batch.branchName ?? "missing",
+          pullRequestUrl: "https://forge.example.invalid/pulls/race",
+        };
+      },
+    },
+  });
+  const claim = await broker.claimTask({
+    id: "PUBLISH-COMPLETE-RACE",
+    holder: "agent",
+    expectedPaths: ["src/publish-race.ts"],
+  });
+  const commit = await commitFile(
+    repo,
+    "publish-complete-race",
+    "src/publish-race.ts",
+    "export const serialized = true;\n",
+  );
+  await broker.submitTask("PUBLISH-COMPLETE-RACE", [commit], claim.token);
+  const integrated = await broker.integrate();
+
+  const publishing = broker.publishBatch(integrated.batch.id);
+  await publishStarted;
+  const completing = broker.markBatchMerged(integrated.batch.id);
+  finishPublish?.();
+  await Promise.all([publishing, completing]);
+
+  assert.equal((await broker.state()).batches[integrated.batch.id]?.status, "merged");
+  assert.equal((await broker.task("PUBLISH-COMPLETE-RACE")).status, "merged");
 });
 
 test("pauses tasks when a published batch closes without merging", async (context) => {
@@ -674,6 +821,100 @@ test("pauses tasks when a published batch closes without merging", async (contex
   assert.match(closed.error ?? "", /closed without merge/u);
   assert.equal((await broker.task("CLOSED-PR")).status, "failed");
   assert.equal((await broker.plan()).selected.length, 0);
+});
+
+test("refuses to report success when a locally closed pull request is reopened", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await addLocalOrigin(repo);
+  const config = await loadConfig(repo);
+  config.baseRef = "origin/main";
+  config.publish.mode = "pull-request";
+  config.publish.repository = "github.example.invalid/owner/repo";
+  config.publish.autoMerge = true;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  let pullRequestState = "OPEN";
+  let pullRequestHead = "";
+  const pullRequestBase = await git(repo, "rev-parse", "origin/main");
+  let remoteAutoMergeEnabled = false;
+  let mergeDuringClose = false;
+  let closeInspections = 0;
+  const broker = await MergeBroker.open(repo, {
+    publisher: {
+      ...githubCliPublisher,
+      publishBatch: async ({ batch }) => ({
+        mode: "pull-request",
+        branchName: batch.branchName ?? "missing",
+        pullRequestUrl: "https://forge.example.invalid/pulls/reopened-close",
+      }),
+      inspectPullRequest: async () => {
+        if (mergeDuringClose) {
+          closeInspections += 1;
+          if (closeInspections >= 2) {
+            pullRequestState = "MERGED";
+            remoteAutoMergeEnabled = false;
+          }
+        }
+        return {
+          state: pullRequestState,
+          autoMergeEnabled: remoteAutoMergeEnabled,
+          headRefOid: pullRequestHead,
+          baseRefOid: pullRequestBase,
+          baseRefName: "main",
+          checks: [],
+        };
+      },
+      enableAutoMerge: async () => {
+        remoteAutoMergeEnabled = true;
+        return true;
+      },
+    },
+  });
+  const claim = await broker.claimTask({
+    id: "REOPENED-CLOSED-PR",
+    holder: "agent",
+    expectedPaths: ["src/reopened.ts"],
+  });
+  const commit = await commitFile(
+    repo,
+    "reopened-closed-pr",
+    "src/reopened.ts",
+    "export const reopened = true;\n",
+  );
+  await broker.submitTask("REOPENED-CLOSED-PR", [commit], claim.token);
+  const integrated = await broker.integrate();
+  pullRequestHead = integrated.batch.headSha ?? "";
+  const published = await broker.publishBatch(integrated.batch.id);
+  assert.equal(published.autoMergeEnabled, true);
+
+  pullRequestState = "CLOSED";
+  remoteAutoMergeEnabled = false;
+  const closed = await broker.syncBatch(integrated.batch.id);
+  assert.equal(closed.status, "closed");
+  assert.equal((await broker.task("REOPENED-CLOSED-PR")).status, "failed");
+
+  // Reopening can happen after the local terminal transition. `closeBatch` must use a fresh forge
+  // observation rather than treating the stale local `closed` status as proof that the PR is safe.
+  pullRequestState = "OPEN";
+  remoteAutoMergeEnabled = true;
+  await assert.rejects(
+    broker.closeBatch(integrated.batch.id, "the reopened PR is not actually closed"),
+    (error: unknown) => error instanceof BrokerError && error.code === "PULL_REQUEST_STILL_OPEN",
+  );
+  assert.equal(pullRequestState, "OPEN");
+  assert.equal((await broker.state()).batches[integrated.batch.id]?.status, "closed");
+
+  // The PR can also merge between closeBatch's reconciliation and its terminal-state observation.
+  // Seeing MERGED must trigger merge reconciliation, not return the earlier local `closed` snapshot.
+  mergeDuringClose = true;
+  closeInspections = 0;
+  const merged = await broker.closeBatch(integrated.batch.id, "reconcile the merge race");
+  assert.equal(merged.status, "merged");
+  assert.equal(pullRequestState, "MERGED");
+  assert.equal((await broker.task("REOPENED-CLOSED-PR")).status, "merged");
 });
 
 test(
@@ -724,6 +965,44 @@ test(
       result.batch.validations.map((validation) => validation.exitCode),
       [0],
     );
+  },
+);
+
+test(
+  "refuses a successful validator that changes the candidate worktree",
+  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
+  async (context) => {
+    const repo = await createRepository();
+    context.after(async () => {
+      await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    });
+    const config = await loadConfig(repo);
+    config.validation.authoritative.push({
+      name: "must be observational",
+      command: "printf 'validator-only\\n' > src/mutated.ts",
+      timeoutSeconds: 30,
+    });
+    await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+    const broker = await MergeBroker.open(repo);
+    const claim = await broker.claimTask({
+      id: "MUTATING-VALIDATOR",
+      holder: "agent",
+      expectedPaths: ["src/mutated.ts"],
+    });
+    const commit = await commitFile(
+      repo,
+      "mutating-validator",
+      "src/mutated.ts",
+      "export const submitted = true;\n",
+    );
+    await broker.submitTask("MUTATING-VALIDATOR", [commit], claim.token);
+
+    await assert.rejects(
+      broker.integrate(),
+      (error: unknown) => error instanceof BrokerError && error.code === "VALIDATOR_MUTATED_WORKTREE",
+    );
+    assert.equal((await broker.task("MUTATING-VALIDATOR")).status, "failed");
   },
 );
 
@@ -1059,6 +1338,9 @@ test("a batch whose auto-merge fails is published, not lost", {
   // `gh` opens the pull request and then refuses every auto-merge route, which is what a forge
   // outage looked like in practice: the pull request is real, the queueing is not.
   const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-bin-"));
+  const headFile = path.join(bin, "head");
+  const baseFile = path.join(bin, "base");
+  await writeFile(baseFile, `${await git(repo, "rev-parse", "origin/main")}\n`, "utf8");
   await writeFile(
     path.join(bin, "gh"),
     [
@@ -1067,6 +1349,10 @@ test("a batch whose auto-merge fails is published, not lost", {
       '  *"pr list"*) echo "[]" ;;',
       // Drain the body from stdin; exiting without reading it is an EPIPE for the writer.
       '  *"pr create"*) cat >/dev/null; echo "https://forge.invalid/owner/repo/pull/7" ;;',
+      '  *"pr view"*)',
+      '    head=$(tr -d "\\n" < "$MERGE_BROKER_TEST_HEAD")',
+      '    base=$(tr -d "\\n" < "$MERGE_BROKER_TEST_BASE")',
+      '    printf \'{"state":"OPEN","headRefOid":"%s","baseRefOid":"%s","baseRefName":"main","mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","autoMergeRequest":null,"statusCheckRollup":[]}\\n\' "$head" "$base" ;;',
       '  *) echo "the forge is unavailable" >&2; exit 1 ;;',
       "esac",
       "",
@@ -1075,15 +1361,20 @@ test("a batch whose auto-merge fails is published, not lost", {
   );
   const previousPath = process.env.PATH;
   process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+  process.env.MERGE_BROKER_TEST_HEAD = headFile;
+  process.env.MERGE_BROKER_TEST_BASE = baseFile;
   context.after(async () => {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
+    delete process.env.MERGE_BROKER_TEST_HEAD;
+    delete process.env.MERGE_BROKER_TEST_BASE;
     await rm(bin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   const config = await loadConfig(repo);
   config.baseRef = "origin/main";
   config.publish.mode = "pull-request";
+  config.publish.repository = "github.example.invalid/owner/repo";
   config.publish.autoMerge = true;
   await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   const broker = await MergeBroker.open(repo);
@@ -1091,6 +1382,9 @@ test("a batch whose auto-merge fails is published, not lost", {
   const commit = await commitFile(repo, "partial", "src/partial.ts", "export const partial = true;\n");
   await broker.submitTask("PARTIAL", [commit], claim.token);
   const integrated = await broker.integrate();
+  assert.equal(integrated.batch.forgeRepository, "github.example.invalid/owner/repo");
+  assert.match(integrated.batch.remoteUrlFingerprint ?? "", /^[a-f0-9]{64}$/u);
+  await writeFile(headFile, `${integrated.batch.headSha}\n`, "utf8");
 
   const published = await broker.publishBatch(integrated.batch.id);
 
@@ -1114,6 +1408,445 @@ test("a batch whose auto-merge fails is published, not lost", {
   );
   assert.equal((await broker.state()).batches[integrated.batch.id]?.status, "published");
   assert.equal((await broker.task("PARTIAL")).status, "published");
+});
+
+test("cuts from the fetched remote tip when the generated base ref names a passive local branch", async (context) => {
+  const repo = await createRepository();
+  const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
+  const remote = path.join(remoteParent, "origin.git");
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await runCommand("git", ["init", "--bare", remote], { cwd: repo });
+  await git(repo, "remote", "add", "origin", remote);
+  await git(repo, "push", "-u", "origin", "main");
+  const passiveLocalBase = await git(repo, "rev-parse", "main");
+
+  await writeFile(path.join(repo, "REMOTE.md"), "remote advanced\n", "utf8");
+  await git(repo, "add", "REMOTE.md");
+  await git(repo, "commit", "-m", "advance remote base");
+  await git(repo, "push", "origin", "main");
+  const remoteBase = await git(repo, "rev-parse", "HEAD");
+  await git(repo, "reset", "--hard", passiveLocalBase);
+
+  const config = await loadConfig(repo);
+  assert.equal(config.baseRef, "main");
+  assert.equal(config.integration.refreshBase, true);
+  config.publish.mode = "branch";
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({
+    id: "FRESH-BASE",
+    holder: "agent",
+    expectedPaths: ["src/fresh-base.ts"],
+  });
+  const commit = await commitFile(
+    repo,
+    "fresh-base",
+    "src/fresh-base.ts",
+    "export const fresh = true;\n",
+  );
+  await broker.submitTask("FRESH-BASE", [commit], claim.token);
+
+  const integrated = await broker.integrate();
+  assert.equal(integrated.batch.baseSha, remoteBase);
+  assert.equal(await git(repo, "rev-parse", "main"), passiveLocalBase);
+
+  await git(repo, "switch", "-c", "remote-advance", remoteBase);
+  await writeFile(path.join(repo, "REMOTE-AGAIN.md"), "remote advanced again\n", "utf8");
+  await git(repo, "add", "REMOTE-AGAIN.md");
+  await git(repo, "commit", "-m", "advance remote after validation");
+  const latestRemoteBase = await git(repo, "rev-parse", "HEAD");
+  await git(repo, "push", "origin", "HEAD:main");
+  await git(repo, "switch", "main");
+
+  await assert.rejects(
+    broker.publishBatch(integrated.batch.id),
+    (error: unknown) => error instanceof BrokerError && error.code === "BATCH_BASE_STALE",
+  );
+  assert.equal((await broker.state()).batches[integrated.batch.id]?.status, "prepared");
+
+  const refreshed = await broker.refreshBatch(integrated.batch.id, { publish: true });
+  assert.equal(refreshed.refreshed, true);
+  assert.equal(refreshed.integration?.batch.baseSha, latestRemoteBase);
+  assert.equal(refreshed.integration?.batch.status, "published");
+});
+
+test("disables queued auto-merge before closing a directly refreshed stale pull request", async (context) => {
+  const repo = await createRepository();
+  const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-refresh-order-"));
+  const remote = path.join(remoteParent, "origin.git");
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await runCommand("git", ["init", "--bare", remote], { cwd: repo });
+  await git(repo, "remote", "add", "origin", remote);
+  await git(repo, "push", "-u", "origin", "main");
+
+  const config = await loadConfig(repo);
+  config.baseRef = "origin/main";
+  config.publish.mode = "pull-request";
+  config.publish.autoMerge = true;
+  config.publish.repository = "github.example.invalid/owner/repo";
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  const forgeEvents: string[] = [];
+  let pullRequestHead = "";
+  let pullRequestBase = await git(repo, "rev-parse", "origin/main");
+  let remoteAutoMergeEnabled = false;
+  const broker = await MergeBroker.open(repo, {
+    publisher: {
+      ...githubCliPublisher,
+      publishBatch: async ({ batch }) => ({
+        mode: "pull-request",
+        branchName: batch.branchName ?? "missing",
+        pullRequestUrl: "https://forge.example.invalid/pulls/refresh-order",
+      }),
+      inspectPullRequest: async () => ({
+        state: "OPEN",
+        autoMergeEnabled: remoteAutoMergeEnabled,
+        headRefOid: pullRequestHead,
+        baseRefOid: pullRequestBase,
+        baseRefName: "main",
+        checks: [],
+      }),
+      enableAutoMerge: async () => {
+        forgeEvents.push("enable-auto-merge");
+        remoteAutoMergeEnabled = true;
+        return true;
+      },
+      disableAutoMerge: async () => {
+        forgeEvents.push("disable-auto-merge");
+        remoteAutoMergeEnabled = false;
+        return true;
+      },
+      closePullRequest: async () => {
+        forgeEvents.push("close-pull-request");
+        return true;
+      },
+    },
+  });
+  const claim = await broker.claimTask({
+    id: "DIRECT-REFRESH-ORDER",
+    holder: "agent",
+    expectedPaths: ["src/direct-refresh.ts"],
+  });
+  const commit = await commitFile(
+    repo,
+    "direct-refresh-order",
+    "src/direct-refresh.ts",
+    "export const refreshedSafely = true;\n",
+  );
+  await broker.submitTask("DIRECT-REFRESH-ORDER", [commit], claim.token);
+  const original = await broker.integrate();
+  pullRequestHead = original.batch.headSha ?? "";
+  const published = await broker.publishBatch(original.batch.id);
+  assert.equal(published.status, "published");
+  assert.equal(published.autoMergeEnabled, true);
+  assert.deepEqual(forgeEvents, ["enable-auto-merge"]);
+
+  await writeFile(path.join(repo, "BASE-MOVED-DIRECTLY.md"), "new target tip\n", "utf8");
+  await git(repo, "add", "BASE-MOVED-DIRECTLY.md");
+  await git(repo, "commit", "-m", "advance base before direct refresh");
+  await git(repo, "push", "origin", "main");
+  pullRequestBase = await git(repo, "rev-parse", "origin/main");
+
+  // Deliberately do not call syncBatch: refresh itself owns revoking the remote queue before close.
+  const refreshed = await broker.refreshBatch(original.batch.id);
+  assert.deepEqual(forgeEvents, ["enable-auto-merge", "disable-auto-merge", "close-pull-request"]);
+  assert.equal(refreshed.pullRequestClosed, true);
+  assert.equal(refreshed.closed.status, "closed");
+  assert.equal(refreshed.closed.autoMergeEnabled, false);
+  const replacement = refreshed.integration?.batch;
+  assert.ok(replacement);
+  assert.equal(replacement.status, "prepared");
+  assert.equal(replacement.baseSha, pullRequestBase);
+  assert.deepEqual(replacement.taskIds, ["DIRECT-REFRESH-ORDER"]);
+  assert.equal(
+    await git(repo, "show", `${replacement.branchName}:BASE-MOVED-DIRECTLY.md`),
+    "new target tip",
+  );
+  assert.equal(
+    await git(repo, "show", `${replacement.branchName}:src/direct-refresh.ts`),
+    "export const refreshedSafely = true;",
+  );
+});
+
+test("resumes a stale refresh after the pull request closed before local finalization", async (context) => {
+  const repo = await createRepository();
+  const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
+  const remote = path.join(remoteParent, "origin.git");
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await runCommand("git", ["init", "--bare", remote], { cwd: repo });
+  await git(repo, "remote", "add", "origin", remote);
+  await git(repo, "push", "-u", "origin", "main");
+
+  const config = await loadConfig(repo);
+  config.baseRef = "origin/main";
+  config.publish.mode = "pull-request";
+  config.publish.repository = "github.example.invalid/owner/repo";
+  config.publish.autoMerge = false;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  let pullRequestState = "OPEN";
+  let pullRequestHead = "";
+  let pullRequestBase = await git(repo, "rev-parse", "origin/main");
+  let closeCalls = 0;
+  const broker = await MergeBroker.open(repo, {
+    publisher: {
+      ...githubCliPublisher,
+      publishBatch: async ({ batch }) => ({
+        mode: "pull-request",
+        branchName: batch.branchName ?? "missing",
+        pullRequestUrl: "https://forge.example.invalid/pulls/refresh-crash",
+      }),
+      inspectPullRequest: async () => ({
+        state: pullRequestState,
+        autoMergeEnabled: false,
+        headRefOid: pullRequestHead,
+        baseRefOid: pullRequestBase,
+        baseRefName: "main",
+        checks: [],
+      }),
+      closePullRequest: async () => {
+        closeCalls += 1;
+        pullRequestState = "CLOSED";
+        return true;
+      },
+    },
+  });
+  const claim = await broker.claimTask({
+    id: "REFRESH-CRASH",
+    holder: "agent",
+    expectedPaths: ["src/refresh-crash.ts"],
+  });
+  const commit = await commitFile(
+    repo,
+    "refresh-crash",
+    "src/refresh-crash.ts",
+    "export const recovered = true;\n",
+  );
+  await broker.submitTask("REFRESH-CRASH", [commit], claim.token);
+  const original = await broker.integrate();
+  pullRequestHead = original.batch.headSha ?? "";
+  const published = await broker.publishBatch(original.batch.id);
+
+  await writeFile(path.join(repo, "REMOTE-MOVED.md"), "new base\n", "utf8");
+  await git(repo, "add", "REMOTE-MOVED.md");
+  await git(repo, "commit", "-m", "advance base before refresh");
+  await git(repo, "push", "origin", "main");
+  pullRequestBase = await git(repo, "rev-parse", "origin/main");
+
+  const stale = await broker.syncBatch(original.batch.id);
+  assert.equal(stale.refreshRequired, true);
+  assert.equal(stale.refreshCloseIntent, undefined);
+
+  // Model a stop after the forge accepted the close but before refresh could update state. Throwing
+  // at the following local side effect leaves the same durable boundary without killing the test.
+  const deleteBranch = broker.repo.deleteBranch.bind(broker.repo);
+  broker.repo.deleteBranch = async (name) => {
+    await deleteBranch(name);
+    throw new Error("simulated stop after pull-request close");
+  };
+  try {
+    await assert.rejects(broker.refreshBatch(original.batch.id), /simulated stop/iu);
+  } finally {
+    broker.repo.deleteBranch = deleteBranch;
+  }
+
+  const interrupted = (await broker.state()).batches[original.batch.id];
+  assert.equal(pullRequestState, "CLOSED");
+  assert.equal(interrupted?.status, "published");
+  assert.equal(interrupted?.refreshRequired, true);
+  assert.equal(interrupted?.refreshCloseIntent?.pullRequestUrl, published.pullRequestUrl);
+  assert.equal((await broker.task("REFRESH-CRASH")).status, "published");
+  await assert.rejects(
+    broker.markBatchMerged(original.batch.id),
+    (error: unknown) => error instanceof BrokerError && error.code === "REFRESH_PENDING",
+  );
+
+  // Startup reconciliation must preserve an expected close, not reinterpret it as rejection and
+  // fail the tasks before `serve` can resume the refresh.
+  const reconciled = await broker.syncBatch(original.batch.id);
+  assert.equal(reconciled.status, "published");
+  assert.equal(reconciled.refreshRequired, true);
+  assert.equal((await broker.task("REFRESH-CRASH")).status, "published");
+
+  const resumed = await broker.refreshBatch(original.batch.id);
+  assert.equal(closeCalls, 2);
+  assert.equal(resumed.closed.status, "closed");
+  assert.equal(resumed.integration?.batch.status, "prepared");
+  assert.equal(resumed.integration?.batch.baseSha, pullRequestBase);
+  assert.equal((await broker.task("REFRESH-CRASH")).batchId, resumed.integration?.batch.id);
+});
+
+test("reconciles a merge race before making refresh durable", async (context) => {
+  const repo = await createRepository();
+  const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
+  const remote = path.join(remoteParent, "origin.git");
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await runCommand("git", ["init", "--bare", remote], { cwd: repo });
+  await git(repo, "remote", "add", "origin", remote);
+  await git(repo, "push", "-u", "origin", "main");
+
+  const config = await loadConfig(repo);
+  config.baseRef = "origin/main";
+  config.publish.mode = "pull-request";
+  config.publish.repository = "github.example.invalid/owner/repo";
+  config.publish.autoMerge = true;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  let pullRequestState = "OPEN";
+  let pullRequestHead = "";
+  let pullRequestBase = await git(repo, "rev-parse", "origin/main");
+  let disableCalls = 0;
+  let closeCalls = 0;
+  const broker = await MergeBroker.open(repo, {
+    publisher: {
+      ...githubCliPublisher,
+      publishBatch: async ({ batch }) => ({
+        mode: "pull-request",
+        branchName: batch.branchName ?? "missing",
+        pullRequestUrl: "https://forge.example.invalid/pulls/refresh-merge-race",
+      }),
+      inspectPullRequest: async () => ({
+        state: pullRequestState,
+        autoMergeEnabled: pullRequestState === "OPEN",
+        headRefOid: pullRequestHead,
+        baseRefOid: pullRequestBase,
+        baseRefName: "main",
+        checks: [],
+      }),
+      enableAutoMerge: async () => true,
+      disableAutoMerge: async () => {
+        disableCalls += 1;
+        pullRequestState = "MERGED";
+        return false;
+      },
+      closePullRequest: async () => {
+        closeCalls += 1;
+        return true;
+      },
+    },
+  });
+  const claim = await broker.claimTask({
+    id: "REFRESH-MERGE-RACE",
+    holder: "agent",
+    expectedPaths: ["src/refresh-merge-race.ts"],
+  });
+  const commit = await commitFile(
+    repo,
+    "refresh-merge-race",
+    "src/refresh-merge-race.ts",
+    "export const mergeLostTheRace = true;\n",
+  );
+  await broker.submitTask("REFRESH-MERGE-RACE", [commit], claim.token);
+  const integrated = await broker.integrate();
+  pullRequestHead = integrated.batch.headSha ?? "";
+  const published = await broker.publishBatch(integrated.batch.id);
+  assert.equal(published.autoMergeEnabled, true);
+
+  await writeFile(path.join(repo, "REMOTE-MOVED-DURING-MERGE.md"), "new base\n", "utf8");
+  await git(repo, "add", "REMOTE-MOVED-DURING-MERGE.md");
+  await git(repo, "commit", "-m", "advance base before refresh merge race");
+  await git(repo, "push", "origin", "main");
+  pullRequestBase = await git(repo, "rev-parse", "origin/main");
+
+  const reconciled = await broker.refreshBatch(integrated.batch.id);
+  assert.equal(reconciled.refreshed, false);
+  assert.equal(reconciled.reason, "already_terminal");
+  assert.equal(reconciled.closed.status, "failed");
+  assert.match(reconciled.closed.error ?? "", /base identity was no longer valid/iu);
+  assert.equal(reconciled.closed.refreshRequired, undefined);
+  assert.equal(reconciled.closed.refreshCloseIntent, undefined);
+  assert.equal(reconciled.closed.autoMergeEnabled, false);
+  assert.equal(reconciled.closed.autoMergePending, undefined);
+  assert.equal(disableCalls, 1);
+  assert.equal(closeCalls, 0);
+  assert.equal((await broker.task("REFRESH-MERGE-RACE")).status, "failed");
+});
+
+test("treats a reviewer-closed PR during refresh as rejection instead of republishing it", async (context) => {
+  const repo = await createRepository();
+  const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
+  const remote = path.join(remoteParent, "origin.git");
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await runCommand("git", ["init", "--bare", remote], { cwd: repo });
+  await git(repo, "remote", "add", "origin", remote);
+  await git(repo, "push", "-u", "origin", "main");
+  const config = await loadConfig(repo);
+  config.baseRef = "origin/main";
+  config.publish.mode = "pull-request";
+  config.publish.repository = "github.example.invalid/owner/repo";
+  config.publish.autoMerge = false;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  let head = "";
+  let base = await git(repo, "rev-parse", "origin/main");
+  const broker = await MergeBroker.open(repo, {
+    publisher: {
+      ...githubCliPublisher,
+      publishBatch: async ({ batch }) => ({
+        mode: "pull-request",
+        branchName: batch.branchName ?? "missing",
+        pullRequestUrl: "https://forge.example.invalid/pulls/reviewer-close",
+      }),
+      inspectPullRequest: async () => ({
+        state: "OPEN",
+        autoMergeEnabled: false,
+        headRefOid: head,
+        baseRefOid: base,
+        baseRefName: "main",
+        checks: [],
+      }),
+      closePullRequest: async () => {
+        throw new BrokerError(
+          "PULL_REQUEST_ALREADY_CLOSED",
+          "reviewer closed it before the broker's marked close",
+        );
+      },
+    },
+  });
+  const claim = await broker.claimTask({
+    id: "REVIEWER-CLOSED-REFRESH",
+    holder: "agent",
+    expectedPaths: ["src/reviewer-closed.ts"],
+  });
+  const commit = await commitFile(
+    repo,
+    "reviewer-closed-refresh",
+    "src/reviewer-closed.ts",
+    "export const rejected = true;\n",
+  );
+  await broker.submitTask("REVIEWER-CLOSED-REFRESH", [commit], claim.token);
+  const integrated = await broker.integrate();
+  head = integrated.batch.headSha ?? "";
+  await broker.publishBatch(integrated.batch.id);
+
+  await writeFile(path.join(repo, "ADVANCE.md"), "advance\n", "utf8");
+  await git(repo, "add", "ADVANCE.md");
+  await git(repo, "commit", "-m", "advance before reviewer close");
+  await git(repo, "push", "origin", "main");
+  base = await git(repo, "rev-parse", "origin/main");
+  assert.equal((await broker.syncBatch(integrated.batch.id)).refreshRequired, true);
+
+  const result = await broker.refreshBatch(integrated.batch.id);
+  assert.equal(result.refreshed, false);
+  assert.equal(result.reason, "pull_request_closed");
+  assert.equal(result.closed.status, "closed");
+  assert.equal((await broker.task("REVIEWER-CLOSED-REFRESH")).status, "failed");
+  assert.equal(Object.values((await broker.state()).batches).length, 1);
 });
 
 test("re-cuts a batch the base branch moved past", async (context) => {
@@ -1182,4 +1915,162 @@ test("re-cuts a batch the base branch moved past", async (context) => {
     broker.refreshBatch(replacement.id),
     (error: unknown) => error instanceof BrokerError && error.code === "BATCH_NOT_REFRESHABLE",
   );
+});
+
+test("refresh keeps the original batch target after remote and base configuration drift", async (context) => {
+  const repo = await createRepository();
+  const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-target-drift-"));
+  const originalRemote = path.join(remoteParent, "origin.git");
+  const replacementRemote = path.join(remoteParent, "replacement.git");
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await runCommand("git", ["init", "--bare", originalRemote], { cwd: repo });
+  await runCommand("git", ["init", "--bare", replacementRemote], { cwd: repo });
+  await git(repo, "remote", "add", "origin", originalRemote);
+  await git(repo, "remote", "add", "replacement", replacementRemote);
+  await git(repo, "push", "-u", "origin", "main");
+  await git(repo, "push", "replacement", "main:develop");
+  await git(repo, "fetch", "replacement", "develop");
+  const replacementBase = await git(repo, "rev-parse", "replacement/develop");
+
+  const config = await loadConfig(repo);
+  config.baseRef = "origin/main";
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  let broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({
+    id: "REFRESH-TARGET-DRIFT",
+    holder: "agent",
+    expectedPaths: ["src/target-drift.ts"],
+  });
+  const commit = await commitFile(
+    repo,
+    "target-drift-task",
+    "src/target-drift.ts",
+    "export const targetIsDurable = true;\n",
+  );
+  await broker.submitTask("REFRESH-TARGET-DRIFT", [commit], claim.token);
+  const original = await broker.integrate();
+  assert.equal(original.batch.remote, "origin");
+  assert.equal(original.batch.baseBranch, "main");
+
+  await writeFile(path.join(repo, "ORIGINAL-TARGET-MOVED.md"), "landed on origin/main\n", "utf8");
+  await git(repo, "add", "ORIGINAL-TARGET-MOVED.md");
+  await git(repo, "commit", "-m", "advance original refresh target");
+  await git(repo, "push", "origin", "main");
+  const advancedOriginalBase = await git(repo, "rev-parse", "origin/main");
+  assert.notEqual(advancedOriginalBase, replacementBase);
+
+  const drifted = await loadConfig(repo);
+  drifted.remote = "replacement";
+  drifted.baseBranch = "develop";
+  drifted.baseRef = "replacement/develop";
+  await writeFile(configPath(repo), `${JSON.stringify(drifted, null, 2)}\n`, "utf8");
+  broker = await MergeBroker.open(repo);
+
+  const refreshed = await broker.refreshBatch(original.batch.id);
+  const replacement = refreshed.integration?.batch;
+  assert.ok(replacement);
+  assert.equal(refreshed.baseSha, advancedOriginalBase);
+  assert.equal(replacement.remote, "origin");
+  assert.equal(replacement.baseBranch, "main");
+  assert.equal(replacement.baseSha, advancedOriginalBase);
+  assert.notEqual(replacement.baseSha, replacementBase);
+  assert.equal(
+    await git(repo, "show", `${replacement.branchName}:ORIGINAL-TARGET-MOVED.md`),
+    "landed on origin/main",
+  );
+  assert.equal(
+    await git(repo, "show", `${replacement.branchName}:src/target-drift.ts`),
+    "export const targetIsDurable = true;",
+  );
+});
+
+test("does not redirect a mode-none batch when pull-request publication is enabled later", async (context) => {
+  const repo = await createRepository();
+  const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-mode-none-target-"));
+  const originalRemote = path.join(remoteParent, "original.git");
+  const redirectedRemote = path.join(remoteParent, "redirected.git");
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await runCommand("git", ["init", "--bare", originalRemote], { cwd: repo });
+  await runCommand("git", ["init", "--bare", redirectedRemote], { cwd: repo });
+  await git(repo, "remote", "add", "origin", originalRemote);
+  await git(repo, "push", "-u", "origin", "main");
+  await git(repo, "push", redirectedRemote, "main:main");
+
+  const config = await loadConfig(repo);
+  config.baseRef = "origin/main";
+  config.publish.mode = "none";
+  config.publish.repository = "github.example.invalid/owner/repo";
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  let broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({
+    id: "MODE-NONE-TARGET",
+    holder: "agent",
+    expectedPaths: ["src/mode-none-target.ts"],
+  });
+  const commit = await commitFile(
+    repo,
+    "mode-none-target",
+    "src/mode-none-target.ts",
+    "export const targetWasBoundAtAssembly = true;\n",
+  );
+  await broker.submitTask("MODE-NONE-TARGET", [commit], claim.token);
+  const integrated = await broker.integrate();
+  assert.match(integrated.batch.remoteUrlFingerprint ?? "", /^[a-f0-9]{64}$/u);
+  assert.equal(integrated.batch.forgeRepository, "github.example.invalid/owner/repo");
+
+  await git(repo, "remote", "set-url", "origin", redirectedRemote);
+  const publishing = await loadConfig(repo);
+  publishing.publish.mode = "pull-request";
+  await writeFile(configPath(repo), `${JSON.stringify(publishing, null, 2)}\n`, "utf8");
+  let publishCalls = 0;
+  broker = await MergeBroker.open(repo, {
+    publisher: {
+      ...githubCliPublisher,
+      publishBatch: async ({ batch }) => {
+        publishCalls += 1;
+        return {
+          mode: "pull-request",
+          branchName: batch.branchName ?? "missing",
+          pullRequestUrl: "https://forge.example.invalid/pulls/misdirected",
+        };
+      },
+    },
+  });
+
+  await assert.rejects(
+    broker.publishBatch(integrated.batch.id),
+    (error: unknown) => error instanceof BrokerError && error.code === "REMOTE_TARGET_CHANGED",
+  );
+  assert.equal(publishCalls, 0);
+  assert.equal((await broker.state()).batches[integrated.batch.id]?.status, "prepared");
+
+  // A pre-binding prepared record cannot prove that an older process did not push/open a PR before
+  // crashing ahead of its publication transaction. Missing legacy target metadata must therefore
+  // fail closed instead of using the remote name's new meaning for either publication or refresh.
+  await broker.store.transaction((state) => {
+    const batch = state.batches[integrated.batch.id];
+    assert.ok(batch);
+    delete batch.remoteUrlFingerprint;
+    delete batch.forgeRepository;
+    delete batch.publicationMode;
+    delete batch.error;
+  });
+  await assert.rejects(
+    broker.publishBatch(integrated.batch.id),
+    (error: unknown) => error instanceof BrokerError && error.code === "BATCH_TARGET_UNBOUND",
+  );
+  await assert.rejects(
+    broker.refreshBatch(integrated.batch.id),
+    (error: unknown) => error instanceof BrokerError && error.code === "BATCH_TARGET_UNBOUND",
+  );
+  const legacy = (await broker.state()).batches[integrated.batch.id];
+  assert.equal(legacy?.status, "prepared");
+  assert.equal(legacy?.refreshRequired, undefined);
+  assert.equal(publishCalls, 0);
 });

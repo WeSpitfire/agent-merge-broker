@@ -38,7 +38,12 @@ stream is append-only by convention, not cryptographically tamper-evident.
 
 ## Git safety
 
-The broker does not force-push, reset the user's base worktree, merge into the base branch, or delete source branches. It creates uniquely named integration branches and temporary worktrees under its own state directory.
+The broker never resets the user's base worktree, merges into the base branch, or deletes source
+branches. Initial publication pushes the recorded candidate SHA with a create-only lease. Candidate
+revision is the sole force update, limited to the broker's own integration branch and guarded by
+`--force-with-lease` against the prior candidate SHA. Broker-created commits use a fixed identity,
+disable signing, and bypass ambient hooks so machine-specific Git configuration cannot alter the
+validated artifact. Temporary worktrees stay under the broker state directory.
 
 Failed integration worktrees are removed by default. Enabling `keepFailedWorktrees` can retain source content, generated artifacts, and secrets written by validators; operators must clean these worktrees deliberately after diagnosis.
 
@@ -49,13 +54,18 @@ Commit receipts are immutable IDs, but their objects can disappear after aggress
 `approval.required` moves broker merge authority behind an exact candidate tuple: candidate SHA,
 base SHA, and policy revision. Manual evidence and approval repeat that tuple and identify their
 actors. GitHub checks are accepted only from the live PR whose head matches the candidate; approval
-re-reads the head/base and the merge command uses `--match-head-commit`.
+re-reads the head/base, becomes effective only after a post-write OPEN observation, and the merge
+command uses `--match-head-commit`.
 
 This protects broker-mediated merges, not an administrator bypass in the forge UI. Repositories that
 need the invariant to be organizationally mandatory must also protect the base branch, limit bypass
 permission, require the configured checks, and restrict who can push broker integration branches.
 An out-of-band merge is detected during reconciliation and recorded as an invariant violation, but
 the broker cannot undo code that GitHub already merged.
+
+GitHub does not expose an atomic “match this base SHA” merge guard. Require branches to be up to date
+or use a merge queue when broker base binding must be preventative rather than only detected and
+proven during reconciliation.
 
 Authorized actor names are local policy identifiers, not cryptographic identities. Adapters should
 derive them from an authenticated execution context and should not accept an untrusted worker's
@@ -87,6 +97,13 @@ operator profile is a control-plane credential: expose it only to a trusted clie
 authority as the integration host.
 
 Task and batch metadata must still be treated as untrusted display text by external dashboards. The bundled GitHub publisher constructs command arguments without a shell and sends PR content through stdin.
+It also fingerprints the selected Git push URL and records the host-qualified forge locator at assembly;
+publication fails if the named remote later points elsewhere, and every repository-ambiguous `gh`
+operation receives an explicit `--repo` selector.
+
+These are locator guarantees, not a stable forge-object identity. Repository namespace transfers,
+delete-and-recreate operations at the same URL, DNS replacement, and a compromised Git/forge host
+remain trusted-infrastructure events; this release does not claim the stronger trusted-host threat model.
 
 ## Enforcement boundaries
 

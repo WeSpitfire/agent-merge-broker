@@ -87,6 +87,28 @@ test("rejects auto-merge in branch mode, where there is no pull request to merge
   );
 });
 
+test("accepts an explicit forge repository and rejects ambiguous or URL-shaped selectors", () => {
+  const config = defaultConfig();
+  config.publish.mode = "pull-request";
+  config.publish.repository = "owner/repository";
+  assert.equal(validateConfig(config).publish.repository, "github.com/owner/repository");
+  config.publish.repository = "github.corp.example/owner/repository";
+  assert.equal(validateConfig(config).publish.repository, config.publish.repository);
+
+  for (const repository of [
+    "owner",
+    "https://github.com/owner/repository",
+    "../owner/repository",
+    "owner/repository.git",
+  ]) {
+    config.publish.repository = repository;
+    assert.throws(
+      () => validateConfig(config),
+      (error: unknown) => error instanceof BrokerError && /publish\.repository/u.test(error.message),
+    );
+  }
+});
+
 test("defaults auto-merge off for configurations written before it existed", () => {
   const config = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, Record<string, unknown>>;
   delete config.publish?.autoMerge;

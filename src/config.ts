@@ -350,6 +350,7 @@ export function validateConfig(value: unknown): BrokerConfig {
   }
   assertAllowedKeys(config.publish, "publish", [
     "mode",
+    "repository",
     "draft",
     "autoMerge",
     "mergeMethod",
@@ -358,6 +359,26 @@ export function validateConfig(value: unknown): BrokerConfig {
   ]);
   if (!(["none", "branch", "pull-request"] satisfies PublishMode[]).includes(config.publish?.mode)) {
     throw new BrokerError("INVALID_CONFIG", "publish.mode must be none, branch, or pull-request.");
+  }
+  if (config.publish.repository !== undefined) {
+    assertString(config.publish.repository, "publish.repository");
+    const parts = config.publish.repository.split("/");
+    if (
+      (parts.length !== 2 && parts.length !== 3) ||
+      parts.some((part) =>
+        !/^[A-Za-z0-9_.-]+$/u.test(part) || part === "." || part === ".."
+      ) ||
+      (parts.length === 3 && !/^[A-Za-z0-9.-]+$/u.test(parts[0] ?? "")) ||
+      (parts.at(-1) ?? "").endsWith(".git")
+    ) {
+      throw new BrokerError(
+        "INVALID_CONFIG",
+        "publish.repository must be a GitHub [HOST/]OWNER/REPO selector, without a URL scheme or .git suffix.",
+      );
+    }
+    config.publish.repository = parts.length === 2
+      ? `github.com/${config.publish.repository}`
+      : `${(parts[0] ?? "").toLowerCase()}/${parts.slice(1).join("/")}`;
   }
   assertBoolean(config.publish?.draft, "publish.draft");
   // Absent on configurations written before auto-merge existed. Defaulting to false keeps an
