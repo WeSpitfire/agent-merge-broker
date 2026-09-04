@@ -4,17 +4,21 @@
 
 Many producers can create code. The repository still needs one contract for deciding what is safe to
 validate, publish, and merge. Agent Merge Broker is a local-first transaction coordinator for that
-boundary: participating workers submit receipts naming immutable commits, the broker derives and
-validates one candidate, and publication stays bound to the recorded Git and forge target.
+boundary: participating workers submit receipts naming immutable commits, while Gate intake can
+submit one retained trusted-local Git ref for validation without fabricated coordination history.
+The complete Coordinate path derives one batch candidate and keeps
+publication bound to the recorded Git and forge target.
 
-When exact-candidate approval is configured, evidence and authorization are tied to the candidate
-SHA, base SHA, and policy revision. Durable operation state lets the broker reconcile a crash or lost
+In Coordinate mode, exact-candidate approval ties evidence and authorization to the candidate SHA,
+base SHA, and policy revision. Durable operation state lets the broker reconcile a crash or lost
 forge response before it releases dependent work.
 
 It does not spawn agents, decide policy with AI, or replace CI, review, protected branches, or a
 native forge queue. The forge remains the final branch authority.
 
-## What ships today: Coordinate mode
+## What ships today
+
+### Coordinate mode
 
 The current workflow coordinates workers that participate through the broker's claim and receipt
 protocol:
@@ -33,6 +37,17 @@ claim → lease → commit → nominate → batch → validate → publish → r
 - Published branches can carry a signed provenance manifest for remote policy checks.
 - Target fingerprints, durable intents, and forge observation make interrupted publication recoverable.
 - Automatic completion waits until the accepted Git history proves that the batch merged.
+
+### Gate intake for trusted local refs
+
+Version `0.13.0` adds a first Gate slice for a Git ref whose objects are already available in the
+broker's local repository. An explicit `candidate authority setup` ceremony records the reviewed
+protected-target locator outside candidate commits. `candidate adopt` then resolves and retains the
+exact commit, independently resolves that registered base, loads committed policy from the base,
+derives the raw commit chain and changed paths, and runs focused plus authoritative broker validators
+over filter-free materialized bytes. The resulting `SubmissionRecord` is validation evidence only:
+this slice does not create a task, lease, receipt, batch, approval candidate, provenance statement,
+branch, pull request, or merge authority.
 
 ### A concrete coordination problem
 
@@ -64,27 +79,34 @@ results, while the forge keeps the final say on what merges.
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.12.1` is the current release. It consolidates the product boundary, protocol, recovery
-documentation, and machine-readable CLI behavior around the `0.12.0` core. That core made
+`0.13.0` is the current release. It adds validation-only Gate intake for trusted repository-local
+Git refs, with an explicit protected-target authority, exact retained artifact identity,
+filter-free validation, and crash-safe recovery. It builds on the `0.12.1` documentation and
+machine-readable CLI consolidation around the `0.12.0` core. That core made
 pull-request auto-merge crash-recoverable and target-bound, added unattended publication and
 stale-base recovery, and closed approval, refresh, revision, remote-retargeting, and reopened-PR
-races. It also retains the first-class Windows support, permission-separated MCP servers,
+races, while retaining the first-class Windows support, permission-separated MCP servers,
 diagnostics, and bootstrap detection added in `0.11.0`.
 
-The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
+The on-disk state, receipt, submission, candidate, and provenance formats are versioned, but
+compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
 ## Product direction
 
-Coordinate mode is the product available in `0.12.1`. Two smaller-responsibility modes are planned;
-neither should be read as a claim about the current CLI.
+Coordinate mode remains the complete repository-transaction workflow in `0.13.0`. The release also
+ships a deliberately narrower local-ref Gate validation intake; Gate merge authority and Verify mode
+remain planned.
 
-### Gate mode — planned
+### Gate mode — validation intake in 0.13.0
 
-Gate mode will accept a completed immutable candidate from a producer that did not use path leases
-while coding. The first planned slice is trusted-source adoption of a Git ref already available to the broker:
-resolve and retain its commit, derive its paths from Git, load base policy, validate the retained
-bytes, and enter the existing exact-candidate lifecycle. There is no `candidate adopt` command in the
-current release.
+`merge-broker candidate adopt --ref <git-ref>` accepts a completed candidate from a producer that did
+not use path leases while coding. Before adoption, an operator must run `candidate authority setup`
+from a reviewed protected checkout. This first slice is trusted-source and validation-only. The ref
+must already be available in the local repository, descend linearly from the registered base, and fit
+both `scheduling.maxCommits` and Gate's 1,000-commit hard ceiling; the protected base must contain
+matching committed broker policy with
+`validation.authority: "broker"`. Approval, provenance, publication, merge reconciliation,
+pull-request intake, bundles, and remote submission for these records are not implemented yet.
 
 ### Verify mode — planned
 
@@ -100,6 +122,7 @@ is not part of npm until a release says otherwise.
 
 - Node.js 20.12 or newer
 - Git 2.31 or newer with worktree support
+- Git 2.46 or newer specifically for trusted local-ref Gate intake
 - GitHub CLI only when `publish.mode` is `pull-request`
 
 Windows, macOS, and Linux are supported and release-gating in CI. Windows validation defaults to
@@ -141,10 +164,10 @@ and owner-written `AGENTS.md` content. Use `--no-detect` or `--no-agent-contract
 installer or repository template owns those concerns itself.
 
 It also creates an Ed25519 provenance private key, mode `0600`, under Git's common runtime directory.
-Only its public key is written to the committed configuration. Runtime state, receipt and batch
-records, keys, locks, and integration worktrees therefore stay outside commits while every linked
-worktree sees the same broker authority. When provenance is enabled, a separate signed or unsigned
-provenance manifest is deliberately committed as the retained branch head.
+Only its public key is written to the committed configuration. Runtime state, receipt, batch, and
+Gate submission records, keys, locks, and disposable worktrees therefore stay outside commits while
+every linked worktree sees the same broker authority. When provenance is enabled, a separate signed
+or unsigned provenance manifest is deliberately committed as a Coordinate-mode branch head.
 
 ## Quick start
 
@@ -159,9 +182,9 @@ git add .merge-broker AGENTS.md && git commit -m 'Configure authenticated merge 
 merge-broker doctor
 ```
 
-`merge-broker status` now includes the safe next command for each active task and batch. For a bug
-report, `merge-broker doctor --support-bundle` emits diagnostics and recent audit events with paths,
-URLs, and secret-bearing fields redacted; review the JSON before sharing it.
+`merge-broker status` includes the safe next command for each active task, batch, and retained Gate
+submission. For a bug report, `merge-broker doctor --support-bundle` emits diagnostics and recent
+audit events with paths, URLs, and secret-bearing fields redacted; review the JSON before sharing it.
 
 An orchestrator or worker claims a narrowly scoped task:
 
@@ -229,6 +252,52 @@ two-parent merge, and linear-rebase outcomes are reconciled automatically when t
 proved. `batch complete` remains an explicit manual authority fallback for workflows that expose no
 sufficient automatic proof.
 
+## Validate a trusted local Git candidate
+
+When another trusted local workflow has already assembled a linear candidate, retain and validate
+its exact commit without manufacturing Coordinate-mode history:
+
+```bash
+merge-broker candidate authority setup
+merge-broker candidate authority show
+merge-broker candidate adopt --ref refs/heads/external-candidate
+merge-broker candidate list
+merge-broker candidate show <submission-id>
+```
+
+Run setup from a reviewed protected checkout after committing `.merge-broker/config.json`. The
+config-independent record binds the base locator, refresh behavior, state directory, and, when
+available, the canonical fetch-URL fingerprint without storing the URL. A changed target requires
+explicit `--replace`. There is intentionally no caller-supplied `--base` or path list. Adoption
+rejects an empty, unrelated, merged-history, or over-limit candidate (the smaller of
+`scheduling.maxCommits` and Gate's 1,000-commit ceiling) and currently requires
+`validation.authority: "broker"`. It pins the resolved commit under
+`refs/merge-broker/adopted/<submission-id>`, derives raw paths and history, materializes filter-free
+blob bytes in a disposable worktree, recomputes retained commit/tree/blob IDs, and verifies the
+retained identity after validation. It durably records successful ref establishment before any
+validator and journals any later ref loss before create-only repair, so recovery cannot forget a
+retention violation. If a
+validator rejects the candidate and the final artifact identity remains provable, the durable record
+and results are returned but the command exits nonzero. An irreproducible object identity or
+wrong/symbolic retained ref stays `validating` for fail-closed recovery instead of producing an
+unretained terminal claim.
+
+When refresh is enabled and the configured ref denotes the base branch, setup requires a configured
+fetch URL and will not fall back to a stale local ref. Set `integration.refreshBase` to false for an
+intentionally offline/local Gate target.
+
+Gate also rejects ambient or protected-validator Git repository/index/object/history and
+configuration-injection or transport-command overrides, rejects configured URL/transport rewrites
+and exact-locator remote shorthand collisions, recursively inspects the repository-owned object store, binds the
+disposable worktree's Git administration identity, and bounds its untracked-path diagnostic. See
+[Compatibility and current limits](docs/COMPATIBILITY.md) for the exact deny-list and ceilings.
+
+This is not an integration shortcut. A `validated` submission is not approved, published,
+provenanced, or authorized to merge, and cannot be passed to `batch publish`. Use Coordinate mode
+for the current end-to-end merge workflow. If adoption is interrupted after its durable record is
+written, `merge-broker recover` replays `received` or `validating` submissions from the retained
+identity.
+
 ## See it work
 
 ```bash
@@ -282,7 +351,7 @@ installing dependencies:
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v0.12.1
+- uses: WeSpitfire/agent-merge-broker/verify@v0.13.0
 ```
 
 The check verifies the Ed25519 signature, branch and batch identity, real base history, one-file
@@ -446,7 +515,7 @@ A process that dies mid-integration can leave both a lock and durable `running` 
 this machine is reclaimed automatically once its process is proven gone. A holder on another machine
 cannot be probed and is never stolen merely because it is old. Inspect the locks with `doctor`; for
 an abandoned `running` integration, confirm the old authority is gone and release
-`unlock integration --force` (and `state` only if `doctor` shows it held). Dynamic
+`unlock integration --force` (and `state` or `gate-authority` only if `doctor` shows it held). Dynamic
 `batch:<batch-id>` locks apply to interrupted operations after integration. Once the integration lock
 is safely acquired, `serve` and `integrate` automatically mark abandoned work failed, clean its
 broker-owned worktree and branch, and return its tasks to `submitted` without spending their attempt
@@ -552,17 +621,27 @@ while broker credentials stay out of repository-defined commands.
 Validators receive these environment variables:
 
 - `MERGE_BROKER_TASK_ID`
-- `MERGE_BROKER_FILES`, newline-separated
+- `MERGE_BROKER_FILES_FILE`, the path to an owner-readable UTF-8 JSON array of validator-relative paths
+- `MERGE_BROKER_FILES_FILE_FORMAT=json`
+- `MERGE_BROKER_FILES`, the newline-separated form for the default `filesInput: "inline"`; empty in JSON mode
 - `MERGE_BROKER_BASE_SHA`
 - `MERGE_BROKER_HEAD_SHA`
 - `MERGE_BROKER_BATCH_ID`
+- `MERGE_BROKER_SUBMISSION_ID`, nonempty only for trusted local-ref adoption
 - `MERGE_BROKER_CACHE_DIR`, an isolated cache shared by validators in one integration transaction
 
-Commands may also use the shell-safe placeholders `{taskId}`, `{files}`, and
-`{validatorCacheDir}` (a stable validator-specific directory inside the transaction cache). `workingDirectory` can
-place a validator in a repository-relative package directory; file placeholders and environment
-paths are then relative to that directory. Validator output is captured with a fixed memory bound
-and retained in state with that cap. A timeout terminates the validator process tree.
+Commands may also use the shell-safe placeholders `{taskId}`, `{filesFile}`, `{files}`, and
+`{validatorCacheDir}` (a stable validator-specific directory inside the transaction cache).
+`{filesFile}` expands to `MERGE_BROKER_FILES_FILE`. Validators default to `filesInput: "inline"`,
+which supplies both the shell-quoted `{files}` arguments and newline `MERGE_BROKER_FILES` only when
+both representations fit within 4 KiB. If either is larger, validation fails closed with
+`VALIDATION_FAILED` before the validator starts, even when its command does not contain `{files}`.
+For potentially large path sets, set `filesInput: "json"` and parse the UTF-8 JSON array through
+`{filesFile}` or `MERGE_BROKER_FILES_FILE`; JSON mode leaves `MERGE_BROKER_FILES` empty and rejects a
+command that still contains `{files}`.
+`workingDirectory` can place a validator in a repository-relative package directory; paths in every
+file-list form are then relative to that directory. Validator output is captured with a fixed memory
+bound and retained in state with that cap. A timeout terminates the validator process tree.
 
 `merge-broker validate` is a preflight that runs the same broker-side validator definitions against
 the caller's working tree. It does not reproduce per-task focused sequencing or integration's
@@ -575,7 +654,8 @@ their scratch build under `{validatorCacheDir}`, preventing Intel and Apple Sili
 from contaminating each other without rebuilding between the focused and authoritative stages of
 the same integration transaction.
 
-The JSON schemas in [`schemas/`](schemas/) can be used by editors, adapters, and independent receipt producers.
+The JSON schemas in [`schemas/`](schemas/) cover configuration, task receipts, exact approval
+candidates, batch provenance, and Gate authority/submission records.
 
 ### One authoritative CI pass
 
@@ -619,6 +699,11 @@ merge-broker install-hooks [--force] [--uninstall] [--print]
 merge-broker install-service [--uninstall] [--interval <seconds>] [--no-eager]
 merge-broker verify-provenance --branch <ref> --head <sha> --base <sha>
 merge-broker validate [--task <id>] [--scope focused|authoritative|all] [--base <ref>] [--cwd <path>]
+merge-broker candidate authority setup [--replace]
+merge-broker candidate authority show
+merge-broker candidate list
+merge-broker candidate adopt --ref <revision>
+merge-broker candidate show <submission-id>
 merge-broker task register|claim|extend|heartbeat|candidate|submit|reopen|revise|retry|release|cancel|abandon|show
 merge-broker status
 merge-broker plan
@@ -628,7 +713,7 @@ merge-broker audit
 merge-broker metrics
 merge-broker events
 merge-broker prune [--older-than <days>] [--dry-run]
-merge-broker unlock [state|integration|batch:<batch-id>] [--force]
+merge-broker unlock [state|integration|gate-authority|batch:<batch-id>] [--force]
 merge-broker recover
 merge-broker serve [--publish] [--eager] [--log-file <path>]
 merge-broker-mcp -C <directory> [--profile worker|operator]

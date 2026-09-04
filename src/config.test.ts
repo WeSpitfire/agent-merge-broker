@@ -48,6 +48,19 @@ test("accepts repository-relative validator working directories and rejects esca
   }
 });
 
+test("accepts explicit validator path-file input and rejects unknown input modes", () => {
+  const config = defaultConfig();
+  config.validation.authoritative = [{ name: "large repository", command: "npm test", filesInput: "json" }];
+  assert.equal(validateConfig(config).validation.authoritative[0]?.filesInput, "json");
+
+  const validator = config.validation.authoritative[0] as { filesInput: string };
+  validator.filesInput = "truncate";
+  assert.throws(
+    () => validateConfig(config),
+    (error: unknown) => error instanceof BrokerError && /filesInput/u.test(error.message),
+  );
+});
+
 test("rejects state directories that escape Git's common directory", () => {
   const config = defaultConfig();
   config.stateDirectory = "../outside";
@@ -57,13 +70,41 @@ test("rejects state directories that escape Git's common directory", () => {
   );
 });
 
-test("rejects a state directory that collides with Git internals", () => {
+test("rejects state directories that collide with Git internals or portable filesystem rules", () => {
   const config = defaultConfig();
-  config.stateDirectory = "worktrees";
-  assert.throws(
-    () => validateConfig(config),
-    (error: unknown) => error instanceof BrokerError && error.code === "INVALID_CONFIG",
-  );
+  for (const stateDirectory of [
+    "worktrees",
+    "WORKTREES/gate-state",
+    "Objects/gate-state",
+    "Refs/gate-state",
+    "FETCH_HEAD",
+    "commondir",
+    "MERGE_HEAD/state",
+    "rebase-merge/state",
+    "sequencer/state",
+    "config.worktree",
+    "gc.pid",
+    "sharedindex.deadbeef",
+    "index.lock",
+    "merge-broker-gate-authority.json",
+    "merge-broker-gate-authority.lock",
+    "objects.",
+    "objects ",
+    "OBJECT~1/gate-state",
+    "CON/state",
+    "nested\\state",
+    "nested:state",
+    "nested/../state",
+    "nested//state",
+    "nested/\u00df",
+  ]) {
+    config.stateDirectory = stateDirectory;
+    assert.throws(
+      () => validateConfig(config),
+      (error: unknown) => error instanceof BrokerError && error.code === "INVALID_CONFIG",
+      stateDirectory,
+    );
+  }
 });
 
 test("rejects auto-merge on draft pull requests, which GitHub can never merge", () => {

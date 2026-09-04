@@ -43,10 +43,13 @@ immutable objects, then evaluate them.
 ### Read policy from the repository's protected side
 
 Code under review must not be able to relax the policy that judges it. Verification policy comes
-from a snapshot selected on the configured protected side, and repository owners remain responsible
+from a snapshot selected on the protected side, and repository owners remain responsible
 for protecting that base and restricting bypass permission. Today the read-only provenance verifier
-loads its verification policy from the base, while broker operations still load configuration from
-the local checkout. Closing that gap is a prerequisite for producer-neutral Gate mode.
+loads its applicable policy from the exact protected-base commit. The trusted local-ref intake in
+`0.13.0` additionally binds a reviewed protected-target registration outside candidate
+commits before loading policy from its exact base. Coordinate-mode operations still load
+configuration from the controlled local checkout; expanding base-policy identity to later Gate
+publication must preserve this separation.
 
 ### Keep capabilities separate
 
@@ -93,16 +96,22 @@ auto-merge.
 This mode serves linked worktrees, independent local sessions, and mixed agent/human teams that
 participate in the receipt protocol.
 
-### Gate mode — planned
+### Gate mode — validation intake available in 0.13.0
 
-A producer that has already coordinated its own work should eventually be able to present a
-completed immutable candidate without first acquiring a path lease. The first planned slice is
-trusted-source adoption of a Git ref already available to the broker authority. The broker will
-resolve and retain the object, derive its diff, load base policy, validate it, and then enter the
-same exact-candidate lifecycle as coordinated work. This is not an untrusted-code sandbox.
+A producer that has already coordinated its own work can present a trusted Git ref already available
+to the broker without first acquiring a path lease. An operator first registers the
+reviewed protected-target locator outside candidate commits. The broker resolves and retains the
+exact commit, independently resolves that registered base through its fetch binding when refresh
+applies, derives raw
+linear history and every path touched, loads matching committed policy from the base, and validates
+filter-free retained bytes in a disposable worktree. It records a separate validation submission
+rather than inventing Coordinate-mode tasks, leases, receipts, or batches. This is not an
+untrusted-code sandbox.
 
-There is no external-candidate adoption command in the current release. Pull-request intake, bundles,
-and authenticated remote submission come only after the local Git-ref boundary is proven.
+This first slice stops at validation. It does not create an approval candidate, provenance,
+publication, reconciliation, or merge authority. Connecting validated submissions to those later
+Gate stages—and adding pull-request intake, bundles, or authenticated remote submission—remains
+planned.
 
 ### Verify mode — planned
 

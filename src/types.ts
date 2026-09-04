@@ -1,5 +1,7 @@
 export const STATE_VERSION = 1 as const;
 export const CONFIG_VERSION = 1 as const;
+export const SUBMISSION_VERSION = 1 as const;
+export const GATE_AUTHORITY_VERSION = 1 as const;
 
 export type UnexpectedPathPolicy = "error" | "warn" | "allow";
 export type PublishMode = "none" | "branch" | "pull-request";
@@ -30,6 +32,8 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 export type BatchStatus = "running" | "verified" | "prepared" | "published" | "merged" | "closed" | "failed";
+/** Validation-only lifecycle for an immutable candidate adopted from outside Coordinate mode. */
+export type SubmissionStatus = "received" | "validating" | "validated" | "rejected" | "failed";
 
 export interface ValidatorConfig {
   name: string;
@@ -37,6 +41,12 @@ export interface ValidatorConfig {
   /** Repository-relative directory in which the validator runs. */
   workingDirectory?: string;
   paths?: string[];
+  /**
+   * Delivery contract for the changed-path list. `inline` is the compatibility default and is
+   * capped for portable argv/environment sizes; `json` uses `{filesFile}` or
+   * `MERGE_BROKER_FILES_FILE` without copying the list into argv or the environment.
+   */
+  filesInput?: "inline" | "json";
   timeoutSeconds?: number;
   env?: Record<string, string>;
   /** Run through the host's native architecture instead of the Node process architecture. */
@@ -260,6 +270,115 @@ export interface BatchRecord {
   revisionIntent?: CandidateRevisionIntent;
 }
 
+/** Mutable locator from which the broker resolved an immutable local Git candidate. */
+export interface LocalRefSubmissionSource {
+  kind: "local-ref";
+  ref: string;
+}
+
+/** Immutable Git object retained by the broker before any candidate validation begins. */
+export interface SubmissionArtifactIdentity {
+  kind: "git-commit";
+  sha: string;
+  treeSha: string;
+  /** Broker-owned ref that keeps the object reachable even when the source ref moves. */
+  retainedRef: string;
+}
+
+/** Exact repository base selected independently of the submitted artifact. */
+export interface SubmissionBaseIdentity {
+  /** Configured target ref, retained separately from its resolved commit. */
+  ref: string;
+  baseBranch: string;
+  remote: string;
+  /** Lowercase SHA-256 hex of the canonical base-fetch URL, never the URL or credentials. */
+  fetchUrlFingerprint?: string;
+  sha: string;
+}
+
+/** Exact protected-base configuration and evaluator that governed validation. */
+export interface SubmissionPolicyIdentity {
+  /** Commit from which the protected configuration was loaded. */
+  baseSha: string;
+  configPath: string;
+  configBlobSha: string;
+  /** Lowercase SHA-256 hex identity of the effective validation policy. */
+  digest: string;
+  /** Friendly policy label; the digest and source identities remain authoritative. */
+  revision: string;
+  evaluatorVersion: string;
+  configVersion: number;
+}
+
+/** Physical identity of a disposable Gate worktree root, persisted before validators execute. */
+export interface SubmissionWorktreeIdentity {
+  /** Decimal filesystem device identifier from lstat; string avoids JSON number truncation. */
+  device: string;
+  /** Decimal filesystem inode/file identifier from lstat; string avoids JSON number truncation. */
+  inode: string;
+}
+
+/** Immutable target locator installed by an explicit local Gate authority setup operation. */
+export interface GateAuthorityTarget {
+  baseRef: string;
+  baseBranch: string;
+  remote: string;
+  refreshBase: boolean;
+  /** Lowercase SHA-256 hex of the canonical base-fetch URL; the URL itself is never persisted. */
+  fetchUrlFingerprint?: string;
+}
+
+/**
+ * Config-independent local trust root for candidate adoption. The record lives directly in Git's
+ * common directory so an untrusted checkout cannot redirect it through `stateDirectory`.
+ */
+export interface GateAuthorityRegistration {
+  version: typeof GATE_AUTHORITY_VERSION;
+  kind: "trusted-local-ref";
+  /** SHA-256 over the version, kind, target, and state-directory identity. */
+  digest: string;
+  target: GateAuthorityTarget;
+  stateDirectory: string;
+  registeredAt: string;
+}
+
+/**
+ * Durable record for Gate-style adoption of one trusted local Git ref. It is intentionally separate
+ * from TaskRecord and BatchRecord: adoption does not claim that an external producer participated in
+ * leases, receipts, scheduling, publication, approval, or merge reconciliation.
+ */
+export interface SubmissionRecord {
+  version: typeof SUBMISSION_VERSION;
+  id: string;
+  status: SubmissionStatus;
+  /** Gate authority identity held continuously while this submission was received. */
+  authorityDigest: string;
+  source: LocalRefSubmissionSource;
+  artifact: SubmissionArtifactIdentity;
+  base: SubmissionBaseIdentity;
+  policy: SubmissionPolicyIdentity;
+  /** Ordered commits derived from Git for this artifact/base relationship. */
+  commits: string[];
+  /** Repository-relative paths derived from Git rather than accepted from the producer. */
+  paths: string[];
+  validations: ValidationResult[];
+  /** Durable disposable-worktree identity used to replay an interrupted `validating` operation. */
+  worktree?: string;
+  /** Root identity that prevents recovery from deleting a different directory moved into place. */
+  worktreeIdentity?: SubmissionWorktreeIdentity;
+  /** Marks that the retained ref was proven durable before any validator could execute. */
+  retentionEstablishedAt?: string;
+  /** Durable tombstone: the broker-owned retention ref disappeared and had to be repaired. */
+  retentionCompromisedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  validationStartedAt?: string;
+  finishedAt?: string;
+  /** Stable machine-readable reason for a rejected or failed submission. */
+  errorCode?: string;
+  error?: string;
+}
+
 export interface CandidateRevisionIntent {
   revision: number;
   taskId: string;
@@ -318,6 +437,7 @@ export interface AuditEvent {
   actor?: string;
   taskId?: string;
   batchId?: string;
+  submissionId?: string;
   details?: Record<string, unknown>;
 }
 
@@ -326,6 +446,16 @@ export interface BrokerState {
   sequence: number;
   tasks: Record<string, TaskRecord>;
   batches: Record<string, BatchRecord>;
+  /**
+   * Absent only in state files written before local-ref submissions existed. StateStore normalizes
+   * that legacy representation to an empty collection before returning or mutating it.
+   */
+  submissions?: Record<string, SubmissionRecord>;
+}
+
+/** In-memory state returned by StateStore after additive defaults have been applied. */
+export interface CurrentBrokerState extends BrokerState {
+  submissions: Record<string, SubmissionRecord>;
 }
 
 export interface CommitReceipt {
@@ -426,6 +556,10 @@ export interface RecoveryResult {
   candidateRevisionsRecovered?: string[];
   /** Revision intents retained because the external branch could not be reconciled safely. */
   candidateRevisionWarnings?: string[];
+  /** Validation submissions whose durable in-progress state was replayed to a safe outcome. */
+  submissionsRecovered?: string[];
+  /** Validation submissions retained because recovery could not prove a safe next state. */
+  submissionWarnings?: string[];
 }
 
 export interface RevisionResult {

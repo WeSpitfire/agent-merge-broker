@@ -6,10 +6,12 @@ import {
   access,
   appendFile,
   chmod,
+  lstat,
   mkdir,
   open,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -22,13 +24,21 @@ import {
   publicKeyFromPrivate,
   type ProvenanceSigningIdentity,
 } from "./provenance.js";
-import { STATE_VERSION, type AuditEvent, type BrokerState, type CommitReceipt } from "./types.js";
+import {
+  STATE_VERSION,
+  type AuditEvent,
+  type BrokerState,
+  type CommitReceipt,
+  type CurrentBrokerState,
+  type SubmissionRecord,
+} from "./types.js";
 
 /** Most recent audit bytes scanned by a read. Older events remain in the rotated segments. */
 const AUDIT_TAIL_BYTES = 1_024 * 1_024;
 
 /** Size at which the active audit file is rotated into an archive segment. */
 const AUDIT_ROTATE_BYTES = 16 * 1_024 * 1_024;
+const GATE_AUTHORITY_LOCK_NAME = "merge-broker-gate-authority";
 
 export interface LockStatus {
   name: string;
@@ -66,10 +76,12 @@ export interface ArchivedStateSlice {
 }
 
 export class StateStore {
+  readonly commonGitDirectory: string;
   readonly directory: string;
   readonly worktreesDirectory: string;
   readonly archiveDirectory: string;
   readonly tokensDirectory: string;
+  readonly submissionsDirectory: string;
   readonly provenanceSigningKeyFile: string;
   readonly provenanceKeysDirectory: string;
   private readonly stateFile: string;
@@ -79,10 +91,25 @@ export class StateStore {
   private readonly lockTimeoutMs: number;
 
   constructor(commonGitDir: string, stateDirectory: string, lockTimeoutSeconds: number) {
-    this.directory = path.resolve(commonGitDir, stateDirectory);
+    this.commonGitDirectory = path.resolve(commonGitDir);
+    this.directory = path.resolve(this.commonGitDirectory, stateDirectory);
+    const relativeState = path.relative(this.commonGitDirectory, this.directory);
+    if (
+      relativeState === "" ||
+      relativeState === ".." ||
+      relativeState.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativeState)
+    ) {
+      throw new BrokerError(
+        "UNSAFE_PATH",
+        "Broker state directory must be a child of Git's common directory.",
+        { commonGitDirectory: this.commonGitDirectory, stateDirectory },
+      );
+    }
     this.worktreesDirectory = path.join(this.directory, "worktrees");
     this.archiveDirectory = path.join(this.directory, "archive");
     this.tokensDirectory = path.join(this.directory, "tokens");
+    this.submissionsDirectory = path.join(this.directory, "submissions");
     this.provenanceSigningKeyFile = path.join(this.directory, "provenance-signing-key.pem");
     this.provenanceKeysDirectory = path.join(this.directory, "provenance-keys");
     this.stateFile = path.join(this.directory, "state.json");
@@ -92,8 +119,53 @@ export class StateStore {
     this.lockTimeoutMs = lockTimeoutSeconds * 1_000;
   }
 
+  /** Create one directory at a time and reject symlink/junction redirection before use. */
+  private async ensurePhysicalDirectoryTree(directory: string): Promise<void> {
+    const commonStatus = await lstat(this.commonGitDirectory);
+    const physicalCommon = await realpath(this.commonGitDirectory);
+    if (!commonStatus.isDirectory() || commonStatus.isSymbolicLink()) {
+      throw new BrokerError("UNSAFE_PATH", "Git's common directory is not a physical directory.");
+    }
+    const relative = path.relative(this.commonGitDirectory, path.resolve(directory));
+    if (
+      relative === "" ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) {
+      throw new BrokerError("UNSAFE_PATH", "Broker state path escapes Git's common directory.", {
+        directory,
+      });
+    }
+    let cursor = this.commonGitDirectory;
+    for (const component of relative.split(path.sep).filter(Boolean)) {
+      cursor = path.join(cursor, component);
+      try {
+        await mkdir(cursor, { mode: 0o700 });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      const [status, physical] = await Promise.all([lstat(cursor), realpath(cursor)]);
+      const physicalRelative = path.relative(physicalCommon, physical);
+      if (
+        !status.isDirectory() ||
+        status.isSymbolicLink() ||
+        physicalRelative === "" ||
+        physicalRelative === ".." ||
+        physicalRelative.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(physicalRelative)
+      ) {
+        throw new BrokerError(
+          "UNSAFE_PATH",
+          "Broker state directory is redirected outside Git's physical common directory.",
+          { directory: cursor, physicalPath: physical },
+        );
+      }
+    }
+  }
+
   async initialize(): Promise<void> {
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    await this.ensurePhysicalDirectoryTree(this.directory);
     await chmod(this.directory, 0o700).catch(() => undefined);
     await Promise.all(
       [
@@ -102,9 +174,10 @@ export class StateStore {
         this.batchesDirectory,
         this.archiveDirectory,
         this.tokensDirectory,
+        this.submissionsDirectory,
         this.provenanceKeysDirectory,
       ].map(async (directory) => {
-        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await this.ensurePhysicalDirectoryTree(directory);
         await chmod(directory, 0o700).catch(() => undefined);
       }),
     );
@@ -117,7 +190,8 @@ export class StateStore {
             sequence: 0,
             tasks: {},
             batches: {},
-          } satisfies BrokerState, null, 2)}\n`,
+            submissions: {},
+          } satisfies CurrentBrokerState, null, 2)}\n`,
           { encoding: "utf8", flag: "wx", mode: 0o600 },
         );
       } catch (error) {
@@ -127,7 +201,7 @@ export class StateStore {
     await chmod(this.stateFile, 0o600).catch(() => undefined);
   }
 
-  async read(): Promise<BrokerState> {
+  async read(): Promise<CurrentBrokerState> {
     await this.initialize();
     const source = await readFile(this.stateFile, "utf8");
     let state: BrokerState;
@@ -141,10 +215,21 @@ export class StateStore {
     if (state.version !== STATE_VERSION) {
       throw new BrokerError("STATE_VERSION", `Unsupported broker state version: ${String(state.version)}`);
     }
-    return state;
+    if (state.submissions === undefined) {
+      // Additive v1 migration: old readers preserve unknown fields, and old state files become
+      // current on their next normal transaction without a separate destructive migration step.
+      state.submissions = {};
+    } else if (
+      state.submissions === null ||
+      typeof state.submissions !== "object" ||
+      Array.isArray(state.submissions)
+    ) {
+      throw new BrokerError("STATE_CORRUPT", "Broker state submissions must be an object keyed by submission ID.");
+    }
+    return state as CurrentBrokerState;
   }
 
-  async transaction<T>(mutator: (state: BrokerState, audit: AuditRecorder) => Promise<T> | T): Promise<T> {
+  async transaction<T>(mutator: (state: CurrentBrokerState, audit: AuditRecorder) => Promise<T> | T): Promise<T> {
     return await this.withLock("state", async () => {
       const state = await this.read();
       const events: AuditEvent[] = [];
@@ -168,6 +253,32 @@ export class StateStore {
 
   async withIntegrationLock<T>(operation: () => Promise<T>): Promise<T> {
     return await this.withLock("integration", operation);
+  }
+
+  /**
+   * Serializes Gate authority setup, adoption, and recovery at a config-independent location.
+   * Holding this lock across validation prevents an explicit replacement from changing trust roots
+   * while an older authority is still making progress.
+   */
+  async withGateAuthorityLock<T>(operation: () => Promise<T>): Promise<T> {
+    return await this.withLock(GATE_AUTHORITY_LOCK_NAME, operation, {
+      directory: this.commonGitDirectory,
+      initialize: false,
+    });
+  }
+
+  async inspectGateAuthorityLock(): Promise<LockStatus> {
+    const lock = await this.inspectLockAt(GATE_AUTHORITY_LOCK_NAME, this.commonGitDirectory);
+    return { ...lock, name: "gate-authority" };
+  }
+
+  async releaseGateAuthorityLock(options: { force?: boolean } = {}): Promise<LockStatus> {
+    const lock = await this.releaseLockAt(
+      GATE_AUTHORITY_LOCK_NAME,
+      options,
+      this.commonGitDirectory,
+    );
+    return { ...lock, name: "gate-authority" };
   }
 
   /**
@@ -316,6 +427,14 @@ export class StateStore {
     return target;
   }
 
+  /** Writes a private, atomic snapshot of a durable submission record for external inspection. */
+  async writeSubmissionManifest(submission: SubmissionRecord): Promise<string> {
+    await this.initialize();
+    const target = path.join(this.submissionsDirectory, `${safeName(submission.id)}.json`);
+    await this.atomicWrite(target, submission);
+    return target;
+  }
+
   private async readAuditFile(target: string, limit: number): Promise<AuditEvent[]> {
     if (!(await exists(target))) return [];
     const handle = await open(target, "r");
@@ -414,7 +533,11 @@ export class StateStore {
   }
 
   async inspectLock(name: string): Promise<LockStatus> {
-    const lockDirectory = path.join(this.directory, `${name}.lock`);
+    return await this.inspectLockAt(name, this.directory);
+  }
+
+  private async inspectLockAt(name: string, directory: string): Promise<LockStatus> {
+    const lockDirectory = path.join(directory, `${name}.lock`);
     const lockStat = await stat(lockDirectory).catch(() => undefined);
     if (!lockStat) return { name, held: false, path: lockDirectory };
     let owner: LockStatus["owner"];
@@ -449,20 +572,28 @@ export class StateStore {
    * removing a live lock allows two integrations to run against the same repository at once.
    */
   async releaseLock(name: string, options: { force?: boolean } = {}): Promise<LockStatus> {
-    const status = await this.inspectLock(name);
+    return await this.releaseLockAt(name, options, this.directory);
+  }
+
+  private async releaseLockAt(
+    name: string,
+    options: { force?: boolean },
+    directory: string,
+  ): Promise<LockStatus> {
+    const status = await this.inspectLockAt(name, directory);
     if (!status.held) return status;
     if (!options.force && !status.abandoned) {
       throw new BrokerError(
         "LOCK_HELD",
         `The ${name} lock is held by ${status.owner?.host ?? "an unknown host"} (pid ${
           status.owner?.pid ?? "unknown"
-        }) and is not provably abandoned. Re-run with --force only after confirming no integration is running.`,
+        }) and is not provably abandoned. Re-run with --force only after confirming no operation using this lock can still progress.`,
         { lock: status },
       );
     }
     if (status.owner?.nonce) {
       const released = await this.releaseOwnedLock(status.path, status.owner.nonce);
-      if (!released) return await this.inspectLock(name);
+      if (!released) return await this.inspectLockAt(name, directory);
     } else {
       // Compatibility for locks written by releases before owner nonces were introduced. New locks
       // always take the owner-checked path above.
@@ -474,9 +605,14 @@ export class StateStore {
   private async withLock<T>(
     name: string,
     operation: (ownerNonce: string) => Promise<T> | T,
+    options: { directory?: string; initialize?: boolean } = {},
   ): Promise<T> {
-    await this.initialize();
-    const lockDirectory = path.join(this.directory, `${name}.lock`);
+    if (options.initialize === false) {
+      await mkdir(options.directory ?? this.directory, { recursive: true, mode: 0o700 });
+    } else {
+      await this.initialize();
+    }
+    const lockDirectory = path.join(options.directory ?? this.directory, `${name}.lock`);
     const startedAt = Date.now();
     const ownerNonce = randomUUID();
     const owner = {

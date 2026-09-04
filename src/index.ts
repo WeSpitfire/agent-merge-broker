@@ -1,5 +1,17 @@
-export { MergeBroker, type ClaimTaskInput, type RegisterTaskInput } from "./broker.js";
-export { GitRepository, type WorktreeInfo } from "./git.js";
+export {
+  MergeBroker,
+  type AdoptCandidateInput,
+  type ClaimTaskInput,
+  type RegisterCandidateAuthorityOptions,
+  type RegisterTaskInput,
+} from "./broker.js";
+export {
+  adoptedRef,
+  GitRepository,
+  type LinearCommitHistory,
+  type PinnedGitCommit,
+  type WorktreeInfo,
+} from "./git.js";
 export { StateStore, type ArchivedStateSlice, type LockStatus } from "./store.js";
 export { installHooks, prePushHook, uninstallHooks, type HookInstallation } from "./hooks.js";
 export {

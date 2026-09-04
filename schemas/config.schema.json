@@ -29,7 +29,8 @@
     "stateDirectory": {
       "type": "string",
       "minLength": 1,
-      "description": "Safe relative directory beneath Git's common directory; Git-reserved top-level names are rejected."
+      "maxLength": 1024,
+      "description": "Conservative portable relative directory beneath Git's common directory; Git-reserved top-level names, aliases, device names, non-ASCII components, and Windows-unsafe spellings are rejected."
     },
     "leases": {
       "type": "object",
@@ -285,8 +286,16 @@
           "description": "Repository-relative directory in which the validator runs."
         },
         "paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "filesInput": {
+          "enum": ["inline", "json"],
+          "description": "Deliver changed paths through the compatibility inline surface or the bounded JSON-file surface."
+        },
         "timeoutSeconds": { "type": "integer", "minimum": 1 },
-        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Additional validator environment. Trusted local-ref Gate rejects Git repository, index, object, history, and GIT_CONFIG injection overrides here and scrubs inherited values."
+        },
         "executionArchitecture": {
           "enum": ["process", "native"],
           "description": "Run the validator under the Node process architecture or the host's native architecture."

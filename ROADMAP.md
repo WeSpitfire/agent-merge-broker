@@ -6,17 +6,19 @@ This roadmap is organized by capability rather than promised release numbers or 
 
 ## Now — consolidate the recoverable transaction core
 
-Version `0.12.1` is the current baseline. It ships Coordinate mode: leases and commit receipts,
+Version `0.13.0` is the current baseline. It ships Coordinate mode: leases and commit receipts,
 deterministic batching, disposable-worktree validation, optional exact-candidate approval, signed
 provenance support, bound Git/GitHub publication, and recovery for interrupted publication,
-auto-merge, revocation, revision, and stale-base refresh.
+auto-merge, revocation, revision, and stale-base refresh. It also ships the trusted local-ref Gate
+validation increment below.
 
 Near-term work should make that foundation easier to operate and change safely:
 
 - document every durable intent, retry rule, ambiguous state, lock, and recovery transition;
 - keep the public `MergeBroker` API stable while separating candidate lifecycle and transaction
   mechanics into smaller internal modules;
-- define the trust model and acceptance tests for external candidate intake;
+- extend the proven local-ref submission boundary toward merge-authorized candidate lifecycle
+  without conflating the two records;
 - strengthen repository governance, cross-platform release evidence, and real-forge canary coverage;
 - keep current package, repository, CLI, and on-disk identities stable; and
 - preserve Coordinate mode as the supported local-first workflow.
@@ -24,43 +26,55 @@ Near-term work should make that foundation easier to operate and change safely:
 This phase does not add a remote service or claim that arbitrary pull requests can already enter the
 candidate lifecycle.
 
-## Next — adopt one immutable Git ref safely
+## Shipped in 0.13.0 — retain and validate one immutable Git ref
 
-The first Gate-mode vertical slice is **planned** adoption of a Git commit already available to the
-broker's repository. It should not begin with a PR number, uploaded bundle, or unauthenticated network
-request.
-
-The slice is complete only when the broker can:
-
-1. resolve the requested ref to a full commit ID and retain it under a broker-owned reference;
-2. resolve the configured base independently and enforce the intended ancestry boundary;
-3. derive changed paths and commit history from Git rather than producer metadata;
-4. load the applicable policy from the configured base;
-5. validate the retained bytes in a disposable worktree under the current trusted-repository model;
-6. create an exact candidate identity without inventing a path lease or pretending the producer used
-   Coordinate mode;
-7. bind any evidence and approval to that candidate, base, and policy; and
-8. publish or reject it through the same target-bound, recoverable transaction machinery used today.
-
-A proposed command might eventually look like:
+The first Gate-mode increment requires an explicit authority registration before
+adoption:
 
 ```bash
+amb candidate authority setup
 amb candidate adopt --ref <git-ref>
 ```
 
-That syntax is illustrative, not part of the current CLI contract. The broker selects the protected
-target and policy; a producer-supplied base must never choose the authority that evaluates it.
+The setup ceremony records a versioned protected-target locator at a config-independent path in
+Git's common directory. It binds the base ref, branch, remote, refresh behavior, state directory, and
+canonical fetch target when available without storing the remote URL. Adoption resolves a
+repository-local ref to a full commit, retains it under a broker-owned ref, resolves the registered
+base independently, requires a nonempty linear descendant within the smaller of
+`scheduling.maxCommits` and Gate's 1,000-commit hard ceiling, derives raw paths and history,
+loads matching committed policy from the exact base, and runs broker-authoritative validation on
+filter-free materialized bytes. The durable `SubmissionRecord` is separate from tasks and batches,
+and `recover` replays an interrupted `received` or `validating` submission only under its recorded
+authority digest.
+
+The broker selects the protected target and policy; a producer-supplied base or path list never
+chooses the authority that evaluates it. The source ref must already be available locally, and this
+trusted-host increment requires `validation.authority: "broker"`.
+
+## Next — turn a validated submission into a merge-authorized Gate candidate
+
+Validation is not merge authorization. The next Gate slice is **planned** and must deliberately
+connect the retained submission to the exact-candidate lifecycle while preserving its separate
+origin. It is complete only when the broker can:
+
+1. create an exact candidate identity without inventing a path lease, task receipt, or synthetic
+   Coordinate-mode batch history;
+2. define provenance that honestly identifies the retained external artifact and protected-base
+   policy;
+3. bind evidence and approval to that exact candidate, base, and policy;
+4. publish or reject it through target-bound, crash-recoverable operations; and
+5. reconcile merge completion from accepted Git history before granting any downstream authority.
 
 Implementation should extract only the ports this slice actually needs—starting with a candidate
-source and candidate-lifecycle boundary. A broad storage rewrite, generic workflow engine, PR intake,
-and remote authentication do not need to land in the same change.
+source and candidate-lifecycle boundary. A broad storage rewrite, generic workflow engine, PR
+intake, and remote authentication do not need to land in the same change.
 
 The first slice remains explicitly trusted-source-only: a disposable Git worktree is not a security
 sandbox, and validators executing candidate-controlled code can otherwise reach the broker user's
 files, credentials, and network. Accepting untrusted or remote producers requires a credential-free
 isolated runner with resource and network policy.
 
-After local ref adoption is proven, a separate increment may add pull-request adoption. It must pin
+After local ref validation and authority are proven, a separate increment may add pull-request adoption. It must pin
 the exact head and base, bind a stable forge identity, distinguish self-reported producer metadata
 from authenticated identity, and remain safe when refs move during intake. It also requires an
 installed forge check with restricted bypass and either detached attestations or a broker-owned

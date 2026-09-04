@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/gate-authority.schema.json",
+  "title": "Agent Merge Broker local Gate authority registration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "kind", "digest", "target", "stateDirectory", "registeredAt"],
+  "properties": {
+    "version": { "const": 1 },
+    "kind": { "const": "trusted-local-ref" },
+    "digest": { "$ref": "#/$defs/sha256" },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseRef", "baseBranch", "remote", "refreshBase"],
+      "properties": {
+        "baseRef": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "baseBranch": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "remote": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "refreshBase": { "type": "boolean" },
+        "fetchUrlFingerprint": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "stateDirectory": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "Conservative portable relative directory beneath Git's common directory. Runtime validation rejects Git-reserved top-level names, aliases, device names, non-ASCII components, and Windows-unsafe spellings.",
+      "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!\\.$)(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$))[^\\\\\u0000-\u001f\u007f<>:\"|?*]+$"
+    },
+    "registeredAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -16,15 +16,123 @@ zero, while usage and action errors write
 The `details` field is omitted when no diagnostic details exist. Continuous `serve --json` is
 intentionally a newline-delimited stream of event objects until the process stops;
 `serve --once --json` returns one summary document containing recovery, events, and operation
-results. `--help` and `--version` remain human-readable text. The error code is the machine-readable
-branching surface. Messages and details are diagnostic context and may become more specific without
-changing the code.
+results. `candidate adopt` has one deliberate terminal-result exception: when it returns a durable
+non-`validated` `SubmissionRecord` (`rejected` or `failed`), it writes that record to stdout but exits
+nonzero. An exception that prevents a terminal record from being returned uses the normal stderr
+error envelope; because durable state may already exist, inspect `candidate list` and run `recover`
+before blindly retrying. `--help` and `--version` remain human-readable text. The error code is the
+machine-readable branching surface. Messages and details are diagnostic context and may become more
+specific without changing the code.
 
 The package also supplies `merge-broker-mcp`, a stdio MCP adapter. Its default `worker` profile
 registers only task/status/validation capabilities and keeps lease tokens in the local vault. The
 `operator` profile additionally registers planning, integration, publication, synchronization,
 verification, approval, audit, metrics, and recovery. Profiles are chosen when the server starts,
 not by tool input, so a worker cannot request promotion.
+
+## Retain and validate a trusted local candidate
+
+Gate intake is an operator/API capability in `0.13.0`. It is not registered by either bundled MCP
+profile. Gate requires Git 2.46 or newer. The
+source must be a trusted Git revision whose complete, repository-owned object graph is already
+addressable in the broker repository:
+
+```bash
+merge-broker --json candidate authority setup
+merge-broker --json candidate authority show
+merge-broker --json candidate adopt --ref refs/heads/external-candidate
+merge-broker --json candidate list
+merge-broker --json candidate show <submission-id>
+```
+
+Run `candidate authority setup` only from a reviewed protected checkout. It atomically creates a
+versioned registration at `<git-common-dir>/merge-broker-gate-authority.json`; the record conforms to
+[`../schemas/gate-authority.schema.json`](../schemas/gate-authority.schema.json). It binds `baseRef`,
+`baseBranch`, `remote`, `integration.refreshBase`, `stateDirectory`, and, when present, the SHA-256
+fingerprint of Git's canonical **fetch** URL. It never stores the URL or credentials. Repeating setup
+for the same identity is idempotent. A different identity requires `candidate authority setup
+--replace`, and one config-independent common-directory lock prevents setup/replacement from racing
+adoption or recovery. The fetch binding is deliberately distinct from a batch's publication/push URL
+binding: a legal `remote.<name>.pushurl` cannot choose Gate's protected base.
+`stateDirectory` uses a conservative portable ASCII grammar, excludes Git-admin and broker-authority
+names, and is created one physical directory at a time beneath the physical Git common directory;
+symlink or junction redirection is rejected.
+
+When `integration.refreshBase` is true and `baseRef` names the configured base branch—whether as
+`main`, `origin/main`, or `refs/remotes/origin/main`—setup requires the configured remote to have a
+canonical fetch URL and records its fingerprint. It does not silently fall back to a possibly stale
+local ref. An intentionally offline/local authority must set `integration.refreshBase` to false before
+setup.
+
+`adopt` accepts no caller-supplied base or paths. The mutable checkout must still match the registered
+target, but the registration—not that file—is the base-selection authority. The broker also loads
+`.merge-broker/config.json` from the exact selected base and requires its target, refresh, and state
+fields to match the registration before using its policy. The committed policy currently requires
+`validation.authority: "broker"`, and the policy blob must not exceed Gate's 1 MiB safety ceiling.
+Before resolving the candidate or base, Gate rejects nonempty ambient Git repository, worktree,
+index, namespace, object, graft, shallow, quarantine, replacement-ref, and Git
+configuration-injection or transport-command overrides. The match is case-insensitive and includes
+`GIT_EXEC_PATH`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_SSH_VARIANT`, `GIT_PROXY_COMMAND`, and indexed
+`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` pairs. Proxy variables, `GIT_HTTP_*`, `GIT_SSL_*`, and
+ambient curl/OpenSSL CA overrides are refused too. Configured `core.sshCommand`, `core.gitProxy`,
+`url.*.insteadOf`/`pushInsteadOf`, and HTTP proxy/TLS/routing overrides are also refused before exact
+transport; HTTP authorization headers remain supported, but `Host`/`:authority` overrides do not. An exact locator
+must not collide with an effective local/global/system `remote.*` subsection or Git's legacy remote
+shorthands. Gate policy validators cannot declare the environment keys in `env`; internal Git and
+validator child environments have inherited values removed defensively.
+
+The artifact must be a nonempty, merge-free linear descendant of the base and contain no more than
+the smaller of `scheduling.maxCommits` and Gate's 1,000-commit hard ceiling. The broker resolves the
+mutable source ref once, retains the exact commit under
+`refs/merge-broker/adopted/<submission-id>`, and thereafter uses
+the recorded authority digest, commit, tree, base, policy identity, commit sequence, and derived path
+set as authority. It independently recomputes every retained commit, tree, and blob object ID,
+parses Git-recognized parent headers byte-for-byte, and rejects a graph whose stored bytes do not
+match those IDs.
+
+The returned record conforms to
+[`../schemas/submission.schema.json`](../schemas/submission.schema.json). Its statuses are:
+
+| Status | Meaning |
+| --- | --- |
+| `received` | Durable artifact, base, policy, history, and path identity recorded; retention/validation may still need replay |
+| `validating` | The retained identity is being rechecked and evaluated in its disposable worktree |
+| `validated` | Every matching focused validator and every authoritative validator passed without changing `HEAD` or the worktree |
+| `rejected` | Repository validation failed, or a validator changed the candidate worktree |
+| `failed` | Policy loading, Git inspection, cleanup, restored retention loss, or another managed infrastructure operation failed while the final immutable identity remained provable |
+
+`recover` retries `received` and `validating` records under both the fixed authority lock and the
+integration lock. Each submission binds the authority digest present when it was received. If an
+operator replaces authority while a submission is pending, recovery retains the pending record and
+reports a warning rather than replaying it under the new trust root. Terminal records remain
+inspectable through `candidate show`, `candidate list`, `state().submissions`, and the private
+`submissions/` runtime-manifest directory. A submission is deliberately not a task, receipt, batch,
+approval candidate, provenance predicate, publication, or merge authorization; no batch command
+accepts its ID. A process stop or cleanup interruption may leave `validating` durable rather than
+guessing a terminal result.
+
+No validator runs until `retentionEstablishedAt` durably records that the create-only retained ref
+was proven. A missing ref before that marker is the replayable initial pin step; a missing ref after
+it is a compromise, never an ambiguous first attempt. Before repairing that later loss, the broker
+durably sets `retentionCompromisedAt`, so a crash after repair cannot forget the violation or turn a
+later passing retry into `validated`.
+
+No terminal status is written until the broker again proves the complete local object closure,
+recorded history/tree/path identity, and direct retained ref. A wrong or symbolic retained ref, or an
+irreproducible object identity, therefore leaves the record `validating`; `recover` reports a warning
+until an operator restores the exact identity. If any check discovers that an established ref was
+removed, it restores the ref with create-only compare-and-swap: a passing run becomes `failed` with
+`SUBMISSION_REF_CHANGED`, while an already-failing validator can retain its truthful `rejected`
+result. A nonempty nonignored
+untracked-path listing, including one that overflows its 4 KiB capture bound, is a bounded
+`VALIDATOR_MUTATED_WORKTREE` rejection. The same code covers a changed `.git` marker: Gate binds its
+regular gitfile, linked-worktree registry entry, backlink, common repository, and physical top level
+before `HEAD` or index reads. Cleanup/recovery repairs only an exact backlink-proven marker and never
+uses it as authority to remove a sibling entry. Terminal state is committed before the derived
+private manifest. If manifest writing then fails, the command reports
+`SUBMISSION_MANIFEST_WRITE_FAILED`, and
+`recover` regenerates terminal sidecars from authoritative state before consulting Gate authority,
+so a missing or corrupt authority registration does not hide an already-terminal result.
 
 ## Claim
 
@@ -285,6 +393,21 @@ prisma/schema.prisma
 
 Avoid `**/*` unless the task genuinely owns the repository. A committed file outside the expected scope is rejected by default.
 
+### Validator path transport
+
+For every invoked validator, the broker writes the validator-relative path list as a UTF-8 JSON array
+and sets `MERGE_BROKER_FILES_FILE` to that owner-readable file plus
+`MERGE_BROKER_FILES_FILE_FORMAT=json`. The shell-safe `{filesFile}` placeholder expands to the same
+path.
+
+Omitted `filesInput` means `inline`. Inline mode supplies both the `MERGE_BROKER_FILES` newline list
+and `{files}` shell-quoted argument expansion only when both serialized forms fit within 4 KiB. If
+either form is larger, the broker rejects the validator before execution with `VALIDATION_FAILED`,
+whether or not its command uses `{files}`; it does not silently replace a nonempty list with an empty
+environment value. `filesInput: "json"` is the explicit portable mode for potentially large path
+sets. It leaves `MERGE_BROKER_FILES` empty, and a command that still contains `{files}` is rejected;
+the validator must read `{filesFile}` or `MERGE_BROKER_FILES_FILE` as JSON data.
+
 ## Dependencies
 
 Dependencies refer to broker task IDs. With `requireDependencies` enabled, every referenced task must exist before submission. A dependency is schedulable when it is selected earlier in the same batch or has reached `merged` status.
@@ -295,8 +418,8 @@ Published or prepared work is not treated as merged. This prevents a child from 
 
 ## Stable error categories
 
-Adapters should branch on `BrokerError.code`, not message text. These are the currently emitted
-categories and the normal response to each family:
+Adapters should branch on `BrokerError.code` (or a returned terminal `SubmissionRecord.errorCode`),
+not message text. These are the currently emitted categories and the normal response to each family:
 
 - Setup, input, and lookup — `NOT_INITIALIZED`, `INVALID_CONFIG`, `INVALID_ARGUMENTS`,
   `INVALID_INTERVAL`, `INVALID_LIMIT`, `INVALID_MCP_PROFILE`, `INVALID_AGENT_CONTRACT`,
@@ -312,9 +435,27 @@ categories and the normal response to each family:
   `BATCH_OUTSTANDING`, `CHERRY_PICK_CONFLICT`, `VALIDATION_FAILED`, and
   `VALIDATOR_MUTATED_WORKTREE`. These normally require corrected work, explicit retry, or operator
   review rather than an automatic loop.
+- Trusted local-ref intake — `INVALID_SUBMISSION_REF`, `UNKNOWN_SUBMISSION`, `EMPTY_SUBMISSION`,
+  `BASE_NOT_ANCESTOR`, `NON_LINEAR_HISTORY`, `HISTORY_INSPECTION_FAILED`, `SUBMISSION_TOO_LARGE`,
+  `SUBMISSION_GIT_UNSUPPORTED`, `SUBMISSION_OBJECT_STORE_UNSUPPORTED`, `GIT_OBJECT_READ_FAILED`,
+  `SUBMISSION_VALIDATION_UNAVAILABLE`, `SUBMISSION_POLICY_UNAVAILABLE`,
+  `SUBMISSION_POLICY_INVALID`, `SUBMISSION_POLICY_CHANGED`, `SUBMISSION_IDENTITY_CHANGED`,
+  `SUBMISSION_REF_CHANGED`, `SUBMISSION_CHANGED`, `SUBMISSION_EXISTS`, `SUBMISSION_FAILED`,
+  `SUBMISSION_MANIFEST_WRITE_FAILED`, `VALIDATION_CACHE_CLEANUP_FAILED`, `PINNED_REF_EXISTS`,
+  `PIN_REF_FAILED`, `TEMPORARY_REF_CONFLICT`, `FETCH_REF_INVALID`,
+  `TEMPORARY_REF_CLEANUP_FAILED`, `GIT_HOOK_ISOLATION_FAILED`, `WORKTREE_IDENTITY_UNAVAILABLE`,
+  `GATE_AUTHORITY_REQUIRED`, `GATE_AUTHORITY_EXISTS`, `GATE_AUTHORITY_CORRUPT`,
+  `GATE_AUTHORITY_VERSION`, `GATE_AUTHORITY_MISMATCH`, and `GATE_AUTHORITY_CHANGED`. Register or
+  restore the reviewed authority and correct an input/policy
+  precondition before adopting again. `GATE_AUTHORITY_EXISTS` requires deliberate `--replace`; never
+  automate replacement. For a durable `received` or `validating` record, run `recover`; do not edit
+  its identity or move its broker-owned ref. An authority-change warning requires restoring the
+  original registration; `0.13.0` does not migrate a pending submission between authorities.
 - Locks and state — `LOCK_HELD`, `LOCK_TIMEOUT`, `STATE_CORRUPT`, and `STATE_VERSION`. A timeout may
   be retried after the holder finishes. Corrupt or unsupported state requires operator recovery; an
-  adapter must not initialize over it.
+  adapter must not initialize over it. `unlock` and `doctor` include the fixed-root `gate-authority`
+  lock; force-release it only after independently proving no setup, adoption, or recovery process can
+  still progress.
 - Signing and proof — `SIGNING_KEY_REQUIRED`, `SIGNING_KEY_MISMATCH`, `SIGNING_KEY_EXISTS`, and
   `PROVENANCE_INVALID`. Restore or deliberately rotate the configured identity; never downgrade a
   required signature automatically.
@@ -365,6 +506,12 @@ import { MergeBroker } from "agent-merge-broker";
 const broker = await MergeBroker.open("/path/to/worktree");
 const plan = await broker.plan();
 const result = await broker.integrate({ dryRun: true });
+
+const authority = await broker.registerCandidateAuthority();
+const submission = await broker.adoptCandidate({ ref: "refs/heads/external-candidate" });
+const sameSubmission = await broker.submission(submission.id);
 ```
 
-Programmatic callers share the same filesystem locks and state machine as CLI callers.
+Programmatic callers share the same filesystem locks and state machine as CLI callers. The
+additive `state().submissions` collection is normalized to an empty object when reading a state file
+written before trusted local-ref intake.

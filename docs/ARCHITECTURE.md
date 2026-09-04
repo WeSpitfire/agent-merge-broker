@@ -2,7 +2,11 @@
 
 ## Product boundary
 
-Agent Merge Broker sits between code-producing workers and the repository's protected integration workflow. Workers own implementation and focused commits. The broker owns ordering, batching, validation, and publication. GitHub or another forge remains the review, policy, and deployment boundary.
+Agent Merge Broker sits between code-producing workers and the repository's protected integration
+workflow. Coordinate-mode workers own implementation and focused commits; the broker owns ordering,
+batching, validation, and publication. Version `0.13.0` adds trusted local-ref intake as a
+separate validation-only aggregate for work assembled elsewhere. GitHub or another forge remains the
+review, policy, and deployment boundary.
 
 The core depends on Git rather than a particular agent SDK. CLI JSON output and the exported Node API are the initial adapter surfaces.
 
@@ -36,6 +40,14 @@ The core depends on Git rather than a particular agent SDK. CLI JSON output and 
 14. An authorization-relevant remote side effect is never inferred from a missing response. The
     broker records enough intent first, observes the external system on retry, and fails closed while
     the outcome is unknown. Informational PR text is not used as authority.
+15. Trusted local-ref intake resolves a mutable source name once, records the immutable commit and
+    tree, and creates a broker-owned ref before validation can become terminal. Later source-ref
+    movement cannot change the submission.
+16. A local-ref submission derives its commit chain and paths from raw Git objects and loads its
+    evaluator policy from the exact registered base commit, never from the candidate's or mutable
+    checkout's choice of authority.
+17. `validated` on a submission is validation evidence only. It creates no Coordinate-mode task,
+    lease, receipt, batch, approval, provenance, publication, or merge authority.
 
 ## Portable and runtime state
 
@@ -49,6 +61,7 @@ $(git rev-parse --git-common-dir)/merge-broker/
 ├── audit.jsonl
 ├── receipts/<task-id>.json
 ├── batches/<batch-id>.json
+├── submissions/<submission-id>.json
 ├── tokens/<task-id>.token
 ├── provenance-signing-key.pem
 ├── provenance-keys/<key-id>.pem
@@ -56,19 +69,43 @@ $(git rev-parse --git-common-dir)/merge-broker/
 ├── integration.lock/
 ├── batch-<safe-batch-id>.lock/
 ├── archive/
-└── worktrees/<batch-id>/
+└── worktrees/
+    ├── <batch-id>/
+    └── submission-<submission-id>/
 ```
+
+The state directory above is the default and remains configurable. Current-main Gate authority is
+intentionally not located through that mutable configuration. Its versioned registration and lock
+have fixed paths directly under Git's common directory:
+
+```text
+$(git rev-parse --git-common-dir)/merge-broker-gate-authority.json
+$(git rev-parse --git-common-dir)/merge-broker-gate-authority.lock/
+```
+
+The state locator uses conservative portable ASCII path components and rejects Git-admin names,
+fixed authority names, filesystem aliases, and device spellings. Initialization creates and proves
+each physical component below the physical common directory instead of following a symlink or
+junction. Gate worktree identities use full-width device/inode strings so recovery refuses a
+different directory or file moved into a recorded pathname.
 
 JSON state writes use a temporary sibling followed by an atomic rename. A lock contender first
 builds an owner directory containing its process ID, hostname, creation time, and random nonce, then
 atomically renames that complete directory into the active lock path. The nonce is a fencing identity:
 an old holder can neither release nor reclaim a successor's lock.
 
+Local-ref submissions are an additive collection in state version 1. A reader normalizes a legacy
+file with no `submissions` member to `{}` and persists that collection on the next ordinary state
+transaction; a present non-object value is corruption, not an empty collection.
+
 The state lock protects short state and audit mutations. The integration lock protects planning,
-worktree construction, validation, and recovery of an abandoned `running` batch. Per-batch locks
-serialize publication, synchronization, approval, change requests, revision, refresh, completion,
-and closure for the same batch without blocking unrelated batch reconciliation. Status reads and
-heartbeats therefore do not hold the long integration lock.
+worktree construction, validation, recovery of an abandoned `running` batch, and trusted local-ref
+adoption/recovery. Per-batch locks serialize publication, synchronization, approval, change
+requests, revision, refresh, completion, and closure for the same batch without blocking unrelated
+batch reconciliation. Status reads and heartbeats therefore do not hold the long integration lock.
+Gate setup, replacement, adoption, and submission recovery additionally hold the fixed common-dir
+authority lock. This prevents `--replace` from changing the trust root during validation even when a
+new checkout configuration names a different state directory.
 
 Candidate revision takes its batch lock before the integration lock. Normal integration releases
 the integration lock before entering batch-locked publication, so those paths do not acquire the
@@ -82,6 +119,11 @@ Active state is a working set, not a historical record. Because `state.json` is 
 
 Two records are deliberately not prunable. A completed task that a retained task still declares as a dependency stays, because `dependencyReady` cannot distinguish a pruned dependency from one that has never merged and would block the dependent forever. A batch stays while any of its tasks does, so a retained task never points at a batch that no longer exists.
 
+Submission records and `refs/merge-broker/adopted/<submission-id>` are also retained indefinitely in
+this first Gate slice. `prune` does not archive or delete them. Deleting only the state record or only
+the ref would break the durable identity/recovery relationship, so automated retirement needs its
+own journaled increment rather than an undocumented manual cleanup convention.
+
 Audit reads are tolerant by design: they scan a bounded tail and skip records that fail to parse. A crash between writing and flushing leaves a truncated line, which is exactly the moment the audit trail matters most.
 
 ## Lock recovery
@@ -90,8 +132,10 @@ A holder on this machine whose process is gone is provably abandoned and can be 
 short grace period. Age alone is never proof: a live same-host lock, a foreign-host lock, and a lock
 with unreadable ownership are not stolen, no matter how old they are. A waiting command instead
 fails after `leases.lockTimeoutSeconds`. After confirming that no broker process can still make
-progress, an operator can inspect locks with `doctor` and release `state`, `integration`, or
-`batch:<batch-id>` with `unlock`; `--force` is required when the owner cannot be proven dead.
+progress, an operator can inspect locks with `doctor` and release `state`, `integration`,
+`gate-authority`, or `batch:<batch-id>` with `unlock`; `--force` is required when the owner cannot be
+proven dead. The `gate-authority` operation targets the fixed common-directory lock rather than a
+lock under the configured state directory.
 
 Release and reclaim first rename the exact nonce-bearing owner directory to a nonce-specific
 tombstone. A delayed holder or reclaimer can therefore remove only the lock it observed, never a
@@ -105,6 +149,21 @@ an attempt. The exact branch name and expected head are persisted before branch 
 runs while the batch is still durably `running`, so another stop before terminal state simply replays
 idempotent observation and cleanup; a changed or checked-out branch is retained with a warning.
 `serve`, `integrate`, and the explicit `recover` command all use the same recovery path.
+
+Local-ref adoption uses the same integration lock but a separate aggregate. It writes a `received`
+submission before creating the broker-owned ref, then moves it to `validating`. After the create-only
+pin succeeds, it durably records `retentionEstablishedAt` before any validator can run. After a
+restart, `recover` can therefore distinguish an initial pin that never completed from later ref
+loss. Later loss first records `retentionCompromisedAt` and only then performs create-only repair, so
+a stop after repair cannot erase the violation or turn a retry into success. Every retry re-derives the
+commit chain, tree, paths, and protected-base policy identity before executing validators. No
+terminal claim is written unless a final proof reproduces the object closure, history/tree/path
+identity, and direct retained ref. A wrong or symbolic ref, or an irreproducible identity, therefore
+leaves `validating` durable and produces a recovery warning until the exact identity is restored. A
+missing ref at the planned pre-validation retention boundary can be safely created idempotently. A
+missing ref detected by the post-validation retention check is restored with create-only
+compare-and-swap; that later loss invalidates an otherwise-successful validation but does not erase
+an already-truthful validator rejection.
 
 Candidate revision uses a second durable hand-off. Before moving the integration branch, the broker
 records a revision intent containing the old candidate, replacement candidate, and replacement task
@@ -123,6 +182,7 @@ operation succeeded:
 | Local durable state | External side effect | Observation that permits finalization | Resume path |
 | --- | --- | --- | --- |
 | Batch `running`; tasks `integrating` | Disposable worktree and local branch construction | A new process holds the integration lock, proving the old transaction cannot progress | `recover`; also run automatically by `serve` and `integrate` |
+| Submission `received` or `validating` | Create the exact broker-owned retention ref, construct a disposable worktree, and execute repository validators | Retained ref equals the recorded artifact SHA; Git reproduces the recorded base, commit chain, tree, paths, and policy identity; validators leave the candidate unchanged | `recover`; `serve` runs that recovery at startup |
 | Batch `prepared` with branch, head SHA, base, and target binding | Exact-SHA branch push and PR creation | Bound branch is at the recorded SHA; an existing PR for the unique head/base is found across all PR states | `batch publish` or `serve --publish` |
 | `autoMergePending` | Usually enable auto-merge with the expected-head guard, or perform the same guarded merge when the forge already reports `CLEAN`; it also marks an unauthorized or legacy queue as possibly live while the broker disables it | Forge reports whether the queue is enabled, disabled, or the exact PR is terminal | Reconcile with `batch sync`; complete or retry an authorized hand-off with `batch publish` or `serve --publish` |
 | Approval with `approvedAt` but no `confirmedAt` | None yet; this is the causal gap before merge authorization | A post-write observation sees the exact PR still `OPEN` at the candidate head, base branch, and base SHA | Run `batch sync` or repeat `batch approve` with the exact tuple; either performs the post-write observation |
@@ -151,6 +211,70 @@ that no PR exists. Candidate revision is the sole remote force update and uses
 The PR body update after a successful revision is informational. If its result is unsuccessful or
 uncertain, the revised candidate and branch remain authoritative and `publishWarning` exposes the
 description warning; PR text is never merge authorization.
+
+## Trusted local-ref submission lifecycle
+
+This lifecycle ships in `0.13.0`. Gate intake is
+intentionally not a special kind of `BatchRecord`. A `SubmissionRecord` owns its own
+source locator, immutable artifact commit/tree/ref, protected-base identity, policy identity,
+ordered commit chain, derived paths, validation results, and timestamps:
+
+```text
+received → validating → validated
+                     ↘ rejected
+                     ↘ failed
+```
+
+`source.ref` is diagnostic provenance for the mutable name the operator supplied.
+`artifact.sha` and its create-only `artifact.retainedRef` are the artifact authority. Before first
+adoption, `candidate authority setup` records the reviewed `baseRef`, `baseBranch`, `remote`, refresh
+behavior, state directory, and, when available, canonical fetch-URL fingerprint at the fixed path
+above without storing the URL. `base.sha` is resolved from that registration. The mutable checkout
+and valid `.merge-broker/config.json` at the exact base must match the registered locator; the latter
+provides `scheduling.maxCommits`, focused and authoritative validators, shell selection, and policy
+identity. Gate applies an independent 1,000-candidate-commit ceiling even if that policy limit is
+higher.
+Each submission records the authority digest so recovery cannot replay it under a replacement.
+
+For one adoption the broker:
+
+1. Acquires the fixed authority lock and integration lock, verifies current configuration against the
+   registration, rejects ambient Git repository/index/object/history and configuration-injection
+   and transport-command overrides, rejects configured URL/transport rewrites, recursively inspects
+   the owned object store, and resolves the exact registered base
+   through its bound fetch URL when refresh applies.
+2. Resolves the supplied local ref to one commit, requires a nonempty merge-free chain from the base
+   within the smaller of `scheduling.maxCommits` and Gate's 1,000-commit hard ceiling, and derives
+   the conservative union of every path touched by those commits from Git, including paths later
+   restored.
+3. Writes the complete `received` identity and audit event before changing any broker-owned ref.
+4. Marks the record `validating`, creates or confirms the create-only retained ref, durably records
+   that retention was established before validator execution, and re-derives every recorded Git and
+   policy fact. Every commit, tree, and blob ID is recomputed from bounded raw bytes; malformed or
+   misplaced parent headers are rejected.
+5. Creates a detached disposable worktree without checkout transforms and writes tracked paths from
+   raw blobs, so hooks, filters, `ident`, EOL conversion, and submodule helpers cannot change tested
+   bytes. It runs matching focused validators once over the complete path set and then all
+   authoritative validators, sharing one isolated cache. Gate policy cannot set Git
+   repository/index/object/history or configuration-injection keys through `validator.env`, and
+   inherited values are removed from internal Git and validator child environments.
+   `MERGE_BROKER_SUBMISSION_ID` identifies this aggregate; there is no task ID.
+6. After each validator set, compares `HEAD`, index, raw tracked bytes and modes, links, and untracked
+   paths with the retained tree, first proving the physical worktree root identity and the regular
+   `.git` gitfile's exact linked-worktree
+   registry entry, backlink, common repository, and physical top level. Any marker swap, nonignored
+   output, or 4 KiB untracked-list overflow is mutation. Cleanup repairs only an exact
+   backlink-proven marker, then removes the worktree, repeats the complete immutable-identity/ref
+   proof, commits terminal state, and writes the private manifest. Recovery regenerates a
+   missing or stale terminal manifest from authoritative state before loading Gate authority, so an
+   absent or corrupt registration cannot suppress repair of an already-terminal record.
+
+A repository validation failure or validator mutation becomes `rejected`. A policy, Git, cache, or
+retention failure can become `failed` only while the final immutable identity/ref proof still holds;
+an irreproducible identity, wrong/symbolic ref, or unsafe worktree-cleanup failure leaves `validating`
+for recovery. The record never transitions into a task or batch. Approval, provenance,
+publication target binding, merge reconciliation, dependency release, and submission retirement are
+outside this first slice.
 
 ## Task lifecycle
 

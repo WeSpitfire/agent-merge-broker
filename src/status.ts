@@ -1,4 +1,10 @@
-import type { BatchRecord, BrokerConfig, BrokerState, TaskRecord } from "./types.js";
+import type {
+  BatchRecord,
+  BrokerConfig,
+  BrokerState,
+  SubmissionRecord,
+  TaskRecord,
+} from "./types.js";
 
 const FINAL_BATCH_STATUSES = new Set<BatchRecord["status"]>(["merged", "closed", "failed"]);
 
@@ -21,6 +27,15 @@ function batchLine(batch: BatchRecord): string {
     batch.error ? `error=${batch.error}` : undefined,
   ].filter(Boolean);
   return `  ${batch.id.padEnd(30)} ${batch.status.padEnd(10)} ${details.join("  ")}`.trimEnd();
+}
+
+function submissionLine(submission: SubmissionRecord): string {
+  const details = [
+    `commits=${submission.commits.length}`,
+    `paths=${submission.paths.length}`,
+    submission.errorCode ? `error=${submission.errorCode}` : undefined,
+  ].filter(Boolean);
+  return `  ${submission.id.padEnd(46)} ${submission.status.padEnd(10)} ${details.join("  ")}`.trimEnd();
 }
 
 function batchAction(batch: BatchRecord, config: BrokerConfig): string | undefined {
@@ -49,6 +64,8 @@ function batchAction(batch: BatchRecord, config: BrokerConfig): string | undefin
 export function formatBrokerStatus(state: BrokerState, config: BrokerConfig, at = new Date()): string {
   const tasks = Object.values(state.tasks).sort((left, right) => left.id.localeCompare(right.id));
   const batches = Object.values(state.batches).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const submissions = Object.values(state.submissions ?? {})
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const actions: string[] = [];
 
   for (const batch of batches.filter((item) => !FINAL_BATCH_STATUSES.has(item.status))) {
@@ -70,6 +87,13 @@ export function formatBrokerStatus(state: BrokerState, config: BrokerConfig, at 
       actions.push(`Repair ${task.id} with a new lease, or deliberately retry its unchanged receipt: merge-broker task claim ${task.id}`);
     }
   }
+  for (const submission of submissions) {
+    if (submission.status === "received" || submission.status === "validating") {
+      actions.push(`Resume candidate ${submission.id}: merge-broker recover`);
+    } else if (submission.status === "rejected" || submission.status === "failed") {
+      actions.push(`Inspect candidate ${submission.id}: merge-broker candidate show ${submission.id}`);
+    }
+  }
 
   return [
     `Tasks (${tasks.length})`,
@@ -77,6 +101,9 @@ export function formatBrokerStatus(state: BrokerState, config: BrokerConfig, at 
     "",
     `Batches (${batches.length})`,
     ...(batches.length > 0 ? batches.map(batchLine) : ["  none"]),
+    "",
+    `Candidate submissions (${submissions.length})`,
+    ...(submissions.length > 0 ? submissions.map(submissionLine) : ["  none"]),
     "",
     "Next actions",
     ...(actions.length > 0 ? [...new Set(actions)].map((action) => `  - ${action}`) : ["  none — no work is waiting"]),

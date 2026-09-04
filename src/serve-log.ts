@@ -23,7 +23,13 @@ export type ServeEvent =
       eager: boolean;
     }
   | { kind: "integrating"; tasks: string[] }
-  | { kind: "recovered"; batches: string[]; tasks: string[] }
+  | {
+      kind: "recovered";
+      batches: string[];
+      tasks: string[];
+      submissions?: string[];
+      submissionWarnings?: string[];
+    }
   | { kind: "integrated"; batchId: string; state: string; published: boolean }
   | { kind: "publication-retrying"; batchId: string; reason: string }
   | {
@@ -49,7 +55,8 @@ export function isErrorEvent(event: ServeEvent): boolean {
     event.kind === "failed" ||
     event.kind === "publication-failed" ||
     event.kind === "sync-failed" ||
-    event.kind === "closed"
+    event.kind === "closed" ||
+    (event.kind === "recovered" && (event.submissionWarnings?.length ?? 0) > 0)
   );
 }
 
@@ -62,7 +69,11 @@ export function describeServeEvent(event: ServeEvent): string {
       // The line whose absence made a working service look dead.
       return `integrating ${event.tasks.length} task(s): ${event.tasks.join(", ")}`;
     case "recovered":
-      return `recovered ${event.batches.length} abandoned batch(es); requeued ${event.tasks.length} task(s)`;
+      return `recovered ${event.batches.length} abandoned batch(es); requeued ${event.tasks.length} task(s)`
+        + `; recovered ${event.submissions?.length ?? 0} candidate submission(s)`
+        + (event.submissionWarnings?.length
+          ? `; warnings: ${event.submissionWarnings.join(" | ")}`
+          : "");
     case "integrated":
       return `batch ${event.batchId} ${event.state}${event.published ? " and published" : ""}`;
     case "publication-retrying":

@@ -6,12 +6,14 @@ Agent Merge Broker is intended for trusted repositories and trusted integration 
 
 Do not run the broker automatically on untrusted fork configuration. A safe forge integration should load policy from the protected base branch, not from an incoming change.
 
-The local broker loads `.merge-broker/config.json` from the worktree in which it is opened. That is
-inside this trusted-host boundary; it is not protection against invoking an operator command from an
-untrusted fork checkout. The remote `verify-provenance` path is different: it reads its verification
-policy from the supplied protected-base commit and never trusts the candidate's copy. Run the
-service and operator MCP profile from a controlled checkout, and protect who may change its
-configuration or invoke it.
+Coordinate-mode operations load `.merge-broker/config.json` from the worktree in which the broker is
+opened. Current-main trusted local-ref intake requires that checkout to match a separately registered
+protected-target locator, uses the registration to select the base/fetch target, then loads its
+effective evaluator policy from the exact protected-base commit; it never uses the candidate's copy
+to judge that candidate. The remote `verify-provenance` path also
+reads verification policy from the supplied protected-base commit. None of these rules makes it
+safe to invoke an operator command from an untrusted fork checkout. Run the service and operator
+surfaces from a controlled checkout, and protect who may change its configuration or invoke it.
 
 ## Credentials
 
@@ -43,10 +45,10 @@ state, audit, receipt, manifest, token, and key files are mode 0600 on POSIX sys
 modify the repository's Git directory can still modify broker state or audit records. The audit
 stream is append-only by convention, not cryptographically tamper-evident.
 
-State, integration, and per-batch locks are correctness controls between cooperating local
-processes, not authorization boundaries. Their owner nonces prevent an old process from releasing a
-successor's lock, and only a provably dead same-host process is reclaimed automatically. An operator
-with filesystem access can force-unlock, edit state, or replace Git objects; the security model
+State, integration, fixed Gate-authority, and per-batch locks are correctness controls between
+cooperating local processes, not authorization boundaries. Their owner nonces prevent an old process
+from releasing a successor's lock, and only a provably dead same-host process is reclaimed
+automatically. An operator with filesystem access can force-unlock, edit state, or replace Git objects; the security model
 already trusts that operator and host. A shared Git directory does not provide distributed consensus
 or protect against a hostile second machine.
 
@@ -60,16 +62,108 @@ disable signing, and bypass ambient hooks so machine-specific Git configuration 
 validated artifact. Temporary worktrees stay under the broker state directory.
 
 After every successful focused and authoritative validator set, the broker requires the same `HEAD`
-and a clean integration worktree. A validator that commits, checks out another revision, edits a
-tracked file, or creates a non-ignored untracked file causes `VALIDATOR_MUTATED_WORKTREE`; its claimed
-success is not retained. Broker-generated squash and provenance commits occur only afterward through
-the fixed identity and hook-free Git path. This byte-preservation check does not sandbox a validator:
-trusted configuration can still modify other refs, contact the network, write outside the worktree,
-or exfiltrate any credential available to its process.
+and a clean integration or submission worktree. A validator that commits, checks out another
+revision, edits a tracked file, or creates a non-ignored untracked file causes
+`VALIDATOR_MUTATED_WORKTREE`; its claimed success is not retained. Broker-generated squash and
+provenance commits occur only afterward on Coordinate batches through the fixed identity and
+hook-free Git path. This byte-preservation check does not sandbox a validator: trusted configuration
+can still modify other refs, contact the network, write outside the worktree, or exfiltrate any
+credential available to its process.
 
 Failed integration worktrees are removed by default. Enabling `keepFailedWorktrees` can retain source content, generated artifacts, and secrets written by validators; operators must clean these worktrees deliberately after diagnosis.
 
 Commit receipts are immutable IDs, but their objects can disappear after aggressive source-repository garbage collection if no ref retains them. Integrate or otherwise retain submitted commits before pruning unreachable branches.
+
+## Trusted local-ref intake
+
+Version `0.13.0` ships this capability. `candidate adopt --ref` is for candidate code trusted to
+execute on the broker host. The disposable
+worktree is filesystem hygiene, not workload isolation. Focused and authoritative validators can
+run candidate-controlled build scripts with the broker process's ordinary filesystem and network
+access. The broker removes lease tokens and provenance signing keys from validator environments, but
+it cannot remove every ambient repository, package-manager, SSH, cloud, or credential-helper secret.
+Do not point this command at an untrusted fork ref; use an isolated, credential-free runner outside
+this product when the producer is not trusted.
+
+The operator first runs `candidate authority setup` from a reviewed protected checkout. Its
+versioned registration lives at a fixed path in Git's common directory, outside candidate commits
+and outside the mutable `stateDirectory` locator. It binds the base ref, branch, remote, refresh
+behavior, state directory, and, when available, a canonical fetch-URL fingerprint without retaining a
+raw URL or credentials. Setup, replacement, adoption, and recovery hold one fixed-root lock; inspect
+it through `doctor` or `unlock`, and force-release it only after proving its holder cannot progress.
+Target changes require explicit `--replace`, and pending submissions remain bound to their original
+authority digest.
+The configured state directory uses portable ASCII components, excludes Git administrative and
+fixed authority names, and is created and rechecked as a physical directory tree below the Git
+common directory; a pre-existing symlink or junction is not followed.
+
+The operator supplies only a repository-local Git revision. There is no producer-selected base or
+path list. The broker resolves the registered base independently, requires the mutable and committed
+protected-base target fields to match the registration, and loads policy only from that exact base.
+Protected-base refresh uses the registered fetch URL even when Git config declares a different
+publication `pushurl`. Gate requires Git 2.46 or newer, refuses object-store overrides, alternates,
+redirected object directories, and legacy grafts, and recursively verifies that every object-store
+entry is a contained regular file or physical directory under a 500,000-entry cap. It enforces a
+nonempty merge-free raw-parent chain bounded by both `scheduling.maxCommits` and a 1,000-commit hard
+ceiling. It records the source name for diagnostics, but the full commit/tree IDs and create-only
+`refs/merge-broker/adopted/<submission-id>` ref are the artifact authority. Moving or deleting the
+source name afterward cannot retarget the record.
+
+Before looking up the candidate or base, Gate rejects nonempty ambient `GIT_INDEX_FILE`, `GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_OBJECT_DIRECTORY`,
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_QUARANTINE_PATH`, `GIT_GRAFT_FILE`, `GIT_SHALLOW_FILE`, and
+`GIT_REPLACE_REF_BASE`. It also rejects Git configuration injection through `GIT_CONFIG`,
+`GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`,
+`GIT_CONFIG_NOSYSTEM`, indexed `GIT_CONFIG_KEY_<n>` or `GIT_CONFIG_VALUE_<n>`, and transport/tool
+selection through `GIT_EXEC_PATH`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_SSH_VARIANT`, or
+`GIT_PROXY_COMMAND`; standard proxy variables, `GIT_HTTP_*`, `GIT_SSL_*`, `CURL_CA_BUNDLE`,
+`SSL_CERT_FILE`, and `SSL_CERT_DIR` are denied as well. Names are matched case-insensitively.
+Configured `core.sshCommand`, `core.gitProxy`, `url.*.insteadOf`/`pushInsteadOf`, and HTTP
+proxy/TLS/routing overrides are refused before bound fetches and publication pushes. HTTP
+authorization headers remain supported, but configured `Host` or `:authority` replacement is
+refused. Exact locators that Git could reinterpret through an effective
+local/global/system `remote.*` subsection or legacy remote shorthand are refused as well. A
+protected-base Gate validator whose `env` declares any denied environment key is also rejected, even
+if its value is empty; Gate-internal Git commands and every Gate validator child environment remove
+those inherited values as a second defense. This prevents ambient or declarative configuration from
+silently selecting another Git executable, transport, repository, index, namespace, object store,
+graft, shallow boundary, or replacement-ref namespace. The protected validator command itself
+remains trusted code and is not sandboxed.
+
+The validation worktree is populated directly from retained blob bytes. Checkout hooks,
+clean/smudge/process filters, `ident`, EOL conversion, and submodule helpers do not transform those
+bytes. Fresh, inode-bound empty hook directories isolate every broker Git transaction; a replaced or
+populated directory fails the operation and is never recursively removed as an assumed broker
+directory. Gate also hashes every retained commit, tree, and blob object against its recorded ID and
+parses the leading tree/contiguous parent block byte-for-byte. Before reading `HEAD` or the index,
+the broker proves that the worktree's regular `.git`
+gitfile still names the exact linked-worktree administration entry captured at creation, that its
+regular backlink returns to this physical worktree, and that Git reports the same common repository
+and physical top level. The physical worktree and cache roots are bound by full-width device/inode
+identity before recursive cleanup, preventing a renamed directory at the same pathname from being
+deleted as broker-owned. A marker swap is `VALIDATOR_MUTATED_WORKTREE`. Cleanup and recovery may
+repair only this marker after independently finding the exact registry backlink; if that identity
+cannot be proved, state remains recoverable instead of risking removal of a sibling worktree.
+
+Post-validator checks compare `HEAD`, the index, raw tracked blobs, executable modes, symlink targets,
+and untracked paths against the retained tree. The nonignored untracked-path listing is captured with
+a 4 KiB ceiling: either any output or an overflow is a validator mutation, without retaining an
+unbounded diagnostic. These checks protect artifact identity; they do not sandbox execution or
+prevent a trusted validator from changing other host resources.
+
+The submission record and retained ref share the same local trust boundary as the rest of broker
+state. Their policy digest detects accidental or replay inconsistency; it is not a remote signature
+or defense against an operator who can edit the Git common directory. Records and refs are not
+pruned in this first slice. `validated` means every validator selected by the protected-base policy
+passed; an empty validator policy can therefore produce an empty successful result and is not a
+substitute for configuring a real gate. Most importantly, the status grants no approval,
+publication, provenance, or merge authority. It is not accepted by batch commands and is not an
+enforceable protected-branch result.
+
+The broker records `retentionEstablishedAt` before any validator runs. If that established ref is
+later missing, it records `retentionCompromisedAt` before create-only repair. The tombstone survives
+a stop after repair and permanently invalidates an otherwise-passing run; recovery cannot mistake
+the loss for an initial pin that never happened.
 
 ## Merge authorization
 
@@ -133,7 +227,16 @@ refresh`, which reruns validation and produces a new signed manifest.
 
 ## Command construction
 
-Configuration is trusted. `{files}` and `{taskId}` placeholders are shell-quoted, and structured metadata is also supplied as environment variables. Prefer environment variables when composing complex commands.
+Configuration is trusted. `{taskId}`, `{filesFile}`, and the bounded legacy `{files}` placeholder are
+shell-quoted, and structured metadata is also supplied as environment variables. Every validator
+gets `MERGE_BROKER_FILES_FILE` pointing to an owner-readable UTF-8 JSON array and
+`MERGE_BROKER_FILES_FILE_FORMAT=json`. Parse that JSON as data; do not source or evaluate it.
+Validators default to `filesInput: "inline"`; if either the newline environment form or quoted
+argument form exceeds 4 KiB, the broker fails closed before execution instead of silently exposing an
+empty list. An explicit `filesInput: "json"` uses the JSON file, leaves `MERGE_BROKER_FILES` empty,
+and rejects `{files}`. During local-ref intake, `MERGE_BROKER_SUBMISSION_ID` identifies the durable
+record and `MERGE_BROKER_TASK_ID` is empty; callers must not infer a task or authorization from the
+compatibility `MERGE_BROKER_BATCH_ID=submission:<submission-id>` value.
 
 Validators run under a fixed interpreter — `/bin/sh` on macOS/Linux, non-profile PowerShell on
 Windows, or `validation.shell` — and never under a login shell. Sourcing an operator's personal

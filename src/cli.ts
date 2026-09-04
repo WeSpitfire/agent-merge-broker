@@ -23,8 +23,10 @@ import type {
   BatchRecord,
   BrokerConfig,
   BrokerState,
+  GateAuthorityRegistration,
   LocalValidationResult,
   SchedulePlan,
+  SubmissionRecord,
   TaskRecord,
 } from "./types.js";
 
@@ -237,6 +239,51 @@ function localValidationHuman(result: LocalValidationResult): string {
     lines.push("", `--- ${failed.name} ---`, [failed.stdout, failed.stderr].filter(Boolean).join("\n").trimEnd());
   }
   return lines.filter((line) => line !== undefined).join("\n");
+}
+
+function submissionHuman(submission: SubmissionRecord): string {
+  const validations = submission.validations.map(
+    (validation) =>
+      `  ${validation.exitCode === 0 ? "ok  " : "FAIL"} ${validation.name} (${validation.scope})`,
+  );
+  return [
+    `Candidate submission ${submission.id}: ${submission.status}`,
+    `Source: ${submission.source.ref}`,
+    `Artifact: ${submission.artifact.sha}`,
+    `Tree: ${submission.artifact.treeSha}`,
+    `Retained ref: ${submission.artifact.retainedRef}`,
+    `Base: ${submission.base.ref} @ ${submission.base.sha}`,
+    `Policy: ${submission.policy.revision} (${submission.policy.digest})`,
+    `Commits: ${submission.commits.length}`,
+    `Files: ${submission.paths.length}`,
+    ...(validations.length > 0 ? ["Validation:", ...validations] : ["Validation results: none"]),
+    submission.errorCode ? `Error code: ${submission.errorCode}` : undefined,
+    submission.error ? `Error: ${submission.error}` : undefined,
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join("\n");
+}
+
+function submissionListHuman(submissions: SubmissionRecord[]): string {
+  if (submissions.length === 0) return "No candidate submissions.";
+  return submissions
+    .map(
+      (submission) =>
+        `${submission.id}: ${submission.status} ${submission.artifact.sha} (base ${submission.base.sha})`,
+    )
+    .join("\n");
+}
+
+function gateAuthorityHuman(registration: GateAuthorityRegistration): string {
+  return [
+    `Gate authority ${registration.digest}`,
+    `Base: ${registration.target.baseRef}`,
+    `Target: ${registration.target.remote}/${registration.target.baseBranch}`,
+    `Refresh protected base: ${registration.target.refreshBase ? "yes" : "no"}`,
+    `Fetch URL fingerprint: ${registration.target.fetchUrlFingerprint ?? "not bound"}`,
+    `State directory: ${registration.stateDirectory}`,
+    `Registered: ${registration.registeredAt}`,
+  ].join("\n");
 }
 
 async function openBroker(): Promise<MergeBroker> {
@@ -732,6 +779,66 @@ program
     },
   );
 
+const candidate = program
+  .command("candidate")
+  .description("retain and validate trusted repository-local Git candidates");
+
+const candidateAuthority = candidate
+  .command("authority")
+  .description("register the protected target trusted by local Gate adoption");
+
+candidateAuthority
+  .command("setup")
+  .description("register authority from the reviewed checkout configuration")
+  .option("--replace", "replace a different authority after reviewing the target change")
+  .action(async (options: { replace?: boolean }) => {
+    const registration = await (await openBroker()).registerCandidateAuthority({
+      replace: options.replace ?? false,
+    });
+    output(registration, gateAuthorityHuman(registration));
+  });
+
+candidateAuthority
+  .command("show")
+  .description("show the config-independent Gate authority registration")
+  .action(async () => {
+    const registration = await (await openBroker()).candidateAuthority();
+    if (!registration) {
+      throw new BrokerError(
+        "GATE_AUTHORITY_REQUIRED",
+        "Gate authority is not registered. Run candidate authority setup from the reviewed protected checkout.",
+      );
+    }
+    output(registration, gateAuthorityHuman(registration));
+  });
+
+candidate
+  .command("list")
+  .description("list retained candidate submissions")
+  .action(async () => {
+    const submissions = Object.values((await (await openBroker()).state()).submissions ?? {})
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    output(submissions, submissionListHuman(submissions));
+  });
+
+candidate
+  .command("adopt")
+  .description("retain one exact local Git ref and validate it against protected-base policy")
+  .requiredOption("--ref <revision>", "trusted repository-local Git revision")
+  .action(async (options: { ref: string }) => {
+    const result = await (await openBroker()).adoptCandidate({ ref: options.ref });
+    output(result, submissionHuman(result));
+    if (result.status !== "validated") process.exitCode = 1;
+  });
+
+candidate
+  .command("show <id>")
+  .description("show one retained candidate submission")
+  .action(async (id: string) => {
+    const result = await (await openBroker()).submission(id);
+    output(result, submissionHuman(result));
+  });
+
 const batch = program.command("batch").description("inspect and advance integration batches");
 
 batch
@@ -1065,26 +1172,31 @@ program
 
 program
   .command("recover")
-  .description("recover tasks left integrating after a broker process stopped unexpectedly")
+  .description("recover interrupted integrations and candidate validation submissions")
   .action(async () => {
     const result = await (await openBroker()).recoverAbandonedIntegrations();
+    const submissions = result.submissionsRecovered ?? [];
+    const submissionWarnings = result.submissionWarnings ?? [];
+    const recoveredAnything = result.batches.length > 0 || submissions.length > 0;
     output(
       result,
-      result.batches.length > 0
+      recoveredAnything || result.cleanupWarnings.length > 0 || submissionWarnings.length > 0
         ? [
             `Recovered ${result.batches.length} abandoned batch(es).`,
             `Requeued tasks: ${result.tasks.join(", ") || "none"}`,
+            `Recovered candidate submissions: ${submissions.join(", ") || "none"}`,
             ...(result.cleanupWarnings.length > 0
               ? result.cleanupWarnings.map((warning) => `Cleanup warning: ${warning}`)
               : []),
+            ...submissionWarnings.map((warning) => `Submission warning: ${warning}`),
           ].join("\n")
-        : "No abandoned integration transactions.",
+        : "No abandoned integration or candidate validation transactions.",
     );
   });
 
 program
   .command("unlock [name]")
-  .description("inspect locks, or release state, integration, or batch:<batch-id> after a crash")
+  .description("inspect locks, or release state, integration, gate-authority, or batch:<batch-id> after a crash")
   .option("--force", "release even when the holder cannot be proven gone")
   .action(async (name: string | undefined, options: { force?: boolean }) => {
     const broker = await openBroker();
@@ -1172,8 +1284,21 @@ program
         });
       }
       const recovery = await (await openBroker()).recoverAbandonedIntegrations();
-      if (!options.once && recovery.batches.length > 0) {
-        say({ kind: "recovered", batches: recovery.batches, tasks: recovery.tasks });
+      if (
+        !options.once &&
+        (
+          recovery.batches.length > 0 ||
+          (recovery.submissionsRecovered?.length ?? 0) > 0 ||
+          (recovery.submissionWarnings?.length ?? 0) > 0
+        )
+      ) {
+        say({
+          kind: "recovered",
+          batches: recovery.batches,
+          tasks: recovery.tasks,
+          submissions: recovery.submissionsRecovered ?? [],
+          submissionWarnings: recovery.submissionWarnings ?? [],
+        });
       }
       do {
         const broker = await openBroker();

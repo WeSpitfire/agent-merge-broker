@@ -100,23 +100,23 @@
 <section id="direction">
   <div class="rail">
     <p class="eyebrow">Product direction</p>
-    <h2>Coordinate now. Gate and Verify are planned.</h2>
-    <p class="col">The current package coordinates workers that use its claim and receipt protocol. The roadmap expands from that proven transaction core without pretending external candidate intake already exists.</p>
+    <h2>Coordinate ships. Gate validation is available. Verify is planned.</h2>
+    <p class="col">The current package coordinates workers through its claim and receipt protocol, and can retain and validate one trusted repository-local Git ref without fabricated coordination history.</p>
     <div class="docs">
       <a class="doc" href="/agent-merge-broker/docs/getting-started">
         <h3>Coordinate <span class="arrow">Available →</span></h3>
         <p>Claim, lease, nominate, batch, validate, publish, and recover through one local authority.</p>
       </a>
       <a class="doc" href="/agent-merge-broker/docs/roadmap">
-        <h3>Gate <span class="arrow">Planned →</span></h3>
-        <p>Adopt a trusted-source immutable Git ref without requiring its producer to use path leases.</p>
+        <h3>Gate <span class="arrow">Validation available →</span></h3>
+        <p>Retain and validate a trusted-source immutable Git ref without requiring its producer to use path leases.</p>
       </a>
       <a class="doc" href="/agent-merge-broker/docs/roadmap">
         <h3>Verify <span class="arrow">Planned →</span></h3>
         <p>Evaluate wider policy and attestation claims as a lightweight protected-workflow check.</p>
       </a>
     </div>
-    <p class="col boundary">There is no external-candidate adoption command in the current release. Read the <a href="/agent-merge-broker/docs/vision">vision</a> and <a href="/agent-merge-broker/docs/roadmap">capability roadmap</a>.</p>
+    <p class="col boundary">Gate intake is trusted-local and validation-only. It does not yet create approval, provenance, publication, or merge authority. Read the <a href="/agent-merge-broker/docs/vision">vision</a> and <a href="/agent-merge-broker/docs/roadmap">capability roadmap</a>.</p>
   </div>
 </section>
 
@@ -220,7 +220,7 @@ with no agent pushing anything.</span></pre>
       </a>
       <a class="doc" href="/agent-merge-broker/docs/roadmap">
         <h3>Roadmap <span class="arrow">→</span></h3>
-        <p>What exists now, safe immutable-ref adoption next, and later capability horizons.</p>
+        <p>What exists now, Gate merge authority next, and later capability horizons.</p>
       </a>
     </div>
   </div>

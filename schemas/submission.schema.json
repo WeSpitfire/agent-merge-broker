@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/submission.schema.json",
+  "title": "Agent Merge Broker trusted local-ref submission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "id",
+    "status",
+    "authorityDigest",
+    "source",
+    "artifact",
+    "base",
+    "policy",
+    "commits",
+    "paths",
+    "validations",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:@/-]{0,127}$"
+    },
+    "status": { "enum": ["received", "validating", "validated", "rejected", "failed"] },
+    "authorityDigest": { "$ref": "#/$defs/sha256" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref"],
+      "properties": {
+        "kind": { "const": "local-ref" },
+        "ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sha", "treeSha", "retainedRef"],
+      "properties": {
+        "kind": { "const": "git-commit" },
+        "sha": { "$ref": "#/$defs/sha" },
+        "treeSha": { "$ref": "#/$defs/sha" },
+        "retainedRef": { "type": "string", "pattern": "^refs/[^\\s]+$" }
+      }
+    },
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "baseBranch", "remote", "sha"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "baseBranch": { "type": "string", "minLength": 1 },
+        "remote": { "type": "string", "minLength": 1 },
+        "fetchUrlFingerprint": { "$ref": "#/$defs/sha256" },
+        "sha": { "$ref": "#/$defs/sha" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseSha",
+        "configPath",
+        "configBlobSha",
+        "digest",
+        "revision",
+        "evaluatorVersion",
+        "configVersion"
+      ],
+      "properties": {
+        "baseSha": { "$ref": "#/$defs/sha" },
+        "configPath": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+        },
+        "configBlobSha": { "$ref": "#/$defs/sha" },
+        "digest": { "$ref": "#/$defs/sha256" },
+        "revision": { "type": "string", "minLength": 1 },
+        "evaluatorVersion": { "type": "string", "minLength": 1 },
+        "configVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "commits": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/sha" },
+      "uniqueItems": true
+    },
+    "paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "validations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/validation" }
+    },
+    "worktree": { "type": "string", "minLength": 1 },
+    "worktreeIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "inode"],
+      "properties": {
+        "device": { "type": "string", "pattern": "^[0-9]+$" },
+        "inode": { "type": "string", "pattern": "^[0-9]+$" }
+      }
+    },
+    "retentionEstablishedAt": { "type": "string", "format": "date-time" },
+    "retentionCompromisedAt": { "type": "string", "format": "date-time" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "validationStartedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "errorCode": { "type": "string", "minLength": 1 },
+    "error": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "command",
+        "scope",
+        "startedAt",
+        "finishedAt",
+        "durationMs",
+        "exitCode",
+        "stdout",
+        "stderr"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 },
+        "scope": { "enum": ["focused", "authoritative"] },
+        "taskId": { "type": "string", "minLength": 1 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "finishedAt": { "type": "string", "format": "date-time" },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "exitCode": { "type": "integer" },
+        "stdout": { "type": "string" },
+        "stderr": { "type": "string" }
+      }
+    }
+  }
+}

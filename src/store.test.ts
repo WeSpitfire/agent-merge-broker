@@ -12,18 +12,81 @@ import {
   rename,
   rm,
   stat,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { StateStore } from "./store.js";
 import { BrokerError } from "./errors.js";
+import { STATE_VERSION, SUBMISSION_VERSION, type SubmissionRecord } from "./types.js";
+
+function submissionRecord(id = "submission-one"): SubmissionRecord {
+  const at = "2026-09-04T12:00:00.000Z";
+  return {
+    version: SUBMISSION_VERSION,
+    id,
+    status: "received",
+    authorityDigest: "9".repeat(64),
+    source: { kind: "local-ref", ref: "refs/heads/agent/candidate" },
+    artifact: {
+      kind: "git-commit",
+      sha: "a".repeat(40),
+      treeSha: "b".repeat(40),
+      retainedRef: `refs/merge-broker/submissions/${id}`,
+    },
+    base: {
+      ref: "refs/remotes/origin/main",
+      baseBranch: "main",
+      remote: "origin",
+      fetchUrlFingerprint: "c".repeat(64),
+      sha: "d".repeat(40),
+    },
+    policy: {
+      baseSha: "d".repeat(40),
+      configPath: ".merge-broker.json",
+      configBlobSha: "e".repeat(40),
+      digest: "f".repeat(64),
+      revision: "protected-base-v1",
+      evaluatorVersion: "agent-merge-broker/0.12.1",
+      configVersion: 1,
+    },
+    commits: ["a".repeat(40)],
+    paths: ["src/candidate.ts"],
+    validations: [],
+    createdAt: at,
+    updatedAt: at,
+  };
+}
 
 function batchLockPath(store: StateStore, batchId: string): string {
   const readable = batchId.replace(/[^a-zA-Z0-9._-]/gu, "-").slice(0, 96);
   const digest = createHash("sha256").update(batchId).digest("hex").slice(0, 12);
   return path.join(store.directory, `batch-${readable || "record"}-${digest}.lock`);
 }
+
+test("refuses state paths outside or redirected from Git's physical common directory", {
+  skip: process.platform === "win32" ? "symlink fixture requires Windows developer mode" : false,
+}, async (context) => {
+  const common = await mkdtemp(path.join(tmpdir(), "merge-broker-store-containment-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "merge-broker-store-outside-"));
+  context.after(async () => {
+    await rm(common, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  assert.throws(
+    () => new StateStore(common, "../outside", 1),
+    (error: unknown) => error instanceof BrokerError && error.code === "UNSAFE_PATH",
+  );
+  await symlink(outside, path.join(common, "redirected"));
+  const redirected = new StateStore(common, "redirected/state", 1);
+  await assert.rejects(
+    redirected.initialize(),
+    (error: unknown) => error instanceof BrokerError && error.code === "UNSAFE_PATH",
+  );
+  await assert.rejects(stat(path.join(outside, "state")));
+});
 
 test("serializes concurrent first-use state transactions without losing events", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
@@ -47,6 +110,61 @@ test("serializes concurrent first-use state transactions without losing events",
   assert.deepEqual(
     audit.map((event) => event.sequence),
     Array.from({ length: 20 }, (_value, index) => index + 1),
+  );
+});
+
+test("normalizes legacy v1 state with no submissions and persists the additive collection", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const store = new StateStore(directory, "state", 10);
+  await store.initialize();
+  const stateFile = path.join(store.directory, "state.json");
+  await writeFile(stateFile, `${JSON.stringify({
+    version: STATE_VERSION,
+    sequence: 7,
+    tasks: {},
+    batches: {},
+  }, null, 2)}\n`, "utf8");
+
+  const legacy = await store.read();
+  assert.equal(legacy.sequence, 7);
+  assert.deepEqual(legacy.submissions, {});
+
+  const submission = submissionRecord();
+  await store.transaction((state, audit) => {
+    state.submissions[submission.id] = submission;
+    audit("submission.received", { submissionId: submission.id });
+  });
+
+  const persisted = JSON.parse(await readFile(stateFile, "utf8")) as {
+    sequence: number;
+    submissions?: Record<string, SubmissionRecord>;
+  };
+  assert.equal(persisted.sequence, 8);
+  assert.deepEqual(persisted.submissions?.[submission.id], submission);
+  assert.equal((await store.readAudit(1))[0]?.submissionId, submission.id);
+});
+
+test("rejects a malformed submissions collection instead of silently dropping it", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const store = new StateStore(directory, "state", 10);
+  await store.initialize();
+  await writeFile(path.join(store.directory, "state.json"), `${JSON.stringify({
+    version: STATE_VERSION,
+    sequence: 0,
+    tasks: {},
+    batches: {},
+    submissions: [],
+  })}\n`, "utf8");
+
+  await assert.rejects(
+    store.read(),
+    (error: unknown) => error instanceof BrokerError && error.code === "STATE_CORRUPT",
   );
 });
 
@@ -115,7 +233,10 @@ test("releases an abandoned lock but refuses one that may still be live", async 
   assert.equal(foreign.abandoned, false);
   await assert.rejects(
     store.releaseLock("integration"),
-    (error: unknown) => error instanceof BrokerError && error.code === "LOCK_HELD",
+    (error: unknown) =>
+      error instanceof BrokerError &&
+      error.code === "LOCK_HELD" &&
+      /no operation using this lock can still progress/iu.test(error.message),
   );
   assert.equal((await store.releaseLock("integration", { force: true })).held, false);
 
@@ -287,6 +408,9 @@ test(
     assert.equal((await stat(path.join(store.directory, "audit.jsonl"))).mode & 0o777, 0o600);
     const manifest = await store.writeBatchManifest("permissions", { private: true });
     assert.equal((await stat(manifest)).mode & 0o777, 0o600);
+    const submissionManifest = await store.writeSubmissionManifest(submissionRecord("permissions"));
+    assert.equal((await stat(store.submissionsDirectory)).mode & 0o777, 0o700);
+    assert.equal((await stat(submissionManifest)).mode & 0o777, 0o600);
 
     const external = path.join(directory, "caller-owned");
     await mkdir(external, { mode: 0o755 });

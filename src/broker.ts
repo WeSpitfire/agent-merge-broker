@@ -37,6 +37,12 @@ import {
   signBatchProvenance,
 } from "./provenance.js";
 import { installHooks, uninstallHooks, type HookInstallation } from "./hooks.js";
+import { LocalRefSubmissionManager } from "./submission.js";
+import {
+  assertGateAuthorityMatchesCurrentConfig,
+  deriveGateAuthorityRegistration,
+  GateAuthorityStore,
+} from "./gate-authority.js";
 import {
   currentServicePlatform,
   installService,
@@ -53,6 +59,8 @@ import type {
   BrokerConfig,
   BrokerState,
   CommitReceipt,
+  CurrentBrokerState,
+  GateAuthorityRegistration,
   IntegrationOptions,
   IntegrationResult,
   LocalValidationResult,
@@ -62,6 +70,7 @@ import type {
   PruneOptions,
   PruneResult,
   SchedulePlan,
+  SubmissionRecord,
   TaskRecord,
   ValidationResult,
   VerificationEvidence,
@@ -494,6 +503,16 @@ export interface ClaimTaskInput extends RegisterTaskInput {
   storeToken?: boolean;
   /** Write the token here instead of the default location inside the broker state directory. */
   tokenFile?: string;
+}
+
+export interface AdoptCandidateInput {
+  /** Repository-local ref or full commit ID. The broker resolves and retains the exact commit. */
+  ref: string;
+}
+
+export interface RegisterCandidateAuthorityOptions {
+  /** Replace a different registered target only after the caller has reviewed that authority change. */
+  replace?: boolean;
 }
 
 export class MergeBroker {
@@ -1182,8 +1201,51 @@ export class MergeBroker {
     return { task, receiptPath };
   }
 
-  async state(): Promise<BrokerState> {
+  async state(): Promise<CurrentBrokerState> {
     return await this.store.read();
+  }
+
+  /**
+   * Installs the config-independent trust root required for local-ref candidate adoption. Repeating
+   * setup for the same locator is idempotent; changing it requires an explicit replacement.
+   */
+  async registerCandidateAuthority(
+    options: RegisterCandidateAuthorityOptions = {},
+  ): Promise<GateAuthorityRegistration> {
+    // Setup is part of the Gate trust boundary too. Refuse ambient repository/config selectors
+    // before deriving or persisting authority, rather than checking them only on later adoption.
+    await this.repo.assertGateGitSupported();
+    return await this.store.withGateAuthorityLock(async () => {
+      const proposed = await deriveGateAuthorityRegistration(this.repo, this.config);
+      return await new GateAuthorityStore(this.repo.commonGitDir).register(proposed, options);
+    });
+  }
+
+  async candidateAuthority(): Promise<GateAuthorityRegistration | undefined> {
+    return await new GateAuthorityStore(this.repo.commonGitDir).read();
+  }
+
+  /**
+   * Adopt and validate one trusted repository-local Git ref without manufacturing Coordinate-mode
+   * task, lease, receipt, or batch history. This first Gate slice intentionally stops before
+   * approval, publication, and merge authority.
+   */
+  async adoptCandidate(input: AdoptCandidateInput): Promise<SubmissionRecord> {
+    // Check before the fixed lock and remote-fingerprint lookup; the manager repeats the preflight
+    // inside its integration transaction so recovery and direct manager use remain fail closed.
+    await this.repo.assertGateGitSupported();
+    return await this.store.withGateAuthorityLock(async () => {
+      const authority = await new GateAuthorityStore(this.repo.commonGitDir).require();
+      await assertGateAuthorityMatchesCurrentConfig(authority, this.config, this.repo);
+      return await new LocalRefSubmissionManager(this.repo, this.store, authority).adopt(input.ref);
+    });
+  }
+
+  async submission(id: string): Promise<SubmissionRecord> {
+    const state = await this.store.read();
+    const submission = Object.hasOwn(state.submissions, id) ? state.submissions[id] : undefined;
+    if (!submission) throw new BrokerError("UNKNOWN_SUBMISSION", `Unknown candidate submission: ${id}`);
+    return structuredClone(submission);
   }
 
   async task(taskId: string): Promise<TaskRecord> {
@@ -1940,7 +2002,87 @@ export class MergeBroker {
    * lock is the proof that the former process is no longer allowed to make progress.
    */
   async recoverAbandonedIntegrations(): Promise<RecoveryResult> {
-    return await this.store.withIntegrationLock(async () => await this.recoverAbandonedIntegrationsLocked());
+    const recovered = await this.store.withIntegrationLock(
+      async () => await this.recoverAbandonedIntegrationsLocked(),
+    );
+    const submissions = await this.store.withGateAuthorityLock(async () => {
+      const records = Object.values((await this.store.read()).submissions);
+      const manifestWarnings: string[] = [];
+      // Terminal state is authoritative and its manifest is only a private inspection sidecar.
+      // Repair those sidecars before consulting Gate authority: the state already contains every
+      // byte needed, and a missing/corrupt authority file must not prevent honest terminal output
+      // from being regenerated after a crash.
+      for (const submission of records
+        .filter((item) => item.status !== "received" && item.status !== "validating")
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
+        try {
+          await this.store.writeSubmissionManifest(submission);
+        } catch (error) {
+          manifestWarnings.push(
+            `Could not repair candidate submission manifest ${submission.id}: ${errorMessage(error)}`,
+          );
+        }
+      }
+      const pending = records
+        .filter((submission) => submission.status === "received" || submission.status === "validating");
+      let authority: GateAuthorityRegistration | undefined;
+      try {
+        authority = await new GateAuthorityStore(this.repo.commonGitDir).read();
+      } catch (error) {
+        return {
+          recovered: [],
+          warnings: [
+            ...manifestWarnings,
+            `Could not load Gate authority while recovering candidate submissions: ${errorMessage(error)}`,
+          ],
+        };
+      }
+      if (!authority) {
+        return pending.length === 0
+          ? { recovered: [], warnings: manifestWarnings }
+          : {
+            recovered: [],
+            warnings: [
+              ...manifestWarnings,
+              "Candidate submissions remain pending because Gate authority is not registered. Restore the original authority registration before recovery.",
+            ],
+          };
+      }
+      if (authority.stateDirectory !== this.config.stateDirectory) {
+        return {
+          recovered: [],
+          warnings: [
+            ...manifestWarnings,
+            `Gate authority uses state directory ${authority.stateDirectory}, but the mutable checkout selects ${this.config.stateDirectory}; refusing to recover through a different lock/state domain.`,
+          ],
+        };
+      }
+      let pendingRecovery: { recovered: string[]; warnings: string[] };
+      try {
+        pendingRecovery = await new LocalRefSubmissionManager(
+          this.repo,
+          this.store,
+          authority,
+        ).recoverPending();
+      } catch (error) {
+        return {
+          recovered: [],
+          warnings: [
+            ...manifestWarnings,
+            `Could not recover pending candidate submissions: ${errorMessage(error)}`,
+          ],
+        };
+      }
+      return {
+        recovered: pendingRecovery.recovered,
+        warnings: [...manifestWarnings, ...pendingRecovery.warnings],
+      };
+    });
+    return {
+      ...recovered,
+      submissionsRecovered: submissions.recovered,
+      submissionWarnings: submissions.warnings,
+    };
   }
 
   async publishBatch(id: string): Promise<BatchRecord> {
@@ -4218,7 +4360,13 @@ export class MergeBroker {
   }
 
   async auditWorktrees(): Promise<{
-    worktrees: Array<{ path: string; branch?: string; registeredTaskIds: string[]; clean: boolean }>;
+    worktrees: Array<{
+      path: string;
+      branch?: string;
+      registeredTaskIds: string[];
+      registeredSubmissionIds: string[];
+      clean: boolean;
+    }>;
     staleLeases: string[];
     unregisteredWorktrees: string[];
   }> {
@@ -4232,11 +4380,21 @@ export class MergeBroker {
       const resolved = path.resolve(task.worktree);
       registeredPaths.set(resolved, [...(registeredPaths.get(resolved) ?? []), task.id]);
     }
+    const registeredSubmissionPaths = new Map<string, string[]>();
+    for (const submission of Object.values(state.submissions)) {
+      if (!submission.worktree) continue;
+      const resolved = path.resolve(submission.worktree);
+      registeredSubmissionPaths.set(
+        resolved,
+        [...(registeredSubmissionPaths.get(resolved) ?? []), submission.id],
+      );
+    }
     const details = await Promise.all(
       worktrees.map(async (worktree) => ({
         path: worktree.path,
         ...(worktree.branch ? { branch: worktree.branch } : {}),
         registeredTaskIds: registeredPaths.get(path.resolve(worktree.path)) ?? [],
+        registeredSubmissionIds: registeredSubmissionPaths.get(path.resolve(worktree.path)) ?? [],
         clean: await this.repo.isClean(worktree.path),
       })),
     );
@@ -4249,7 +4407,8 @@ export class MergeBroker {
           (item) =>
             path.resolve(item.path) !== this.repo.root &&
             path.resolve(item.path) !== primaryWorktree &&
-            item.registeredTaskIds.length === 0,
+            item.registeredTaskIds.length === 0 &&
+            item.registeredSubmissionIds.length === 0,
         )
         .map((item) => item.path),
     };
@@ -4363,9 +4522,10 @@ export class MergeBroker {
 
   async inspectLocks(): Promise<LockStatus[]> {
     const state = await this.store.read();
-    const fixed = await Promise.all(
-      ["state", "integration"].map(async (name) => await this.store.inspectLock(name)),
-    );
+    const fixed = await Promise.all([
+      ...["state", "integration"].map(async (name) => await this.store.inspectLock(name)),
+      this.store.inspectGateAuthorityLock(),
+    ]);
     const batches = await Promise.all(
       Object.keys(state.batches).map(async (batchId) => {
         const lock = await this.store.inspectBatchLock(batchId);
@@ -4381,12 +4541,14 @@ export class MergeBroker {
       const batchId = name.slice("batch:".length);
       if (!batchId) throw new BrokerError("UNKNOWN_LOCK", "A batch lock needs a batch ID after 'batch:'.");
       released = { ...(await this.store.releaseBatchLock(batchId, options)), name };
+    } else if (name === "gate-authority") {
+      released = await this.store.releaseGateAuthorityLock(options);
     } else if (name === "state" || name === "integration") {
       released = await this.store.releaseLock(name, options);
     } else {
       throw new BrokerError(
         "UNKNOWN_LOCK",
-        `Unknown lock: ${name}. Expected "state", "integration", or "batch:<batch-id>".`,
+        `Unknown lock: ${name}. Expected "state", "integration", "gate-authority", or "batch:<batch-id>".`,
       );
     }
     await this.store.transaction((_state, audit) => {

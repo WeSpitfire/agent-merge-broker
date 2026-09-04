@@ -168,6 +168,87 @@ function isPortableAbsolute(value: string): boolean {
   return path.posix.isAbsolute(value) || path.win32.isAbsolute(value) || /^[A-Za-z]:/u.test(value);
 }
 
+const GIT_COMMON_RESERVED_NAMES = new Set([
+  "auto_merge",
+  "cherry_pick_head",
+  "commit_editmsg",
+  "commondir",
+  "branches",
+  "config",
+  "config.worktree",
+  "description",
+  "fetch_head",
+  "gc.pid",
+  "gc.log",
+  "gitdir",
+  "head",
+  "hooks",
+  "index",
+  "index.lock",
+  "info",
+  "logs",
+  "merge_autostash",
+  "merge_head",
+  "merge_mode",
+  "merge_msg",
+  "merge_rr",
+  "merge-broker-gate-authority.json",
+  "merge-broker-gate-authority.lock",
+  "modules",
+  "objects",
+  "orig_head",
+  "packed-refs",
+  "packed-refs.lock",
+  "rebase-apply",
+  "rebase_head",
+  "rebase-merge",
+  "remotes",
+  "refs",
+  "revert_head",
+  "rr-cache",
+  "sequencer",
+  "shallow",
+  "shallow.lock",
+  "squash_msg",
+  "svn",
+  "worktrees",
+]);
+
+/** Conservative cross-platform directory grammar for state stored inside Git's common directory. */
+export function isSafeStateDirectory(value: unknown): value is string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 1_024 ||
+    value.includes("\\") ||
+    isPortableAbsolute(value)
+  ) return false;
+  const parts = value.split("/");
+  if (parts.some((part) => {
+    const lower = part.toLowerCase();
+    const dosBase = lower.split(".")[0] ?? "";
+    return part === "" ||
+      part === "." ||
+      part === ".." ||
+      Buffer.byteLength(part, "utf8") > 255 ||
+      /[^\x20-\x7e]/u.test(part) ||
+      /[<>:"|?*]/u.test(part) ||
+      /[. ]$/u.test(part) ||
+      lower === ".git" ||
+      /^[A-Za-z0-9!#$%&'()@^_`{}-]{1,6}~[1-9][0-9]*(?:\.[A-Za-z0-9!#$%&'()@^_`{}~-]{1,3})?$/u.test(part) ||
+      /^(?:con|prn|aux|nul|conin\$|conout\$|com[0-9]|lpt[0-9])$/u.test(dosBase);
+  })) return false;
+  const first = (parts[0] ?? "").toLowerCase();
+  return !GIT_COMMON_RESERVED_NAMES.has(first) &&
+    !first.endsWith(".lock") &&
+    !first.endsWith(".pid") &&
+    !first.endsWith("_head") &&
+    !first.endsWith("_msg") &&
+    !first.startsWith("bisect_") &&
+    !first.startsWith("sharedindex.") &&
+    !first.startsWith("rebase-");
+}
+
 function assertSafeGitName(value: string, key: string, allowTrailingSlash = false): void {
   const candidate = allowTrailingSlash ? value.replace(/\/+$/u, "") : value;
   if (
@@ -210,14 +291,7 @@ export function validateConfig(value: unknown): BrokerConfig {
   assertSafeGitName(config.baseRef, "baseRef");
   assertSafeGitName(config.remote, "remote");
   assertString(config.stateDirectory, "stateDirectory");
-  if (
-    isPortableAbsolute(config.stateDirectory) ||
-    config.stateDirectory === "." ||
-    config.stateDirectory.split(/[\\/]/u).some((part) => part === "..") ||
-    new Set(["branches", "hooks", "info", "logs", "objects", "refs", "worktrees"]).has(
-      config.stateDirectory.split(/[\\/]/u)[0] ?? "",
-    )
-  ) {
+  if (!isSafeStateDirectory(config.stateDirectory)) {
     throw new BrokerError("INVALID_CONFIG", "stateDirectory must stay inside Git's common directory.");
   }
   assertAllowedKeys(config.leases, "leases", ["ttlSeconds", "lockTimeoutSeconds", "serializedPatterns"]);
@@ -452,6 +526,7 @@ export function validateConfig(value: unknown): BrokerConfig {
         "command",
         "workingDirectory",
         "paths",
+        "filesInput",
         "timeoutSeconds",
         "env",
         "executionArchitecture",
@@ -471,6 +546,16 @@ export function validateConfig(value: unknown): BrokerConfig {
         }
       }
       if (validator.paths !== undefined) assertStringArray(validator.paths, `validation.${scope}.paths`);
+      if (
+        validator.filesInput !== undefined &&
+        validator.filesInput !== "inline" &&
+        validator.filesInput !== "json"
+      ) {
+        throw new BrokerError(
+          "INVALID_CONFIG",
+          `validation.${scope}.filesInput must be inline or json.`,
+        );
+      }
       if (validator.timeoutSeconds !== undefined) {
         assertPositiveInteger(validator.timeoutSeconds, `validation.${scope}.timeoutSeconds`);
       }

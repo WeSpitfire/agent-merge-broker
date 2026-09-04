@@ -22,8 +22,13 @@ test("announces that a batch is starting, not only that one finished", () => {
 
 test("reports abandoned integration recovery", () => {
   assert.equal(
-    describeServeEvent({ kind: "recovered", batches: ["old-batch"], tasks: ["TASK-1", "TASK-2"] }),
-    "recovered 1 abandoned batch(es); requeued 2 task(s)",
+    describeServeEvent({
+      kind: "recovered",
+      batches: ["old-batch"],
+      tasks: ["TASK-1", "TASK-2"],
+      submissions: ["submission-1"],
+    }),
+    "recovered 1 abandoned batch(es); requeued 2 task(s); recovered 1 candidate submission(s)",
   );
 });
 

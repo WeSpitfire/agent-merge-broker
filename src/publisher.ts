@@ -97,7 +97,7 @@ export async function publishBatch(options: {
   }
   const remoteName = batch.remote ?? config.remote;
   const remote = await repo.boundRemoteUrl(remoteName, batch.remoteUrlFingerprint);
-  await repo.push(remote, batch.branchName, batch.headSha);
+  await repo.push(remote, batch.branchName, batch.headSha, { exactRemote: true });
   if (config.publish.mode === "branch") {
     return { mode: "branch", branchName: batch.branchName };
   }

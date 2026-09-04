@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { MergeBroker } from "./broker.js";
@@ -61,6 +61,34 @@ function cliArguments(repo: string): string[] {
   ];
 }
 
+function commandArguments(repo: string, ...args: string[]): string[] {
+  const sourceTest = fileURLToPath(import.meta.url).endsWith(".ts");
+  const cli = fileURLToPath(new URL(sourceTest ? "./cli.ts" : "./cli.js", import.meta.url));
+  return [
+    ...(sourceTest ? ["--import", "tsx"] : []),
+    cli,
+    "--cwd",
+    repo,
+    "--json",
+    ...args,
+  ];
+}
+
+async function candidateCommit(repo: string, branch = "candidate/local-ref"): Promise<string> {
+  const config = await loadConfig(repo);
+  config.integration.refreshBase = false;
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await git(repo, "add", ".merge-broker/config.json");
+  await git(repo, "commit", "-m", "commit broker policy");
+  await git(repo, "switch", "-c", branch);
+  await writeFile(path.join(repo, "candidate.txt"), "trusted local candidate\n", "utf8");
+  await git(repo, "add", "candidate.txt");
+  await git(repo, "commit", "-m", "candidate change");
+  const sha = await git(repo, "rev-parse", "HEAD");
+  await git(repo, "switch", "main");
+  return sha;
+}
+
 async function serveOnce(repo: string): Promise<CommandResult> {
   const result = await runCommand(process.execPath, cliArguments(repo), {
     cwd: PROJECT_ROOT,
@@ -103,6 +131,161 @@ test("JSON mode envelopes command-line usage errors", async () => {
   assert.equal(help.exitCode, 0, help.stderr);
   assert.equal(help.stderr, "");
   assert.match(help.stdout, /Usage: merge-broker/iu);
+
+  const missingRef = await runCommand(process.execPath, [...runtime, "--json", "candidate", "adopt"], {
+    cwd: PROJECT_ROOT,
+    allowFailure: true,
+  });
+  assert.equal(missingRef.exitCode, 1);
+  assert.equal(missingRef.stdout, "");
+  const missingRefBody = JSON.parse(missingRef.stderr) as { error?: { code?: string; message?: string } };
+  assert.equal(missingRefBody.error?.code, "INVALID_ARGUMENTS");
+  assert.match(missingRefBody.error?.message ?? "", /required option '--ref <revision>' not specified/iu);
+});
+
+test("candidate adopt retains and validates a local ref without creating Coordinate records", async (context) => {
+  const repo = await repository(context);
+  const artifactSha = await candidateCommit(repo);
+
+  const unregistered = await runCommand(
+    process.execPath,
+    commandArguments(repo, "candidate", "adopt", "--ref", "candidate/local-ref"),
+    { cwd: PROJECT_ROOT, allowFailure: true },
+  );
+  assert.equal(unregistered.exitCode, 1);
+  assert.equal(unregistered.stdout, "");
+  const unregisteredBody = JSON.parse(unregistered.stderr) as { error?: { code?: string } };
+  assert.equal(unregisteredBody.error?.code, "GATE_AUTHORITY_REQUIRED");
+
+  const setup = await runCommand(
+    process.execPath,
+    commandArguments(repo, "candidate", "authority", "setup"),
+    { cwd: PROJECT_ROOT, allowFailure: true },
+  );
+  assert.equal(setup.exitCode, 0, setup.stderr);
+  const registration = JSON.parse(setup.stdout) as { digest: string; target: { baseRef: string } };
+  assert.match(registration.digest, /^[0-9a-f]{64}$/u);
+  assert.equal(registration.target.baseRef, "main");
+
+  const shownAuthority = await runCommand(
+    process.execPath,
+    commandArguments(repo, "candidate", "authority", "show"),
+    { cwd: PROJECT_ROOT, allowFailure: true },
+  );
+  assert.equal(shownAuthority.exitCode, 0, shownAuthority.stderr);
+  assert.deepEqual(JSON.parse(shownAuthority.stdout), JSON.parse(setup.stdout));
+
+  const adopted = await runCommand(
+    process.execPath,
+    commandArguments(repo, "candidate", "adopt", "--ref", "candidate/local-ref"),
+    { cwd: PROJECT_ROOT, allowFailure: true, timeoutMs: 30_000 },
+  );
+  assert.equal(adopted.exitCode, 0, adopted.stderr);
+  assert.equal(adopted.stderr, "");
+  const submission = JSON.parse(adopted.stdout) as {
+    id: string;
+    status: string;
+    source: { ref: string };
+    artifact: { sha: string; retainedRef: string };
+    paths: string[];
+  };
+  assert.equal(submission.status, "validated");
+  assert.equal(submission.source.ref, "candidate/local-ref");
+  assert.equal(submission.artifact.sha, artifactSha);
+  assert.deepEqual(submission.paths, ["candidate.txt"]);
+  assert.equal(await git(repo, "rev-parse", submission.artifact.retainedRef), artifactSha);
+
+  const shown = await runCommand(
+    process.execPath,
+    commandArguments(repo, "candidate", "show", submission.id),
+    { cwd: PROJECT_ROOT, allowFailure: true },
+  );
+  assert.equal(shown.exitCode, 0, shown.stderr);
+  assert.deepEqual(JSON.parse(shown.stdout), JSON.parse(adopted.stdout));
+
+  const listed = await runCommand(
+    process.execPath,
+    commandArguments(repo, "candidate", "list"),
+    { cwd: PROJECT_ROOT, allowFailure: true },
+  );
+  assert.equal(listed.exitCode, 0, listed.stderr);
+  const submissions = JSON.parse(listed.stdout) as Array<{ id: string; artifact: { sha: string } }>;
+  assert.deepEqual(submissions.map((item) => item.id), [submission.id]);
+  assert.equal(submissions[0]?.artifact.sha, artifactSha);
+
+  const state = await (await MergeBroker.open(repo)).state();
+  assert.deepEqual(state.tasks, {});
+  assert.deepEqual(state.batches, {});
+  assert.equal(state.submissions?.[submission.id]?.artifact.sha, artifactSha);
+});
+
+test("candidate adopt exits unsuccessfully when protected-base validation rejects it", async (context) => {
+  const repo = await repository(context);
+  const config = await loadConfig(repo);
+  config.validation.focused = [{ name: "reject-candidate", command: 'node -e "process.exit(9)"' }];
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await candidateCommit(repo, "candidate/rejected");
+  await (await MergeBroker.open(repo)).registerCandidateAuthority();
+
+  const adopted = await runCommand(
+    process.execPath,
+    commandArguments(repo, "candidate", "adopt", "--ref", "candidate/rejected"),
+    { cwd: PROJECT_ROOT, allowFailure: true, timeoutMs: 30_000 },
+  );
+  assert.equal(adopted.exitCode, 1);
+  assert.equal(adopted.stderr, "");
+  const submission = JSON.parse(adopted.stdout) as {
+    status: string;
+    errorCode?: string;
+    validations: Array<{ name: string; exitCode: number }>;
+  };
+  assert.equal(submission.status, "rejected");
+  assert.equal(submission.validations[0]?.name, "reject-candidate");
+  assert.equal(submission.validations[0]?.exitCode, 9);
+  assert.ok(submission.errorCode);
+});
+
+test("inspects and force-releases the config-independent Gate authority lock", async (context) => {
+  const repo = await repository(context);
+  const lock = path.join(repo, ".git", "merge-broker-gate-authority.lock");
+  await mkdir(lock, { recursive: true });
+  await writeFile(
+    path.join(lock, "owner.json"),
+    `${JSON.stringify({
+      pid: 424242,
+      host: "different-host.invalid",
+      createdAt: "2026-09-04T12:00:00.000Z",
+      nonce: "foreign-gate-lock",
+    })}\n`,
+    "utf8",
+  );
+
+  const inspected = await runCommand(
+    process.execPath,
+    commandArguments(repo, "unlock"),
+    { cwd: PROJECT_ROOT, allowFailure: true },
+  );
+  assert.equal(inspected.exitCode, 0, inspected.stderr);
+  const locks = JSON.parse(inspected.stdout) as Array<{ name: string; held: boolean; path: string }>;
+  const gate = locks.find((item) => item.name === "gate-authority");
+  assert.equal(gate?.held, true);
+  assert.equal(gate?.path, await realpath(lock));
+
+  const refused = await runCommand(
+    process.execPath,
+    commandArguments(repo, "unlock", "gate-authority"),
+    { cwd: PROJECT_ROOT, allowFailure: true },
+  );
+  assert.equal(refused.exitCode, 1);
+  assert.equal((JSON.parse(refused.stderr) as { error?: { code?: string } }).error?.code, "LOCK_HELD");
+
+  const released = await runCommand(
+    process.execPath,
+    commandArguments(repo, "unlock", "gate-authority", "--force"),
+    { cwd: PROJECT_ROOT, allowFailure: true },
+  );
+  assert.equal(released.exitCode, 0, released.stderr);
+  assert.equal((JSON.parse(released.stdout) as { held?: boolean }).held, false);
 });
 
 test("serve --once --json returns one summary document when idle", async (context) => {

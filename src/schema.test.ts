@@ -3,6 +3,12 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { defaultConfig } from "./config.js";
+import {
+  GATE_AUTHORITY_VERSION,
+  SUBMISSION_VERSION,
+  type GateAuthorityRegistration,
+  type SubmissionRecord,
+} from "./types.js";
 
 const schema = JSON.parse(
   await readFile(new URL("../schemas/config.schema.json", import.meta.url), "utf8"),
@@ -16,6 +22,79 @@ const validateCandidate = new Ajv2020({
   strict: true,
   formats: { "date-time": true, uri: true },
 }).compile(candidateSchema);
+const submissionSchema = JSON.parse(
+  await readFile(new URL("../schemas/submission.schema.json", import.meta.url), "utf8"),
+) as object;
+const validateSubmission = new Ajv2020({
+  allErrors: true,
+  strict: true,
+  formats: { "date-time": true },
+}).compile(submissionSchema);
+const gateAuthoritySchema = JSON.parse(
+  await readFile(new URL("../schemas/gate-authority.schema.json", import.meta.url), "utf8"),
+) as object;
+const validateGateAuthority = new Ajv2020({
+  allErrors: true,
+  strict: true,
+  formats: { "date-time": true },
+}).compile(gateAuthoritySchema);
+
+function submission(): SubmissionRecord {
+  const at = "2026-09-04T12:00:00.000Z";
+  return {
+    version: SUBMISSION_VERSION,
+    id: "gate-candidate-1",
+    status: "validating",
+    authorityDigest: "9".repeat(64),
+    source: { kind: "local-ref", ref: "refs/heads/agent/candidate" },
+    artifact: {
+      kind: "git-commit",
+      sha: "a".repeat(40),
+      treeSha: "b".repeat(40),
+      retainedRef: "refs/merge-broker/submissions/gate-candidate-1",
+    },
+    base: {
+      ref: "refs/remotes/origin/main",
+      baseBranch: "main",
+      remote: "origin",
+      fetchUrlFingerprint: "c".repeat(64),
+      sha: "d".repeat(40),
+    },
+    policy: {
+      baseSha: "d".repeat(40),
+      configPath: ".merge-broker.json",
+      configBlobSha: "e".repeat(40),
+      digest: "f".repeat(64),
+      revision: "protected-base-v1",
+      evaluatorVersion: "agent-merge-broker/0.12.1",
+      configVersion: 1,
+    },
+    commits: ["a".repeat(40)],
+    paths: ["src/candidate.ts"],
+    validations: [],
+    worktree: "/broker-state/worktrees/gate-candidate-1",
+    createdAt: at,
+    updatedAt: at,
+    validationStartedAt: at,
+  };
+}
+
+function gateAuthority(): GateAuthorityRegistration {
+  return {
+    version: GATE_AUTHORITY_VERSION,
+    kind: "trusted-local-ref",
+    digest: "9".repeat(64),
+    target: {
+      baseRef: "refs/remotes/origin/main",
+      baseBranch: "main",
+      remote: "origin",
+      refreshBase: true,
+      fetchUrlFingerprint: "a".repeat(64),
+    },
+    stateDirectory: "merge-broker",
+    registeredAt: "2026-09-04T12:00:00.000Z",
+  };
+}
 
 test("the generated default configuration satisfies the published JSON schema", () => {
   const config = defaultConfig();
@@ -33,6 +112,15 @@ test("the JSON schema supports process-relative and native validator execution",
   assert.equal(validate(config), true, JSON.stringify(validate.errors));
   const validator = config.validation.authoritative[0] as { executionArchitecture: string };
   validator.executionArchitecture = "arm64";
+  assert.equal(validate(config), false);
+});
+
+test("the JSON schema supports only declared validator path-input modes", () => {
+  const config = defaultConfig();
+  config.validation.authoritative = [{ name: "large repository", command: "npm test", filesInput: "json" }];
+  assert.equal(validate(config), true, JSON.stringify(validate.errors));
+  const validator = config.validation.authoritative[0] as { filesInput: string };
+  validator.filesInput = "truncate";
   assert.equal(validate(config), false);
 });
 
@@ -103,4 +191,55 @@ test("the candidate schema accepts a causally confirmed exact approval", () => {
     },
   };
   assert.equal(validateCandidate(revokingCandidate), true, JSON.stringify(validateCandidate.errors));
+});
+
+test("the submission schema requires immutable artifact, target, and protected-base policy identities", () => {
+  const value = submission();
+  assert.equal(validateSubmission(value), true, JSON.stringify(validateSubmission.errors));
+
+  const invalidDigest = structuredClone(value) as SubmissionRecord;
+  invalidDigest.policy.digest = "not-a-digest";
+  assert.equal(validateSubmission(invalidDigest), false);
+
+  const invalidTree = structuredClone(value) as SubmissionRecord;
+  invalidTree.artifact.treeSha = "a".repeat(39);
+  assert.equal(validateSubmission(invalidTree), false);
+
+  const missingRemote = structuredClone(value) as unknown as {
+    base: { remote?: string };
+  };
+  delete missingRemote.base.remote;
+  assert.equal(validateSubmission(missingRemote), false);
+});
+
+test("the submission schema exposes validation-only lifecycle and stable failure codes", () => {
+  const value = submission();
+  const unsupported = structuredClone(value) as unknown as { status: string };
+  unsupported.status = "approved";
+  assert.equal(validateSubmission(unsupported), false);
+
+  const rejected = structuredClone(value);
+  rejected.status = "rejected";
+  rejected.errorCode = "VALIDATION_FAILED";
+  rejected.error = "Authoritative validation failed.";
+  rejected.finishedAt = "2026-09-04T12:01:00.000Z";
+  assert.equal(validateSubmission(rejected), true, JSON.stringify(validateSubmission.errors));
+
+  rejected.errorCode = "";
+  assert.equal(validateSubmission(rejected), false);
+});
+
+test("the Gate authority schema exposes only a fingerprinted protected-target locator", () => {
+  const value = gateAuthority();
+  assert.equal(validateGateAuthority(value), true, JSON.stringify(validateGateAuthority.errors));
+
+  const rawRemote = structuredClone(value) as unknown as {
+    target: { remoteUrl?: string };
+  };
+  rawRemote.target.remoteUrl = "https://credentials@example.invalid/owner/repo.git";
+  assert.equal(validateGateAuthority(rawRemote), false);
+
+  const outsideState = structuredClone(value);
+  outsideState.stateDirectory = "../alternate-state";
+  assert.equal(validateGateAuthority(outsideState), false);
 });

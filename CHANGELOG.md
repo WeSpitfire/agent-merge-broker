@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.13.0 — 2026-09-04
+
+### Added
+
+- Added validation-only Gate intake for trusted Git refs already present in the broker repository.
+  `candidate authority setup` first records a versioned protected-target trust root at a fixed path
+  in Git's common directory; `candidate adopt --ref` then pins the exact commit, derives its
+  base-relative history and paths, loads committed policy from the registered base, and records a
+  standalone, schema-backed submission without manufacturing tasks, leases, receipts, or batches.
+- Added `candidate list` and `candidate show`, plus recovery of interrupted `received` and
+  `validating` submissions.
+
+### Changed
+
+- Validator environments now expose `MERGE_BROKER_SUBMISSION_ID` during trusted local-ref intake.
+- Validators now receive an owner-readable UTF-8 JSON path list through
+  `MERGE_BROKER_FILES_FILE`, `MERGE_BROKER_FILES_FILE_FORMAT=json`, and shell-safe `{filesFile}`.
+  Inline input remains the compatibility default but fails closed when either legacy representation
+  exceeds 4 KiB; `filesInput: "json"` explicitly selects file-only transport for large path sets.
+- Gate requires Git 2.46 or newer, binds protected-base refresh to the canonical fetch URL (separate
+  from any publication `pushurl`), rejects and scrubs Git repository/index/object/history and
+  configuration-injection or transport-command overrides, refuses configured URL/transport
+  rewrites, proxy/TLS/routing overrides, and exact-locator remote shorthand collisions, physically
+  binds local transport paths, rejects URL forms whose Git and web interpretations differ,
+  recursively inspects the owned object store, recomputes commit/tree/blob identities,
+  applies documented aggregate diff/tree/path ceilings, materializes raw filter-free blob bytes,
+  binds state/worktree/cache/hook directories to physical filesystem identities, journals retained-ref
+  establishment and later loss, bounds untracked-path diagnostics, and serializes authority
+  replacement against adoption and recovery.
+
 ## 0.12.1 — 2026-09-04
 
 ### Added
