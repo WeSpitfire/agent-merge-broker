@@ -1,7 +1,7 @@
 {
   "name": "agent-merge-broker",
-  "version": "0.12.0",
-  "description": "A transaction coordinator for parallel code-producing agents and humans.",
+  "version": "0.12.1",
+  "description": "Crash-recoverable repository transactions, validation, provenance, and exact-candidate approval for agents and humans.",
   "type": "module",
   "bin": {
     "merge-broker": "dist/cli.js",
@@ -24,6 +24,8 @@
     "examples",
     "docs",
     "README.md",
+    "VISION.md",
+    "ROADMAP.md",
     "CHANGELOG.md",
     "SUPPORT.md",
     "CONTRIBUTING.md",
@@ -49,6 +51,9 @@
     "merge-queue",
     "worktree",
     "ci",
+    "provenance",
+    "policy-as-code",
+    "software-supply-chain",
     "developer-tools"
   ],
   "author": "PowerHouse Exteriors",
@@ -60,7 +65,7 @@
   "bugs": {
     "url": "https://github.com/WeSpitfire/agent-merge-broker/issues"
   },
-  "homepage": "https://github.com/WeSpitfire/agent-merge-broker#readme",
+  "homepage": "https://wespitfire.github.io/agent-merge-broker/",
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
     "commander": "^14.0.3",

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile, rm } from "node:fs/promises";
 import { BrokerError, CommandError, ValidationError } from "./errors.js";
 import {
   GitRepository,
@@ -1431,6 +1431,7 @@ export class MergeBroker {
       });
 
       let worktreeAdded = false;
+      let retainedBranchCreated = false;
       let keepWorktree = false;
       let validationCacheDirectory: string | undefined;
       // Set while work is attributable to a single task, so one bad commit fails that task instead
@@ -1543,8 +1544,24 @@ export class MergeBroker {
           });
         } else {
           const branchName = cleanBranchFragment(`${this.config.integration.branchPrefix}${id}`);
-          await this.repo.createBranch(branchName, headSha);
+          // Persist the exact cleanup identity before creating the ref. A process can stop between
+          // `git branch` and the prepared-state transaction, and recovery must never reconstruct a
+          // branch name from configuration that may have changed in the meantime.
           batch.branchName = branchName;
+          await this.store.transaction((state, audit) => {
+            const running = requireBatch(state, id);
+            if (running.status !== "running") {
+              throw new BrokerError("BATCH_CHANGED", `Batch ${id} changed before branch creation.`);
+            }
+            running.branchName = branchName;
+            running.headSha = headSha;
+            audit("batch.branch_creation_started", {
+              batchId: id,
+              details: { branchName, headSha },
+            });
+          });
+          await this.repo.createBranch(branchName, headSha);
+          retainedBranchCreated = true;
           batch.status = "prepared";
           await this.store.transaction((state, audit) => {
             state.batches[id] = structuredClone(batch);
@@ -1588,8 +1605,12 @@ export class MergeBroker {
         });
       } catch (error) {
         keepWorktree = this.config.integration.keepFailedWorktrees;
-        if (batch.branchName) {
+        if (retainedBranchCreated && batch.branchName) {
           await this.repo.deleteBranch(batch.branchName);
+          delete batch.branchName;
+        } else if (batch.status === "running") {
+          // The intent may have been persisted even though Git refused to create the ref. Do not
+          // claim or later delete a branch the broker did not actually create.
           delete batch.branchName;
         }
         const failureResults = validationResultsFromError(error);
@@ -1765,6 +1786,100 @@ export class MergeBroker {
       };
     }
 
+    const worktreesRemoved: string[] = [];
+    const branchesRemoved: string[] = [];
+    const cleanupWarnings: string[] = [];
+    const worktreesCleared = new Set<string>();
+    const cleanupWarningsByBatch = new Map<string, string[]>();
+    const warn = (batchId: string, message: string): void => {
+      cleanupWarnings.push(message);
+      const warnings = cleanupWarningsByBatch.get(batchId) ?? [];
+      warnings.push(message);
+      cleanupWarningsByBatch.set(batchId, warnings);
+    };
+    const registeredWorktrees = new Set((await this.repo.listWorktrees()).map((worktree) => path.resolve(worktree.path)));
+    const worktreeRoot = `${path.resolve(this.store.worktreesDirectory)}${path.sep}`;
+    // Clean external Git artifacts while durable state is still `running`. If the process stops at
+    // any point in this loop, the next recovery repeats the idempotent observations and cleanup.
+    // Only the transaction below makes the recovery terminal.
+    for (const candidate of running) {
+      const batchId = candidate.id;
+      const worktree = candidate?.worktree ? path.resolve(candidate.worktree) : undefined;
+      if (worktree) {
+        if (!worktree.startsWith(worktreeRoot)) {
+          warn(batchId, `Refused to remove recovery worktree outside broker state: ${worktree}`);
+        } else if (!registeredWorktrees.has(worktree)) {
+          try {
+            const exists = await lstat(worktree).then(
+              () => true,
+              (error: unknown) => {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+                throw error;
+              },
+            );
+            if (exists) {
+              // `git worktree add` can stop after creating the directory but before registration.
+              // This exact path is inside the broker-owned worktree root, so remove the partial
+              // artifact rather than dropping its only durable pointer.
+              await rm(worktree, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+              worktreesRemoved.push(worktree);
+            }
+            worktreesCleared.add(batchId);
+          } catch (error) {
+            warn(batchId, `Could not remove partial recovery worktree ${worktree}: ${errorMessage(error)}`);
+          }
+        } else {
+          try {
+            await this.repo.removeWorktree(worktree);
+            worktreesRemoved.push(worktree);
+            worktreesCleared.add(batchId);
+          } catch (error) {
+            warn(batchId, errorMessage(error));
+          }
+        }
+      }
+
+      const branchName = candidate?.branchName;
+      const expectedHead = candidate?.headSha;
+      if (branchName && expectedHead) {
+        const refName = `refs/heads/${branchName}`;
+        const exists = await this.repo.git(
+          ["show-ref", "--verify", "--quiet", refName],
+          this.repo.root,
+          true,
+        );
+        if (exists.exitCode === 0) {
+          const branch = await this.repo.git(["show-ref", "--verify", refName], this.repo.root, true);
+          if (branch.exitCode !== 0) {
+            warn(
+              batchId,
+              `Could not inspect recovery branch ${branchName}: ${branch.stderr.trim() || `git exited ${branch.exitCode}`}`,
+            );
+            continue;
+          }
+          const actualHead = branch.stdout.trim().split(/\s+/u)[0];
+          if (actualHead !== expectedHead) {
+            warn(
+              batchId,
+              `Refused to remove recovery branch ${branchName}: expected ${expectedHead}, found ${actualHead ?? "an unknown head"}.`,
+            );
+          } else {
+            // Use porcelain deletion so Git still refuses a branch checked out in any worktree.
+            // The immediately preceding head check prevents ordinary stale-state deletion; the
+            // trusted-host model still requires operators not to race recovery deliberately.
+            const deleted = await this.repo.git(["branch", "-D", "--", branchName], this.repo.root, true);
+            if (deleted.exitCode === 0) branchesRemoved.push(branchName);
+            else warn(batchId, `Could not remove recovery branch ${branchName}: ${deleted.stderr.trim()}`);
+          }
+        } else if (exists.exitCode !== 1) {
+          warn(
+            batchId,
+            `Could not inspect recovery branch ${branchName}: ${exists.stderr.trim() || `git exited ${exists.exitCode}`}`,
+          );
+        }
+      }
+    }
+
     const recovered = await this.store.transaction((state, audit) => {
       const batches: string[] = [];
       const tasks: string[] = [];
@@ -1775,6 +1890,11 @@ export class MergeBroker {
         batch.error = "Integration process stopped before the transaction completed; tasks were recovered for retry.";
         batch.finishedAt = now();
         batches.push(batch.id);
+        if (worktreesCleared.has(batch.id)) delete batch.worktree;
+        const warnings = cleanupWarningsByBatch.get(batch.id) ?? [];
+        if (warnings.length > 0) {
+          batch.error = `${batch.error} Cleanup: ${warnings.join("; ")}`;
+        }
         const requeued: string[] = [];
         for (const taskId of batch.taskIds) {
           const task = state.tasks[taskId];
@@ -1788,54 +1908,13 @@ export class MergeBroker {
         }
         audit("batch.recovered", {
           batchId: batch.id,
-          details: { requeued, reason: "abandoned integration transaction" },
+          details: { requeued, reason: "abandoned integration transaction", warnings },
         });
-      }
-      return { batches, tasks };
-    });
-
-    const worktreesRemoved: string[] = [];
-    const branchesRemoved: string[] = [];
-    const cleanupWarnings: string[] = [];
-    const registeredWorktrees = new Set((await this.repo.listWorktrees()).map((worktree) => path.resolve(worktree.path)));
-    const worktreeRoot = `${path.resolve(this.store.worktreesDirectory)}${path.sep}`;
-    for (const batchId of recovered.batches) {
-      const candidate = running.find((batch) => batch.id === batchId);
-      const worktree = candidate?.worktree ? path.resolve(candidate.worktree) : undefined;
-      if (worktree && registeredWorktrees.has(worktree)) {
-        if (!worktree.startsWith(worktreeRoot)) {
-          cleanupWarnings.push(`Refused to remove recovery worktree outside broker state: ${worktree}`);
-        } else {
-          try {
-            await this.repo.removeWorktree(worktree);
-            worktreesRemoved.push(worktree);
-          } catch (error) {
-            cleanupWarnings.push(errorMessage(error));
-          }
-        }
-      }
-
-      const branchName = cleanBranchFragment(`${this.config.integration.branchPrefix}${batchId}`);
-      const branch = await this.repo.git(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], this.repo.root, true);
-      if (branch.exitCode === 0) {
-        const deleted = await this.repo.git(["branch", "-D", "--", branchName], this.repo.root, true);
-        if (deleted.exitCode === 0) branchesRemoved.push(branchName);
-        else cleanupWarnings.push(`Could not remove recovery branch ${branchName}: ${deleted.stderr.trim()}`);
-      }
-    }
-
-    await this.store.transaction((state, audit) => {
-      for (const batchId of recovered.batches) {
-        const batch = state.batches[batchId];
-        if (!batch) continue;
-        if (worktreesRemoved.includes(path.resolve(batch.worktree ?? ""))) delete batch.worktree;
-        if (cleanupWarnings.length > 0) {
-          batch.error = `${batch.error ?? "Integration was recovered."} Cleanup: ${cleanupWarnings.join("; ")}`;
-        }
       }
       audit("integration.recovery_completed", {
         details: {
-          ...recovered,
+          batches,
+          tasks,
           worktreesRemoved,
           branchesRemoved,
           cleanupWarnings,
@@ -1843,6 +1922,7 @@ export class MergeBroker {
           candidateRevisionWarnings,
         },
       });
+      return { batches, tasks };
     });
 
     return {

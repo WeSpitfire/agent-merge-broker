@@ -44,7 +44,12 @@ test("the JSON schema rejects validator working directories outside the reposito
   }
 });
 
-test("the JSON schema rejects auto-merge unless publication creates a non-draft pull request", () => {
+test("the JSON schema permits disabled auto-merge intent but rejects branch or draft publication", () => {
+  const disabled = defaultConfig();
+  disabled.publish.autoMerge = true;
+  disabled.publish.mode = "none";
+  assert.equal(validate(disabled), true, JSON.stringify(validate.errors));
+
   const config = defaultConfig();
   config.publish.autoMerge = true;
   config.publish.mode = "branch";

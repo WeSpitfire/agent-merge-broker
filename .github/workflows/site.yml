@@ -6,6 +6,10 @@ on:
     paths:
       - "site/**"
       - "docs/**"
+      - "VISION.md"
+      - "ROADMAP.md"
+      - "SUPPORT.md"
+      - "package.json"
       - ".github/workflows/site.yml"
   workflow_dispatch:
 

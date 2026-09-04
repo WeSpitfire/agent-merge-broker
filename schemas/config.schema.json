@@ -194,7 +194,7 @@
         "draft": { "type": "boolean" },
         "autoMerge": {
           "type": "boolean",
-          "description": "Ask GitHub to merge the pull request once required checks pass. Requires mode pull-request and draft false.",
+          "description": "Ask GitHub to merge the pull request once required checks pass. May be declared while publication is disabled, but even dormant auto-merge intent requires draft false; branch mode is unsupported.",
           "default": false
         },
         "mergeMethod": { "enum": ["squash", "merge", "rebase"], "default": "squash" },
@@ -205,7 +205,10 @@
         {
           "if": { "properties": { "autoMerge": { "const": true } }, "required": ["autoMerge"] },
           "then": {
-            "properties": { "draft": { "const": false }, "mode": { "const": "pull-request" } }
+            "properties": {
+              "draft": { "const": false },
+              "mode": { "enum": ["none", "pull-request"] }
+            }
           }
         }
       ]

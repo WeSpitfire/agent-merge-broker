@@ -1,18 +1,46 @@
 # Agent Merge Broker
 
-**Four agents just finished at the same time. Who merges first?**
+**Crash-recoverable repository transactions for code-producing agents and humans.**
 
-Agent Merge Broker answers that so your agents never have to. Workers commit their work and stop. The broker decides what can safely go together, cherry-picks it into a disposable worktree, runs your test suite against the combination, and lands one validated branch or pull request.
+Many producers can create code. The repository still needs one contract for deciding what is safe to
+validate, publish, and merge. Agent Merge Broker is a local-first transaction coordinator for that
+boundary: participating workers submit receipts naming immutable commits, the broker derives and
+validates one candidate, and publication stays bound to the recorded Git and forge target.
 
-No agent pushes. No agent rebases. No agent quietly clobbers another agent's `package-lock.json`.
+When exact-candidate approval is configured, evidence and authorization are tied to the candidate
+SHA, base SHA, and policy revision. Durable operation state lets the broker reconcile a crash or lost
+forge response before it releases dependent work.
 
-## The problem
+It does not spawn agents, decide policy with AI, or replace CI, review, protected branches, or a
+native forge queue. The forge remains the final branch authority.
 
-Put four coding agents on one repository and the bottleneck stops being code. It becomes Git.
+## What ships today: Coordinate mode
 
-Two agents edit the same file and find out at merge time. A third rebases onto a branch that moved twenty minutes ago. Everyone regenerates the lockfile. CI runs four times to test four things that were never once tested *together*. And the pull request that has been sitting there since lunch is now so far behind `main` that nothing can merge it at all.
+The current workflow coordinates workers that participate through the broker's claim and receipt
+protocol:
 
-The work is parallel. Integration is not. Every worker doing its own integration turns a coordination problem into a coordination disaster.
+```text
+claim → lease → commit → nominate → batch → validate → publish → reconcile
+```
+
+- Expiring, cross-worktree leases prevent predictable collisions before editing.
+- Commit receipts separate implementation from integration authority.
+- A deterministic conflict/dependency scheduler forms bounded batches.
+- Every batch is tested through real cherry-picks in a disposable worktree.
+- Focused checks run after each task; the complete gate runs either in the broker or as required CI.
+- Successful work becomes one local branch, remote branch, or GitHub pull request.
+- Optional exact-candidate policy separates nomination, verification, approval, and mechanical merge.
+- Published branches can carry a signed provenance manifest for remote policy checks.
+- Target fingerprints, durable intents, and forge observation make interrupted publication recoverable.
+- Automatic completion waits until the accepted Git history proves that the batch merged.
+
+### A concrete coordination problem
+
+Four coding agents finish at once. Two touched the same file, a third started from a base that has
+already moved, and each produced a lockfile. Testing four branches independently never proves that
+their combined result works. Coordinate mode orders that work, rejects overlapping claims early,
+validates compatible commits together, and retains one candidate without giving workers merge
+authority.
 
 ## Try it in one minute
 
@@ -25,34 +53,48 @@ Two workers race on a throwaway repository, a third gets turned away for claimin
 
 It is also this project's acceptance test in CI — so if the demo ever stops telling the truth, the build goes red.
 
-## How it works
+## How Coordinate mode works
 
-One integration authority; implementation stays distributed:
-
-- Expiring, cross-worktree leases prevent predictable collisions before editing.
-- Commit receipts separate implementation from integration authority.
-- A deterministic conflict/dependency scheduler forms bounded batches.
-- Every batch is tested through real cherry-picks in a disposable worktree.
-- Focused checks run after each task; the complete gate runs either in the broker or as required CI.
-- Successful work becomes one local branch, remote branch, or GitHub pull request.
-- Optional exact-candidate policy separates nomination, verification, approval, and mechanical merge.
-- Published branches can carry a committed provenance manifest for fast remote policy checks.
-- Tasks are dependency-complete only after their batch is actually merged.
-- An append-only audit stream records lifecycle decisions and validation results.
-
-It is deliberately **not** an agent framework and **not** a replacement for protected branches. Codex, Claude, Cursor, custom agents, CI jobs, and humans all speak the same small commit-receipt protocol, and your forge keeps the final say on what merges.
+Implementation stays distributed while one broker owns ordering, batching, validation, publication,
+and recovery. Codex, Claude, Cursor, custom agents, CI jobs, and humans can use the same small
+commit-receipt protocol. An append-only audit stream records lifecycle decisions and validation
+results, while the forge keeps the final say on what merges.
 
 ## Status
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.12.0` is the current release. It makes pull-request auto-merge crash-recoverable and
-target-bound, adds unattended publication and stale-base recovery, and closes approval, refresh,
-revision, remote-retargeting, and reopened-pull-request races. It also retains the first-class
-Windows support, permission-separated MCP servers, diagnostics, and bootstrap detection added in
-`0.11.0`.
+`0.12.1` is the current release. It consolidates the product boundary, protocol, recovery
+documentation, and machine-readable CLI behavior around the `0.12.0` core. That core made
+pull-request auto-merge crash-recoverable and target-bound, added unattended publication and
+stale-base recovery, and closed approval, refresh, revision, remote-retargeting, and reopened-PR
+races. It also retains the first-class Windows support, permission-separated MCP servers,
+diagnostics, and bootstrap detection added in `0.11.0`.
 
 The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
+
+## Product direction
+
+Coordinate mode is the product available in `0.12.1`. Two smaller-responsibility modes are planned;
+neither should be read as a claim about the current CLI.
+
+### Gate mode — planned
+
+Gate mode will accept a completed immutable candidate from a producer that did not use path leases
+while coding. The first planned slice is trusted-source adoption of a Git ref already available to the broker:
+resolve and retain its commit, derive its paths from Git, load base policy, validate the retained
+bytes, and enter the existing exact-candidate lifecycle. There is no `candidate adopt` command in the
+current release.
+
+### Verify mode — planned
+
+Verify mode will be a lightweight admission check for policy and attestations produced through a
+wider set of workflows. Today's `verify-provenance` command is intentionally narrower: it verifies
+provenance created by the current broker workflow, not arbitrary external candidates.
+
+See [Vision](VISION.md) for the durable product boundary and
+[Roadmap](ROADMAP.md) for the capability-based sequence. Planned work is labeled explicitly and
+is not part of npm until a release says otherwise.
 
 ## Requirements
 
@@ -99,9 +141,10 @@ and owner-written `AGENTS.md` content. Use `--no-detect` or `--no-agent-contract
 installer or repository template owns those concerns itself.
 
 It also creates an Ed25519 provenance private key, mode `0600`, under Git's common runtime directory.
-Only its public key is written to the committed configuration. Runtime state, receipt records,
-manifests, keys, locks, and integration worktrees therefore stay outside commits while every linked
-worktree sees the same broker authority.
+Only its public key is written to the committed configuration. Runtime state, receipt and batch
+records, keys, locks, and integration worktrees therefore stay outside commits while every linked
+worktree sees the same broker authority. When provenance is enabled, a separate signed or unsigned
+provenance manifest is deliberately committed as the retained branch head.
 
 ## Quick start
 
@@ -139,16 +182,17 @@ merge-broker task heartbeat CRM-142
 Pass `--token`, `--token-file`, or `MERGE_BROKER_TOKEN` when the worker runs somewhere else, or
 claim with `--no-store-token` to handle custody yourself.
 
-Before handing anything over, the worker can check its own work against the same validators
-integration will run:
+Before handing anything over, the worker can run a local preflight using the same validator
+definitions integration will use:
 
 ```bash
 merge-broker validate
 ```
 
-This is the answer integration would give, not an approximation of it, because it reads the same
-`validation` configuration. It includes uncommitted and untracked files, writes no state, needs no
-lease, and exits non-zero when a validator fails — so a worker script can gate on it.
+This checks the caller's current working tree, including uncommitted and untracked files, writes no
+state, needs no lease, and exits non-zero when a validator fails. It does not reproduce integration's
+per-task focused sequencing or its unchanged-`HEAD` and clean-worktree postconditions, so the retained
+integration transaction remains authoritative.
 
 The worker commits its change and nominates a candidate receipt. It does not merge or push:
 
@@ -179,7 +223,11 @@ merge-broker integrate --publish
 merge-broker batch sync <batch-id>
 ```
 
-`batch sync` checks the GitHub PR when available. For branch-only publication it fetches the configured base and verifies ancestry. `batch complete` exists as an explicit manual escape hatch for squash/rebase workflows that cannot be reconciled automatically.
+`batch sync` checks the GitHub PR when available. For branch-only publication it fetches the batch's
+fingerprint-bound recorded target and verifies exact-head ancestry. GitHub fast-forward, squash,
+two-parent merge, and linear-rebase outcomes are reconciled automatically when their topology can be
+proved. `batch complete` remains an explicit manual authority fallback for workflows that expose no
+sufficient automatic proof.
 
 ## See it work
 
@@ -234,7 +282,7 @@ installing dependencies:
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v0.12.0
+- uses: WeSpitfire/agent-merge-broker/verify@v0.12.1
 ```
 
 The check verifies the Ed25519 signature, branch and batch identity, real base history, one-file
@@ -300,11 +348,12 @@ to be current. Approval also rechecks the open PR head, target base, task state,
 and configured GitHub checks. Approval becomes merge-authorizing only after it is durable and the
 broker observes that exact PR still open; the final `gh pr merge` uses GitHub's head-SHA guard.
 
-Protect the target branch with either “require branches to be up to date before merging” or a merge
-queue, and restrict bypass permission. GitHub's merge API can guard the head SHA but cannot
-atomically guard a base SHA. The broker rechecks the base immediately before queueing and proves the
-merged Git history afterward, but branch protection prevents an out-of-band base update in that
-final remote interval.
+Protect the target branch with “require branches to be up to date before merging” and restrict
+bypass permission. GitHub's merge API can guard the head SHA but cannot atomically guard a base SHA.
+The broker rechecks the base immediately before queueing and proves the merged Git history afterward,
+while branch protection prevents an out-of-band base update in that final remote interval. Native
+merge-queue and `merge_group` verification are planned; the current topology proof does not treat a
+combined merge-group artifact as the authorized candidate.
 
 If verification finds a problem, keep the task and PR:
 
@@ -331,11 +380,13 @@ Two configuration combinations cannot work and are rejected at load time rather 
 
 Auto-merge requires the setting to be enabled on the GitHub repository. Configurations written before this feature existed default to `autoMerge: false`, so upgrading never starts landing work on its own.
 
-The broker resolves and records the exact Git push URL locator and GitHub `HOST/OWNER/REPO` when it
-assembles a batch. Later changes to the named Git remote or to `gh repo set-default` cannot redirect
-publication. Standard GitHub and GitHub Enterprise remote URLs are derived automatically. If the
-Git remote is a local mirror or proxy, set `publish.repository` explicitly; otherwise pull-request
-mode fails closed rather than guessing a GitHub repository.
+The broker records the selected Git remote and a SHA-256 fingerprint of its canonical push URL when
+it assembles a publishable batch; the raw URL is not persisted because it may contain credentials.
+Pull-request batches also record a host-qualified GitHub `HOST/OWNER/REPO`. Later changes to the
+named remote or to `gh repo set-default` cannot redirect publication. Standard GitHub and GitHub
+Enterprise remote URLs are derived automatically. If the Git remote is a local mirror or proxy, set
+`publish.repository` explicitly; otherwise pull-request mode fails closed rather than guessing a
+GitHub repository.
 
 Running `merge-broker serve --publish` reconciles checks, finishes interrupted publication or
 auto-merge hand-offs, re-cuts stale batches, and only then integrates the next batch. With exact
@@ -365,10 +416,12 @@ deliberately instead.
 `integrate --dry-run` is a rehearsal in both directions: it retains no branch when it succeeds, and
 returns every task to the queue when it fails, so verifying costs nothing.
 
-Only one batch is in flight at a time. A batch is cut from the base branch tip so it is born
-mergeable, and cutting a second while the first is still open makes that expire — whichever merges
-first leaves the other behind a base that requires branches to be up to date. `integrate` refuses
-with `BATCH_OUTSTANDING` and names the batch to land first; `--force` overrides it.
+Only one batch is in flight at a time. In the default production shape—`baseRef` identifies the
+remote target and `integration.refreshBase` is enabled—a batch is cut from the fetched base-branch
+tip so it is born mergeable. A deliberately different `baseRef`, or disabling refresh, uses the
+configured construction revision instead. Cutting a second batch while the first is still open can
+leave either one stale, so `integrate` refuses with `BATCH_OUTSTANDING` and names the batch to land
+first; `--force` overrides it.
 
 When a batch does end up behind — something landed on the base by another route, or `--force` was
 used — re-cut it:
@@ -377,9 +430,10 @@ used — re-cut it:
 merge-broker batch refresh <batch-id>
 ```
 
-That closes the superseded pull request, returns the tasks to the queue without spending their retry
-budget, and integrates them again from the current tip, re-validating against the base that is
-actually being merged into. A batch already cut from the current tip is left alone.
+For PR publication, that closes the superseded pull request; branch-only publication has no PR to
+close. It returns the tasks to the queue without spending their retry budget and integrates them
+again from the current recorded target tip, re-validating against the base that is actually being
+merged into. A batch already cut from that tip is left alone.
 
 Publication is safe to retry. The pull request is recorded before auto-merge is attempted, and a
 durable intent is recorded before the remote queue is changed. A forge that fails halfway therefore
@@ -390,12 +444,13 @@ create anything new.
 
 A process that dies mid-integration can leave both a lock and durable `running` state. A holder on
 this machine is reclaimed automatically once its process is proven gone. A holder on another machine
-cannot be probed and is never stolen merely because it is old; after confirming that process is
-gone, inspect or release it explicitly with `unlock batch:<batch-id> --force` (or `state` /
-`integration`). Once the integration lock is safely acquired, `serve` and `integrate` automatically
-mark abandoned work failed, clean its broker-owned worktree and branch, and return its tasks to
-`submitted` without spending their attempt budget. `merge-broker recover` performs that
-reconciliation explicitly.
+cannot be probed and is never stolen merely because it is old. Inspect the locks with `doctor`; for
+an abandoned `running` integration, confirm the old authority is gone and release
+`unlock integration --force` (and `state` only if `doctor` shows it held). Dynamic
+`batch:<batch-id>` locks apply to interrupted operations after integration. Once the integration lock
+is safely acquired, `serve` and `integrate` automatically mark abandoned work failed, clean its
+broker-owned worktree and branch, and return its tasks to `submitted` without spending their attempt
+budget. `merge-broker recover` performs that reconciliation explicitly.
 
 Candidate revisions also carry a durable intent before the broker moves their branch. If a process
 stops after the branch update but before state finalization, `recover` compares the real PR/local
@@ -509,10 +564,10 @@ place a validator in a repository-relative package directory; file placeholders 
 paths are then relative to that directory. Validator output is captured with a fixed memory bound
 and retained in state with that cap. A timeout terminates the validator process tree.
 
-`merge-broker validate` runs these same broker-side validators against a working tree, so a worker
-can get the local integration answer before submitting rather than a weaker approximation of it. It reports
-`MERGE_BROKER_BATCH_ID=local`, which a validator can branch on if it needs to behave differently
-outside a batch.
+`merge-broker validate` is a preflight that runs the same broker-side validator definitions against
+the caller's working tree. It does not reproduce per-task focused sequencing or integration's
+post-validator candidate-preservation checks. It reports `MERGE_BROKER_BATCH_ID=local`, which a
+validator can branch on if it needs to behave differently outside a batch.
 
 A validator may set `"executionArchitecture": "native"` to run under the hardware architecture on
 macOS when Node itself is translated by Rosetta. Detected SwiftPM validators use this mode and put
@@ -600,6 +655,8 @@ resolve conflicts automatically. The complete supported/unsupported boundary is 
 
 ## Documentation
 
+- [`VISION.md`](VISION.md) — durable product boundary and design principles
+- [`ROADMAP.md`](ROADMAP.md) — current, next, and later capability horizons
 - [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) — installation and production rollout
 - [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) — platform matrix, Windows notes, and current limits
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — invariants, state model, scheduling, and transactions

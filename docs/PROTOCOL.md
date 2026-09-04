@@ -10,7 +10,15 @@ A worker needs only five capabilities:
 4. Nominate those commit IDs with the lease token.
 5. Stop performing Git administration after nomination.
 
-All CLI commands support `--json`. Successful commands write one JSON value to stdout and exit zero. Errors write a stable code, message, and optional details to stderr and exit nonzero.
+Finite operational CLI commands support `--json`: success writes one JSON value to stdout and exits
+zero, while usage and action errors write
+`{ "error": { "code": "...", "message": "...", "details": {} } }` to stderr and exit nonzero.
+The `details` field is omitted when no diagnostic details exist. Continuous `serve --json` is
+intentionally a newline-delimited stream of event objects until the process stops;
+`serve --once --json` returns one summary document containing recovery, events, and operation
+results. `--help` and `--version` remain human-readable text. The error code is the machine-readable
+branching surface. Messages and details are diagnostic context and may become more specific without
+changing the code.
 
 The package also supplies `merge-broker-mcp`, a stdio MCP adapter. Its default `worker` profile
 registers only task/status/validation capabilities and keeps lease tokens in the local vault. The
@@ -99,8 +107,28 @@ merge-broker --json batch approve BATCH \
 ```
 
 The command fails unless all required evidence passed, the actor is authorized, every task remains
-published outside an editing lease, and GitHub still reports the exact head/base without conflicts
-or requested changes. If auto-merge is configured, only this successful command enables it.
+published outside an editing lease, and the forge still reports the exact head SHA, target branch,
+and base SHA without conflicts or requested changes.
+
+Approval is deliberately a two-phase local/remote transition:
+
+1. The broker observes the open pull request and validates its head, base, reviews, checks, task
+   state, and current policy.
+2. It durably writes the approval tuple and `approvedAt`. This record alone is not yet merge
+   authority.
+3. `batch sync` observes the pull request again after that write. Only an unchanged, still-open pull
+   request causes the broker to add `confirmedAt` to the approval.
+4. If auto-merge is configured, the broker records `autoMergePending` before sending an
+   exact-head-guarded enable request. A successful or safely retried request moves the candidate to
+   `merging` and clears the pending marker.
+
+When exact approval is required, every merge-authorizing path, including `batch complete`, requires
+a current approval with `confirmedAt` and without `revocationRequestedAt`. A batch that already
+carries a candidate remains subject to that rule even if configuration is later downgraded.
+Repeating `batch approve` for the same current tuple reuses its `approvedAt` and `confirmedAt`; it
+does not create a second authorization, and an already-observed queue is not enabled again. Without
+`approval.required`, newly assembled batches retain the compatibility behavior and do not create a
+`CandidateRecord`.
 
 ## Request and submit a revision
 
@@ -117,6 +145,109 @@ The broker reassembles and validates every task in the batch, updates the existi
 branch with a force-with-lease guard, and keeps the existing pull request. The former candidate is
 retained as `superseded`; the replacement has no inherited verification or approval.
 
+### Durable revocation
+
+Revocation is recorded before a possibly live remote queue is changed:
+
+- An explicit `batch request-changes` writes `changeRequestIntent` with the exact candidate and base,
+  the supplied policy revision when present, actor, reason, and request time. The broker resolves an
+  omitted policy revision to the candidate's current value when checking the binding. That intent
+  takes precedence over publication and sync retries, so a restart cannot re-enable the candidate
+  before revocation finishes.
+- Reconciliation that detects policy drift, a no-longer-authorized approver, a changed head or base,
+  requested changes, conflicts, or regressed checks sets `approval.revocationRequestedAt` and
+  `approval.revocationReason` before disabling auto-merge.
+
+These fields are durable in-progress tombstones, not evidence that the remote operation already
+succeeded. They remain blocking while the disable result is unknown. Once the forge confirms that
+the queue is disabled or that the pull request is closed, the broker removes the approval and clears
+the in-progress marker; the audit event retains the history. If the pull request merged first, the
+broker records a merge-invariant failure instead of treating revocation as successful.
+
+## Publication and recovery protocol
+
+### Immutable target and candidate binding
+
+A publishable batch records the publication target when it is assembled:
+
+- `remote` and `remoteUrlFingerprint` bind the named remote to the exact canonical Git push URL;
+- for pull-request publication, `forgeRepository` binds forge operations to a host-qualified
+  `HOST/OWNER/REPO` selector;
+- `baseBranch` and `baseSha` identify the intended target branch and the exact base validated; and
+- `branchName` and `headSha` identify the broker branch and exact retained candidate.
+
+The raw push URL is not stored in batch state. Its SHA-256 fingerprint is compared with the current
+canonical URL before later pushes, fetches, refreshes, and merge proofs. Local filesystem remotes are
+resolved to their physical path before hashing. Publication pushes `headSha`, never the mutable
+local branch tip, with a create-only force-with-lease guard: the same-SHA retry succeeds, while any
+different remote branch value is preserved and causes failure.
+
+For an open pull request, reconciliation requires the observed `headRefOid` and `baseRefName` to
+match the batch and requires an exact `baseRefOid`. Approval binds the stricter
+`(candidateSha, baseSha, policyRevision)` tuple. A missing or ambiguous identity is not interpreted
+as a match.
+
+### Publication is a resumable second phase
+
+`prepared` means integration and validation completed but publication may not have started or
+finished. A publication retry first pushes the same immutable SHA, then searches **all** pull-request
+states for the unique branch/base pair. It creates a pull request only after the adapter proves that
+none exists; a lookup failure stops rather than risking a duplicate. This recovers a process that
+opened a pull request but stopped before recording its URL.
+
+The broker changes the batch to `published` and stores the pull-request URL before attempting
+auto-merge. Consequently, `published` means the branch or pull request exists; it does not mean that
+approval exists, auto-merge is enabled, or the work merged. Auto-merge is a separate retryable step:
+
+- `autoMergePending: true` means a remote queue may be live and its state has not been durably
+  settled; normally an enable request is in flight or its response was lost, but revocation also
+  uses this conservative marker while disabling an unauthorized or legacy queue;
+- `autoMergeEnabled: true` means enablement was accepted or observed; and
+- `publishWarning` reports a non-fatal publication follow-up problem without undoing successful
+  publication. It may describe an auto-merge hand-off or an informational PR-body update after
+  candidate revision.
+
+`batch publish` resumes either phase explicitly. `serve --publish` first reconciles published
+batches, then resumes stale-base refresh, prepared publication, and eligible pending auto-merge
+work before integrating another batch. It does not retry publication for a published batch whose
+forge inspection just failed, because it cannot yet distinguish an existing terminal pull request
+from an absent one.
+
+### Stale-base refresh result
+
+`MergeBroker.refreshBatch` and JSON `batch refresh` return `RefreshResult`:
+
+| Result | Meaning |
+| --- | --- |
+| `refreshed: true` | The old batch was closed as superseded, its tasks were requeued without spending their attempt budget, and `integration` contains the replacement batch cut from `baseSha`. `pullRequestClosed` is `true` when the broker closed an old PR and is absent when there was no PR. |
+| `refreshed: false`, `reason: "already_current"` | The recorded base is still current and no refresh transition was needed. `closed` is the unchanged batch despite the compatibility field name. |
+| `refreshed: false`, `reason: "already_terminal"` | Initial reconciliation found the batch already merged, closed, or failed. `closed` contains that terminal record. |
+| `refreshed: false`, `reason: "pull_request_closed"` | The PR was already closed without the broker's durable refresh marker. The old batch is closed, no replacement is created, and `pullRequestClosed` is `false` because this refresh call did not perform the close. |
+
+Before closing a stale pull request, refresh writes `refreshCloseIntent`, disables any possibly live
+queue, and includes a unique marker in its close comment. A restart accepts an already-closed PR as
+its own completed side effect only when that marker is present. An unconfirmed close throws
+`PULL_REQUEST_CLOSE_FAILED`; it is not returned as a successful `RefreshResult`.
+
+### Merge topology proof
+
+The broker never releases dependent tasks merely because a forge says `MERGED`. The PR must retain
+the exact candidate head and target branch. If the merged observation still reports the recorded
+base SHA, that exact binding is sufficient. When the forge instead reports the target's newer tip,
+the broker fetches the durably bound target and requires the reported merge commit to be on it, to
+descend from the recorded base, and to have the same final tree as the validated candidate. It then
+accepts only one of these shapes:
+
+- fast-forward: the merge commit is the candidate;
+- squash: the merge commit has exactly the recorded base as its only parent;
+- two-parent merge: the recorded base is first parent and the candidate is second parent; or
+- linear rebase: the single-parent commit sequence from the recorded base has the same length and
+  the same tree at every step as the candidate's first-parent sequence.
+
+A graph or tree mismatch is a durable merge-invariant failure. Failure to fetch the bound target is
+`MERGE_PROOF_UNAVAILABLE` and remains retryable. Branch-only reconciliation is narrower: the broker
+marks the batch merged only when its exact `headSha` is an ancestor of the bound target branch.
+
 ## Published batch provenance
 
 With `integration.provenance.enabled`, the broker's final integration commit
@@ -126,11 +257,11 @@ task IDs, submitted commits, changed paths, dependencies, and any broker-side
 validators. It conforms to
 [`../schemas/provenance.schema.json`](../schemas/provenance.schema.json).
 
-When protected-base policy requires signatures, the manifest carries an Ed25519 signature over a
-canonical representation of every other manifest field. The trusted public key comes from the base
-configuration; the private key remains in broker runtime state or an operator secret channel. The
-signing payload is UTF-8 JSON with object keys sorted lexically at every depth, array order retained,
-no insignificant whitespace, and the root `signature` field omitted.
+When the broker's configured policy requires signatures, the manifest carries an Ed25519 signature
+over a canonical representation of every other manifest field. The trusted public key comes from
+the base configuration; the private key remains in broker runtime state or an operator secret
+channel. The signing payload is UTF-8 JSON with object keys sorted lexically at every depth, array
+order retained, no insignificant whitespace, and the root `signature` field omitted.
 
 Remote policy should verify the branch prefix, manifest path, batch ID, base
 SHA, final-commit parent, one-file provenance commit, and protected-base signature before spending
@@ -164,24 +295,65 @@ Published or prepared work is not treated as merged. This prevents a child from 
 
 ## Stable error categories
 
-Adapters should primarily branch on these codes:
+Adapters should branch on `BrokerError.code`, not message text. These are the currently emitted
+categories and the normal response to each family:
 
-- `LEASE_CONFLICT`, `LEASE_EXPIRED`, `LEASE_TOKEN`
-- `UNEXPECTED_PATHS`
-- `INVALID_TASK`, `UNKNOWN_TASK`, `UNKNOWN_DEPENDENCY`
-- `UNKNOWN_COMMIT`, `DUPLICATE_COMMIT`, `EMPTY_COMMIT`, `MERGE_COMMIT`
-- `CHERRY_PICK_CONFLICT`
-- `VALIDATION_FAILED`
-- `EMPTY_BATCH`
-- `LOCK_TIMEOUT`, `LOCK_HELD`
-- `SIGNING_KEY_REQUIRED`, `SIGNING_KEY_MISMATCH`, `SIGNING_KEY_EXISTS`
-- `PUBLISH_DISABLED`, `PUBLISH_FAILED`, `AUTO_MERGE_FAILED`, `PULL_REQUEST_CLOSE_FAILED`
-- `APPROVAL_DISABLED`, `APPROVAL_FORBIDDEN`, `CANDIDATE_MISMATCH`, `CANDIDATE_NOT_READY`
-- `CANDIDATE_BLOCKED`, `CANDIDATE_STATE_INVALID`, `TASK_NOT_REVISABLE`
-- `PROVENANCE_INVALID`
-- `HOOKS_PATH_CONFLICT`
+- Setup, input, and lookup — `NOT_INITIALIZED`, `INVALID_CONFIG`, `INVALID_ARGUMENTS`,
+  `INVALID_INTERVAL`, `INVALID_LIMIT`, `INVALID_MCP_PROFILE`, `INVALID_AGENT_CONTRACT`,
+  `INVALID_PULL_REQUEST_URL`, `INVALID_SIGNING_KEY`, `INVALID_TASK`, `PATHS_REQUIRED`, `UNSAFE_PATH`,
+  `TASK_EXISTS`, `UNKNOWN_TASK`, `UNKNOWN_BATCH`, `UNKNOWN_COMMIT`, `UNKNOWN_DEPENDENCY`, and
+  `UNKNOWN_LOCK`. Correct the request or configuration; do not retry it unchanged.
+- Lease and task lifecycle — `LEASE_REQUIRED`, `LEASE_CONFLICT`, `LEASE_EXPIRED`, `LEASE_TOKEN`,
+  `TASK_CHANGED`, `TASK_NOT_CLAIMABLE`, `TASK_NOT_SUBMITTABLE`, `TASK_NOT_CANCELLABLE`,
+  `TASK_NOT_RETRYABLE`, and `TASK_NOT_REVISABLE`. Re-read the task and obtain the current lease or
+  perform the lifecycle action named by the error.
+- Receipt, scheduling, and integration — `COMMITS_REQUIRED`, `DUPLICATE_COMMIT`, `EMPTY_COMMIT`,
+  `MERGE_COMMIT`, `DIRTY_WORKTREE`, `UNEXPECTED_PATHS`, `DEPENDENCY_CYCLE`, `EMPTY_BATCH`,
+  `BATCH_OUTSTANDING`, `CHERRY_PICK_CONFLICT`, `VALIDATION_FAILED`, and
+  `VALIDATOR_MUTATED_WORKTREE`. These normally require corrected work, explicit retry, or operator
+  review rather than an automatic loop.
+- Locks and state — `LOCK_HELD`, `LOCK_TIMEOUT`, `STATE_CORRUPT`, and `STATE_VERSION`. A timeout may
+  be retried after the holder finishes. Corrupt or unsupported state requires operator recovery; an
+  adapter must not initialize over it.
+- Signing and proof — `SIGNING_KEY_REQUIRED`, `SIGNING_KEY_MISMATCH`, `SIGNING_KEY_EXISTS`, and
+  `PROVENANCE_INVALID`. Restore or deliberately rotate the configured identity; never downgrade a
+  required signature automatically.
+- Target and publication — `REMOTE_URL_UNKNOWN`, `REMOTE_REPOSITORY_UNKNOWN`,
+  `REMOTE_TARGET_CHANGED`, `FORGE_TARGET_MISMATCH`, `BATCH_TARGET_UNBOUND`, `BASE_REFRESH_FAILED`,
+  `BATCH_BASE_STALE`, `NO_BRANCH`, `NO_CANDIDATE`, `BRANCH_EXISTS`, `BRANCH_DELETE_FAILED`,
+  `WORKTREE_REMOVE_FAILED`, `PUBLISH_DISABLED`, `PUBLISH_FAILED`, `BATCH_NOT_PUBLISHABLE`,
+  `PULL_REQUEST_LOOKUP_FAILED`, and `PULL_REQUEST_UPDATE_FAILED`. In particular, target mismatch or
+  missing binding requires a safe re-cut or explicit cleanup; it must never be repaired by copying
+  the current remote into old state.
+- Forge observation and merge control — `PULL_REQUEST_REF_LOOKUP_FAILED`,
+  `PULL_REQUEST_IDENTITY_UNKNOWN`, `PULL_REQUEST_BASE_UNKNOWN`,
+  `PULL_REQUEST_CHANGED_DURING_INSPECTION`, `PULL_REQUEST_STILL_OPEN`,
+  `PULL_REQUEST_ALREADY_CLOSED`, `PULL_REQUEST_CLOSE_FAILED`, `AUTO_MERGE_FAILED`,
+  `AUTO_MERGE_DISABLE_FAILED`, `AUTO_MERGE_STATE_UNKNOWN`, `MERGE_PROOF_UNAVAILABLE`,
+  `BATCH_NOT_SYNCABLE`, and `BATCH_NOT_MERGED`. Unknown remote outcome is not failure proof or
+  success proof: preserve the durable intent and retry observation or `batch sync`.
+- Approval, revision, and refresh — `APPROVAL_DISABLED`, `APPROVAL_FORBIDDEN`,
+  `VERIFICATION_NOT_REQUIRED`, `BATCH_NOT_VERIFIABLE`, `BATCH_NOT_APPROVABLE`,
+  `CANDIDATE_MISMATCH`, `CANDIDATE_NOT_READY`, `CANDIDATE_BLOCKED`, `CANDIDATE_STATE_INVALID`,
+  `CANDIDATE_CHANGED`, `CANDIDATE_FINAL`, `CANDIDATE_NOT_APPROVED`, `CANDIDATE_POLICY_STALE`,
+  `APPROVAL_REVOCATION_REQUIRED`, `CHANGE_REQUEST_PENDING`, `NO_CHANGE_REQUEST`,
+  `CHANGES_NOT_REQUESTED`, `BATCH_NOT_REVISABLE`, `REVISION_IN_PROGRESS`,
+  `REVISION_INTENT_CHANGED`, `REFRESH_PENDING`, `REFRESH_CHANGED`, `BATCH_NOT_REFRESHABLE`,
+  `BATCH_CHANGED`, `BATCH_SUPERSEDED`, and `BATCH_NOT_CLOSABLE`. Re-read state first. Pending
+  revocation is resumed with `batch sync`, pending refresh with `batch refresh`, and a retained
+  revision intent with `recover`; do not bypass one transition with another.
+- Service, hook, platform, and subprocess — `HOOKS_PATH_CONFLICT`, `INVALID_SERVICE_PATH`,
+  `INVALID_SERVICE_USER`, `SERVICE_CLI_PATH`, `SERVICE_FILE_CONFLICT`, `SERVICE_PUBLISH_DISABLED`,
+  `SERVICE_USER_ID`, `UNSUPPORTED_PLATFORM`, and `COMMAND_FAILED`. Surface the diagnostic details to
+  an operator.
+- Adapter wrapper fallbacks — the JSON CLI uses `UNEXPECTED` and MCP tools use `INTERNAL_ERROR` when
+  a non-`BrokerError` escapes. Treat either as an unknown internal failure, preserve diagnostics,
+  and fail closed.
 
-Additional codes may be introduced. Adapters must display unknown errors rather than treating them as success.
+Additional codes may be introduced. Adapters must display unknown errors and fail closed rather than
+treating them as success. Concurrency codes such as `TASK_CHANGED`, `BATCH_CHANGED`,
+`CANDIDATE_CHANGED`, `REFRESH_CHANGED`, and `REVISION_INTENT_CHANGED` require a fresh read before
+deciding whether the original action is still valid.
 
 ## Programmatic use
 

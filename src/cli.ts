@@ -4,7 +4,7 @@ import path from "node:path";
 import { appendFileSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { Command, Option } from "commander";
+import { Command, CommanderError, Option } from "commander";
 import { BrokerError, CommandError } from "./errors.js";
 import {
   formatServeEvent,
@@ -63,6 +63,7 @@ function publicationRetryReason(batch: BatchRecord, config: BrokerConfig): Publi
 
 const program = new Command();
 const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
+const jsonRequested = process.argv.slice(2).includes("--json");
 
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
@@ -210,7 +211,7 @@ function batchHuman(batch: BatchRecord): string {
     batch.autoMergeEnabled ? "Auto-merge: enabled" : undefined,
     batch.autoMergePending && !batch.autoMergeEnabled ? "Auto-merge: pending retry" : undefined,
     // The batch is published either way; this says what still needs a hand.
-    batch.publishWarning ? `Auto-merge not queued: ${batch.publishWarning}` : undefined,
+    batch.publishWarning ? `Publication follow-up warning: ${batch.publishWarning}` : undefined,
     batch.error ? `Error: ${batch.error}` : undefined,
   ]
     .filter(Boolean)
@@ -248,6 +249,16 @@ program
   .version(PACKAGE_VERSION)
   .option("-C, --cwd <directory>", "run as if started in this directory")
   .option("--json", "emit machine-readable JSON");
+
+// Commander normally prints usage errors and exits before the promise returned by parseAsync can
+// reject. Override that exit so --json remains a complete adapter surface, including malformed
+// invocations. Successful help/version output still uses Commander's normal stdout formatter.
+program.exitOverride();
+program.configureOutput({
+  writeErr: (message) => {
+    if (!jsonRequested) process.stderr.write(message);
+  },
+});
 
 program
   .command("init")
@@ -844,14 +855,18 @@ batch
       publish: options.publish ?? false,
     });
     if (!result.refreshed) {
-      output(result, `Batch ${id} is already cut from the current base (${result.baseSha}). Nothing to do.`);
+      const message = result.reason === "already_current"
+        ? `Batch ${id} is already cut from the current base (${result.baseSha}). Nothing to do.`
+        : result.reason === "already_terminal"
+          ? `Batch ${id} reconciled to terminal state ${result.closed.status}; no refresh was created.`
+          : result.reason === "pull_request_closed"
+            ? `Batch ${id} was closed because its pull request had already been closed; no replacement was created.`
+            : `Batch ${id} was not refreshed.`;
+      output(result, message);
       return;
     }
     const lines = [
       `Batch ${id} superseded; its tasks were re-cut from ${result.baseSha}.`,
-      result.pullRequestClosed === false
-        ? `Its pull request could not be closed and is still open: ${result.closed.pullRequestUrl}`
-        : undefined,
       result.integration ? batchHuman(result.integration.batch) : undefined,
     ].filter(Boolean);
     output(result, lines.join("\n"));
@@ -1122,13 +1137,22 @@ program
       const json = program.opts<{ json?: boolean }>().json ?? false;
       const logFile = options.logFile ? path.resolve(options.logFile) : undefined;
       if (logFile) await mkdir(path.dirname(logFile), { recursive: true });
+      const onceEvents: Array<ServeEvent & { at: string }> = [];
+      const onceResults: unknown[] = [];
+      const emitResult = (value: unknown, human?: string): void => {
+        if (options.once && json) onceResults.push(value);
+        else output(value, human);
+      };
       let lastOutputAt = Date.now();
       const say = (event: ServeEvent): void => {
         const now = new Date();
+        if (options.once && json) onceEvents.push({ at: now.toISOString(), ...event });
         const line = json ? serveEventJson(event, now) : formatServeEvent(event, now);
         if (logFile) appendFileSync(logFile, `${line}\n`, "utf8");
-        else if (isErrorEvent(event)) console.error(line);
-        else console.log(line);
+        else if (!(options.once && json)) {
+          if (isErrorEvent(event)) console.error(line);
+          else console.log(line);
+        }
         lastOutputAt = now.getTime();
       };
       const stop = (signal: string) => () => {
@@ -1186,7 +1210,7 @@ program
               if (reason === "refreshing a stale base") {
                 const refreshed = await broker.refreshBatch(batch.id, { publish: true });
                 if (refreshed.refreshed && refreshed.integration) {
-                  if (options.once) output(refreshed, batchHuman(refreshed.integration.batch));
+                  if (options.once) emitResult(refreshed, batchHuman(refreshed.integration.batch));
                   else {
                     say({
                       kind: "batch-refreshed",
@@ -1198,7 +1222,7 @@ program
                   continue;
                 }
                 if (refreshed.reason === "pull_request_closed") {
-                  if (options.once) output(refreshed, batchHuman(refreshed.closed));
+                  if (options.once) emitResult(refreshed, batchHuman(refreshed.closed));
                   else say({ kind: "closed", batchId: batch.id });
                   continue;
                 }
@@ -1207,7 +1231,7 @@ program
                 // after publication succeeds.
               }
               const retried = await broker.publishBatch(batch.id);
-              if (options.once) output(retried, batchHuman(retried));
+              if (options.once) emitResult(retried, batchHuman(retried));
               else {
                 say({
                   kind: "publication-retried",
@@ -1245,7 +1269,7 @@ program
           if (!options.once) say({ kind: "integrating", tasks: plan.selected.map((item) => item.id) });
           try {
             const result = await broker.integrate({ publish: options.publish ?? false });
-            if (options.once) output(result, batchHuman(result.batch));
+            if (options.once) emitResult(result, batchHuman(result.batch));
             else {
               say({
                 kind: "integrated",
@@ -1264,11 +1288,29 @@ program
         if (options.once || stopping) break;
         await new Promise<void>((resolve) => setTimeout(resolve, intervalSeconds * 1_000));
       } while (!stopping);
+      if (options.once && json) {
+        output({ recovery, events: onceEvents, results: onceResults });
+      }
     },
   );
 
 program.parseAsync().catch((error: unknown) => {
-  const json = program.opts<{ json?: boolean }>().json ?? false;
+  if (error instanceof CommanderError) {
+    if (error.exitCode === 0) {
+      process.exitCode = 0;
+      return;
+    }
+    if (jsonRequested) {
+      const message = error.code === "commander.help" && error.message === "(outputHelp)"
+        ? "error: a command or subcommand is required"
+        : error.message;
+      console.error(JSON.stringify({ error: { code: "INVALID_ARGUMENTS", message } }, null, 2));
+    }
+    process.exitCode = error.exitCode || 1;
+    return;
+  }
+
+  const json = (program.opts<{ json?: boolean }>().json ?? false) || jsonRequested;
   if (json) {
     const value =
       error instanceof BrokerError

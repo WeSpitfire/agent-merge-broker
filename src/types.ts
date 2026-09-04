@@ -230,7 +230,7 @@ export interface BatchRecord {
   publishedAt?: string;
   pullRequestUrl?: string;
   autoMergeEnabled?: boolean;
-  /** A remote enable attempt started but its final outcome has not been durably reconciled. */
+  /** A possibly-live remote queue operation started but its final outcome is not yet reconciled. */
   autoMergePending?: boolean;
   /** Durable revocation request, written before disabling a possibly-live remote auto-merge. */
   changeRequestIntent?: {
@@ -395,7 +395,7 @@ export interface RefreshResult {
   baseSha: string;
   closed: BatchRecord;
   integration?: IntegrationResult;
-  /** False when the superseded pull request could not be closed and is still open. */
+  /** True only when this refresh call closed the PR; false also covers an earlier reviewer close. */
   pullRequestClosed?: boolean;
 }
 

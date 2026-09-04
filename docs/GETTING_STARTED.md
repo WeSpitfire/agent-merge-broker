@@ -102,6 +102,12 @@ Focused validators run after each task is applied. Authoritative validators run 
 batch. `{files}` and `{taskId}` are shell-quoted, and the same values are available through
 `MERGE_BROKER_FILES` and `MERGE_BROKER_TASK_ID`.
 
+After each focused or authoritative validator set returns successfully, the broker verifies that
+the candidate `HEAD` did not move and that the worktree is clean. A validator that changes either
+condition fails the transaction instead of causing the broker to retain bytes different from those
+it reported as tested. Validator configuration is still trusted executable policy; this check does
+not sandbox commands or prevent side effects outside the integration worktree.
+
 `{validatorCacheDir}` expands to a shell-quoted, validator-specific directory within the shared
 transaction cache. Auto-detected SwiftPM checks use it without relying on platform-specific
 environment-variable syntax.
@@ -141,17 +147,25 @@ Start with local branches:
 
 Use `branch` to push the broker branch without opening a pull request. Use `pull-request` for GitHub
 publication. Auto-merge is opt-in and every merge request is bound to the exact candidate head SHA.
-The broker derives the GitHub repository from a hosted Git remote and records it with the batch. If
-`remote` points to a local mirror or proxy, add `"repository": "owner/repository"` (or
-`"host/owner/repository"` for GitHub Enterprise) inside `publish`; it never falls back to `gh`'s
-ambient default repository.
+The broker derives the GitHub repository from a hosted Git remote and records it with the batch,
+together with the selected remote and a SHA-256 fingerprint of its canonical push URL. The URL
+itself is not persisted because it may contain credentials. If `remote` points to a local mirror or
+proxy, add `"repository": "owner/repository"` (or `"host/owner/repository"` for GitHub Enterprise)
+inside `publish`; it never falls back to `gh`'s ambient default repository.
+
+Those target values bind the batch, not the current configuration. Changing the remote URL, base
+target, explicit repository, or `gh` default later cannot redirect an existing batch. The current
+`publish.mode` can still choose whether a prepared candidate is retained, pushed, or opened as a
+PR, but only when the target binding required for that action is already present. Otherwise restore
+the recorded target or deliberately re-cut the batch.
 
 For a protected GitHub repository, a useful progression is:
 
 1. Set `publish.mode` to `pull-request` and keep `autoMerge` false.
 2. Install and authenticate `gh` on the integration host.
 3. Require the repository's tests and provenance verification in branch protection, and require the
-   branch to be up to date before merging (or use a merge queue).
+   branch to be up to date before merging. Native merge-queue/`merge_group` verification is planned,
+   not part of the current topology proof.
 4. Enable `autoMerge` only after `merge-broker doctor` reports the host ready.
 
 See [Security](SECURITY.md) before delegating authoritative validation to required CI or enabling
@@ -209,6 +223,13 @@ npx merge-broker batch sync <batch-id>
 Only one prepared or published batch is allowed by default. This keeps each candidate born from the
 current base instead of creating a queue of branches that immediately become stale.
 
+For a PR batch, `batch sync` does more than poll for terminal state. It checks the live head, target
+branch, base SHA, queue state, reviews, conflicts, and configured checks. After a merge, it proves
+the accepted fast-forward, squash, two-parent merge, or linear-rebase history when the forge reports
+that the base advanced; an exact unchanged head/base/target binding is accepted directly. For
+branch-only publication, it instead fetches the bound target and requires the exact batch head to be
+an ancestor.
+
 ## 7. Keep the broker running
 
 For a maintained integration host, install the per-user background service:
@@ -221,6 +242,11 @@ The service uses launchd on macOS, a systemd user unit on Linux, and a per-user 
 Task. Each writes to the log path reported by the command. The installer refuses to overwrite or
 remove a service file without the broker ownership marker. Service installation also refuses while
 `publish.mode` is `none`, because an unattended loop that cannot publish would only strand work.
+
+Each `serve --publish` cycle first reconciles published PRs, then resumes prepared publication,
+uncertain auto-merge hand-offs, approval revocation, or stale-base refresh. It cuts new work only
+after no prepared or published batch remains. A forge outage therefore leaves an explicit retryable
+state and a log event rather than allowing a second PR or a later batch to pass it.
 
 The Windows task uses the installing user's interactive token. It starts immediately and at that
 user's logon, but it is not a boot-time machine service and will not run before the user logs on.
@@ -272,6 +298,11 @@ Set `approval.required` to true, declare evidence and authorized actors, and use
 publication. Evidence and approval bind candidate SHA, base SHA, and policy revision. A correction
 creates a new candidate revision on the same pull request and invalidates the earlier evidence.
 
+Approval is causal rather than a single local write. The broker records it, then observes that the
+same PR is still open at the exact candidate head, target branch, and base SHA before marking it
+confirmed. Policy, evidence, actor, review, conflict, head, or base drift after confirmation starts a
+durable revocation and disables a possibly live auto-merge queue before deleting approval locally.
+
 ### Let required CI make the complete decision
 
 Set `validation.authority` to `required-ci` only when the forge requires the complete CI suite on the
@@ -280,16 +311,54 @@ focused checks fast; leave `validation.authoritative` empty because required CI 
 
 ### Recover after an interrupted process
 
-First confirm no broker process is active, then inspect and recover:
+Start by inspecting the recorded state and locks:
 
 ```bash
 npx merge-broker doctor
-npx merge-broker recover
+npx merge-broker status
 ```
 
-Recovery requeues abandoned integrations without spending their retry budget. It also reconciles a
-candidate revision interrupted between recording its intent, moving the branch, and finalizing
-state. An unexpected external branch head is never guessed at; the intent remains for inspection.
+Use the recovery command that owns the interrupted transition:
+
+| Observed condition | Resume command | Result |
+| --- | --- | --- |
+| Batch left `running`; tasks left `integrating` | `npx merge-broker recover` | After acquiring the integration lock, replay-safely removes broker-owned artifacts, marks the abandoned batch failed, and requeues tasks without spending an attempt; changed or checked-out refs are retained with a warning |
+| Candidate revision stopped around its branch update | `npx merge-broker recover` | Finalizes an exact new head, rolls back an exact old head, or retains an unexpected third head for inspection |
+| Batch is `prepared`, or push/PR creation failed | `npx merge-broker batch publish <id>` or `serve --publish` | Pushes the recorded SHA and rediscovers an existing PR across all PR states before creating one |
+| `autoMergePending` or an auto-merge warning is visible | `npx merge-broker batch sync <id>`, then `batch publish <id>` if an authorized enable still needs retrying; `serve --publish` automates both | Reconciles the possibly live queue before safely completing or retrying the exact-head hand-off |
+| Change request or automatic approval revocation was interrupted | `npx merge-broker batch sync <id>` | Finishes disabling any possibly live queue before finalizing local revocation |
+| Base moved, or refresh was interrupted after disabling/closing the PR | `npx merge-broker batch refresh <id> --publish` or `serve --publish` | Distinguishes the broker's marked close from reviewer rejection, then re-cuts and revalidates on the recorded target |
+| PR was closed by a reviewer | `npx merge-broker batch sync <id>` | Closes the batch and marks its tasks failed; reclaim and correct them, or use `task retry` only after deciding the unchanged receipts are safe |
+
+`recover` is deliberately limited to abandoned local integration and candidate-revision branch
+movement. It does not guess the result of a forge call. Publication, auto-merge, revocation, and
+refresh recovery use `batch publish`, `batch sync`, `batch refresh`, or the publishing service so the
+real remote state can be observed.
+
+If a lock remains, first confirm that no broker process can still progress. Same-host locks whose
+process is gone are reclaimed automatically after a short grace period. Foreign, unreadable, or live
+locks never expire by age; inspect them with `doctor` and use `unlock state`, `unlock integration`, or
+`unlock batch:<batch-id> --force` only after independently proving the owner is gone.
+
+### Upgrade with an in-flight pre-0.12 batch
+
+Drain every `prepared` or `published` batch before upgrading from a release older than `0.12.0`.
+Older records do not contain the selected remote, push-URL fingerprint, host-qualified forge
+repository, or publication mode, and v0.12 cannot safely reconstruct those values from configuration
+that may have changed.
+
+If an old PR is already in flight after upgrade, restore and inspect its original remote and PR. Do
+not edit `state.json` to manufacture a target binding. `batch sync` can reconcile an exact terminal
+PR when enough proof remains. Otherwise close the old PR at the forge, run `batch sync` so its tasks
+become failed, then deliberately `task retry` them to create a newly target-bound batch. For an old
+branch-only or prepared batch, independently land and verify it before using the explicit
+`batch complete` assertion, or finish it with the release that created it before allowing v0.12 to
+mutate the state.
+
+A batch created by v0.12 with `publish.mode` set to `none` carries a recorded no-publication marker.
+If it could not record the remote binding and publication is enabled later, `batch refresh <id>
+--publish` can therefore bind and re-cut it safely. If it already recorded every binding needed by
+the newly selected mode, `batch publish <id>` can publish the unchanged validated candidate instead.
 
 ### Diagnose a task that will not move
 
@@ -300,8 +369,9 @@ npx merge-broker events --limit 50
 npx merge-broker doctor
 ```
 
-Look for unmet dependencies, overlapping scopes, an outstanding batch, expired leases, failed
-validators, an unreachable base, or missing forge authentication.
+Look for unmet dependencies, overlapping scopes, an outstanding prepared/published batch, pending
+publication or auto-merge, a refresh/revocation intent, expired leases, failed validators, a changed
+remote target, an unreachable base, or missing forge authentication.
 
 To attach diagnostics to a support request:
 
@@ -318,14 +388,20 @@ metadata can still be sensitive. Review the file before sharing it.
 - Commit `.merge-broker/config.json`, `.merge-broker/agent-instructions.md`, and `AGENTS.md`; review
   validator changes like CI changes.
 - Configure at least one complete validation authority.
-- Protect the base branch and require provenance verification for broker pull requests.
+- Protect the base branch, require provenance verification for broker pull requests, and require
+  branches to be current before merge. Do not route broker candidates through a native merge queue
+  until `merge_group` verification is implemented.
 - Keep lease tokens, the provenance private key, and forge credentials off worker branches.
+- Keep the configured publication remote and mode stable while batches are in flight. A target
+  mismatch fails closed; a mode change can select a different next publication step but still cannot
+  retarget the batch.
 - Install the local pre-push guard if it helps workers follow the intended path.
 - Install or schedule the integration loop; submission alone does not run a batch.
 - Run `merge-broker doctor` after cloning, changing policy, rotating keys, or moving hosts.
 - Use `merge-broker doctor --support-bundle` for a sanitized diagnostic attachment, and review it
   before sharing.
 - Back up the provenance signing key and test the recovery procedure.
+- Drain prepared and published work before a pre-v0.12 upgrade.
 
 Continue with [Compatibility and current limits](COMPATIBILITY.md) for the supported boundary,
 [Architecture](ARCHITECTURE.md) for invariants, and [Protocol](PROTOCOL.md) when building an adapter.

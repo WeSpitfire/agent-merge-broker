@@ -1,7 +1,8 @@
 name: Verify Merge Broker provenance
 description: >-
-  Authenticate a pull request head as an immutable Merge Broker batch. Reads only Git, so it can
-  reject unsigned, forged, or post-assembly work before dependencies are installed.
+  Verify a pull request head as an immutable Merge Broker batch. Reads only Git, so it checks
+  structure before dependencies are installed and authenticates the broker when protected-base
+  policy requires a trusted signature.
 author: PowerHouse Exteriors
 
 branding:
@@ -12,7 +13,7 @@ inputs:
   version:
     description: Version of agent-merge-broker to run. Pin this.
     required: false
-    default: 0.12.0
+    default: 0.12.1
   branch:
     description: Head branch of the pull request.
     required: false

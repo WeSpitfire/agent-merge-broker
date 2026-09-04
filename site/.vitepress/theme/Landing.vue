@@ -13,7 +13,7 @@
       </a>
       <nav>
         <a class="opt" href="#how">How it works</a>
-        <a class="opt" href="#demo">Demo</a>
+        <a class="opt" href="#direction">Direction</a>
         <a href="/agent-merge-broker/docs/getting-started">Docs</a>
         <a href="https://github.com/WeSpitfire/agent-merge-broker">GitHub&nbsp;↗</a>
       </nav>
@@ -25,9 +25,9 @@
 
 <section class="hero">
   <div class="rail">
-    <p class="eyebrow">Open source · Apache-2.0</p>
-    <h1>Four agents just finished at the same time. Who merges first?</h1>
-    <p class="lede">Agent Merge Broker answers that so your agents never have to. Workers commit and stop. The broker decides what can safely go together, cherry-picks it into a disposable worktree, runs your tests against the combination, and lands one validated branch.</p>
+    <p class="eyebrow">Local-first · Crash-recoverable · Apache-2.0</p>
+    <h1>Many producers. One repository contract.</h1>
+    <p class="lede">Agent Merge Broker coordinates participating agents and humans through receipts naming immutable commits, validates their combined candidate, and keeps publication bound to the recorded repository target. Optional policy ties evidence and approval to the exact candidate before the broker authorizes auto-merge.</p>
     <div class="actions">
       <a class="btn" href="/agent-merge-broker/docs/getting-started">Get started</a>
       <a class="btn btn-ghost" href="#how">How it works</a>
@@ -69,31 +69,54 @@
         </g>
       </svg>
     </div>
-    <p class="frame-note">Four commits. Two workers. One branch — and no worker ever pushed.</p>
+    <p class="frame-note">Coordinate mode today: four commits, two workers, one validated branch — and no worker ever pushed.</p>
   </div>
 </section>
 
 <section>
   <div class="rail col">
-    <p class="eyebrow">The problem</p>
-    <h2>The bottleneck stops being code. It becomes Git.</h2>
-    <p>Two agents edit the same file and find out at merge time. A third rebases onto a branch that moved twenty minutes ago. Everyone regenerates the lockfile. CI runs four times to test four things that were never once tested <em>together</em>. And the pull request sitting there since lunch is now so far behind <code>main</code> that nothing can merge it at all.</p>
-    <p>The work is parallel. Integration is not. Every worker doing its own integration turns a coordination problem into a coordination disaster.</p>
+    <p class="eyebrow">The repository boundary</p>
+    <h2>The producer can disappear. The transaction still has to recover.</h2>
+    <p>Which bytes were validated? Which base and policy governed them? Was approval for this exact candidate? Did a lost forge response leave auto-merge active? Did the accepted history actually contain the approved work?</p>
+    <p>Agents and orchestrators decide how code is produced. Agent Merge Broker gives participating workers one transaction contract and reconciles uncertain publication state before dependent work moves forward.</p>
   </div>
 </section>
 
 <section id="how">
   <div class="rail">
-    <p class="eyebrow">The protocol</p>
-    <h2>One integration authority</h2>
-    <p class="col">Implementation stays distributed. Ordering, batching, validation, and publication do not. Every worker — Claude, Codex, Cursor, a CI job, a human — speaks the same commit-receipt protocol.</p>
+    <p class="eyebrow">Available in v{{ project.version }}</p>
+    <h2>Coordinate mode: one integration authority</h2>
+    <p class="col">Implementation stays distributed. Ordering, batching, validation, publication, and recovery do not. Every participating worker — Claude, Codex, Cursor, a CI job, a human — speaks the same commit-receipt protocol.</p>
     <ol class="seq">
       <li><span class="step">01</span><div><h3>Claim</h3><p>A worker takes an expiring lease on the paths it intends to touch. Overlapping claims are refused before a line is edited, not discovered at merge time.</p></div></li>
       <li><span class="step">02</span><div><h3>Commit</h3><p>The worker commits its focused change and stops. It never pushes, rebases, or administers a branch.</p></div></li>
       <li><span class="step">03</span><div><h3>Submit a receipt</h3><p>Immutable commit IDs, the paths they actually changed, and any declared dependencies. Implementation is now separate from integration authority.</p></div></li>
       <li><span class="step">04</span><div><h3>Batch and validate</h3><p>A deterministic scheduler forms one non-conflicting batch, cherry-picks it into a disposable worktree, and runs your validators against the combination — not four times against four branches.</p></div></li>
-      <li><span class="step">05</span><div><h3>Land</h3><p>One branch or one pull request, carrying a signed manifest of exactly what was assembled and what passed. A task is complete only once its batch actually merged.</p></div></li>
+      <li><span class="step">05</span><div><h3>Land</h3><p>One branch or one pull request can carry signed provenance for exactly what was assembled and what passed. Automatic completion waits until the accepted Git history proves the batch merged.</p></div></li>
     </ol>
+  </div>
+</section>
+
+<section id="direction">
+  <div class="rail">
+    <p class="eyebrow">Product direction</p>
+    <h2>Coordinate now. Gate and Verify are planned.</h2>
+    <p class="col">The current package coordinates workers that use its claim and receipt protocol. The roadmap expands from that proven transaction core without pretending external candidate intake already exists.</p>
+    <div class="docs">
+      <a class="doc" href="/agent-merge-broker/docs/getting-started">
+        <h3>Coordinate <span class="arrow">Available →</span></h3>
+        <p>Claim, lease, nominate, batch, validate, publish, and recover through one local authority.</p>
+      </a>
+      <a class="doc" href="/agent-merge-broker/docs/roadmap">
+        <h3>Gate <span class="arrow">Planned →</span></h3>
+        <p>Adopt a trusted-source immutable Git ref without requiring its producer to use path leases.</p>
+      </a>
+      <a class="doc" href="/agent-merge-broker/docs/roadmap">
+        <h3>Verify <span class="arrow">Planned →</span></h3>
+        <p>Evaluate wider policy and attestation claims as a lightweight protected-workflow check.</p>
+      </a>
+    </div>
+    <p class="col boundary">There is no external-candidate adoption command in the current release. Read the <a href="/agent-merge-broker/docs/vision">vision</a> and <a href="/agent-merge-broker/docs/roadmap">capability roadmap</a>.</p>
   </div>
 </section>
 
@@ -144,7 +167,7 @@ with no agent pushing anything.</span></pre>
       <div class="fact"><dt>Built-in PR forge</dt><dd>GitHub via gh</dd></div>
     </dl>
     <p class="col boundary">It is not a hosted dashboard, distributed database, remote HTTP MCP service, agent runner, or automatic conflict resolver. Independent clones do not silently share leases. <a href="/agent-merge-broker/docs/compatibility">Read the full compatibility matrix and current limits →</a></p>
-    <p class="col release-note">This site documents <code>main</code>. Features listed as <strong>Unreleased</strong> in the changelog ship in the next npm release, not the currently displayed package version.</p>
+    <p class="col release-note">This site documents <code>main</code>. Planned capabilities are labeled explicitly and are not part of the npm package until a release says otherwise.</p>
   </div>
 </section>
 
@@ -152,9 +175,9 @@ with no agent pushing anything.</span></pre>
   <div class="rail">
     <p class="eyebrow">Verification</p>
     <h2>Built to be checked, not trusted</h2>
-    <p class="col">A published batch carries a provenance manifest binding it to its base commit, its task receipts, and the validators that passed. <code>verify-provenance</code> is the read-only inverse: it proves a pull request head is an unaltered broker batch, and rejects a commit pushed onto the branch afterwards.</p>
+    <p class="col">When provenance is enabled, a published batch carries a manifest binding it to its base commit, task receipts, and validation results. <code>verify-provenance</code> checks that structure and rejects a commit pushed onto the branch afterwards; requiring a trusted signature additionally authenticates the broker identity.</p>
     <dl class="facts">
-      <div class="fact"><dt>Tests</dt><dd>{{ project.tests }} passing</dd></div>
+      <div class="fact"><dt>CI</dt><dd>Linux · macOS · Windows</dd></div>
       <div class="fact"><dt>Supply chain</dt><dd>SLSA provenance</dd></div>
       <div class="fact"><dt>Runtime deps</dt><dd>{{ project.dependencies }}</dd></div>
       <div class="fact"><dt>License</dt><dd>Apache-2.0</dd></div>
@@ -191,6 +214,14 @@ with no agent pushing anything.</span></pre>
         <h3>Support <span class="arrow">→</span></h3>
         <p>Create a safe diagnostic bundle and choose the right support channel.</p>
       </a>
+      <a class="doc" href="/agent-merge-broker/docs/vision">
+        <h3>Vision <span class="arrow">→</span></h3>
+        <p>The durable repository boundary, product modes, principles, and non-goals.</p>
+      </a>
+      <a class="doc" href="/agent-merge-broker/docs/roadmap">
+        <h3>Roadmap <span class="arrow">→</span></h3>
+        <p>What exists now, safe immutable-ref adoption next, and later capability horizons.</p>
+      </a>
     </div>
   </div>
 </section>
@@ -208,7 +239,7 @@ with no agent pushing anything.</span></pre>
           </svg>
           <span>Agent Merge Broker</span>
         </a>
-        <p class="colophon">A transaction coordinator for parallel code-producing agents and humans. Not an agent framework, and not a replacement for protected branches.</p>
+        <p class="colophon">Crash-recoverable repository transactions for code-producing agents and humans. Not an agent framework, and not a replacement for protected branches.</p>
       </div>
       <div class="foot-links">
         <ul>
@@ -241,10 +272,10 @@ with no agent pushing anything.</span></pre>
 import { computed, onMounted } from "vue";
 import { useData } from "vitepress";
 
-// Read from package.json and the test sources at build time; see projectFacts in config.mts.
+// Read from package.json at build time; see projectFacts in config.mts.
 const { theme } = useData();
 const project = computed(
-  () => theme.value.project as { version: string; tests: number; dependencies: number },
+  () => theme.value.project as { version: string; dependencies: number },
 );
 
 /**

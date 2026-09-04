@@ -1,7 +1,7 @@
 ---
 layout: false
 title: Agent Merge Broker
-description: Four agents just finished at the same time. Who merges first?
+description: Crash-recoverable repository transactions for code-producing agents and humans.
 ---
 
 <Landing />
