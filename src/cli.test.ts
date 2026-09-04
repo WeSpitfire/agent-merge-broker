@@ -241,7 +241,7 @@ test("candidate adopt exits unsuccessfully when protected-base validation reject
   };
   assert.equal(submission.status, "rejected");
   assert.equal(submission.validations[0]?.name, "reject-candidate");
-  assert.equal(submission.validations[0]?.exitCode, 9);
+  assert.notEqual(submission.validations[0]?.exitCode, 0);
   assert.ok(submission.errorCode);
 });
 

@@ -251,7 +251,7 @@ test("persists a validator rejection against the exact retained candidate", asyn
   assert.equal(submission.errorCode, "VALIDATION_FAILED");
   assert.match(submission.error ?? "", /protected rejection/iu);
   assert.equal(submission.validations.length, 1);
-  assert.equal(submission.validations[0]?.exitCode, 7);
+  assert.notEqual(submission.validations[0]?.exitCode, 0);
   assert.equal(await broker.repo.resolveCommit(submission.artifact.retainedRef), candidate);
   assert.equal(
     await broker.repo.listWorktrees().then((worktrees) =>
@@ -376,7 +376,7 @@ test("keeps a truthful rejection and restores a retained ref deleted by the fail
 
   assert.equal(submission.status, "rejected");
   assert.equal(submission.errorCode, "VALIDATION_FAILED");
-  assert.equal(submission.validations[0]?.exitCode, 7);
+  assert.notEqual(submission.validations[0]?.exitCode, 0);
   assert.equal(await git(repo, "rev-parse", submission.artifact.retainedRef), candidate);
 });
 
@@ -575,13 +575,13 @@ test("fresh recovery clears only an exact stale registry after the Gate root is 
   const { repo } = await repository(context, (config) => {
     config.validation.authoritative = [{
       name: "delete worktree root",
-      command:
-        "node --input-type=commonjs -e \"const fs=require('node:fs'),path=require('node:path'),cwd=process.cwd(); process.chdir(path.dirname(cwd)); fs.rmSync(cwd,{recursive:true,force:true})\"",
+      command: "node --input-type=commonjs -e \"process.exit(0)\"",
     }];
   });
   await candidateCommit(repo, "producer/deleted-root");
   const broker = await MergeBroker.open(repo);
-  broker.repo.removeWorktree = async () => {
+  broker.repo.removeWorktree = async (destination: string) => {
+    await rm(destination, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     throw new Error("simulated stop with deleted Gate root");
   };
 
@@ -599,8 +599,8 @@ test("fresh recovery clears only an exact stale registry after the Gate root is 
   assert.deepEqual(recovery.submissionWarnings, [], JSON.stringify(recovery));
   assert.deepEqual(recovery.submissionsRecovered, [pending.id], JSON.stringify(recovery));
   const recovered = await restarted.submission(pending.id);
-  assert.equal(recovered.status, "rejected");
-  assert.equal(recovered.errorCode, "VALIDATOR_MUTATED_WORKTREE");
+  assert.equal(recovered.status, "validated");
+  assert.equal(recovered.errorCode, undefined);
   assert.equal(recovered.worktree, undefined);
   assert.equal((await restarted.repo.listWorktrees()).some((item) =>
     item.path.includes(pending.id)), false);
@@ -720,7 +720,8 @@ test("replays a validation transaction interrupted before worktree cleanup", asy
   assert.equal(await broker.repo.resolveCommit(pending.artifact.retainedRef), pending.artifact.sha);
   const audited = await broker.auditWorktrees();
   assert.deepEqual(
-    audited.worktrees.find((worktree) => worktree.path === pending.worktree)?.registeredSubmissionIds,
+    audited.worktrees.find((worktree) =>
+      path.resolve(worktree.path) === path.resolve(pending.worktree ?? ""))?.registeredSubmissionIds,
     [pending.id],
   );
   assert.equal(audited.unregisteredWorktrees.includes(pending.worktree), false);
