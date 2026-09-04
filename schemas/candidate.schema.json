@@ -83,7 +83,10 @@
         "baseSha": { "$ref": "#/$defs/sha" },
         "policyRevision": { "type": "string", "minLength": 1 },
         "actor": { "type": "string", "minLength": 1 },
-        "approvedAt": { "type": "string", "format": "date-time" }
+        "approvedAt": { "type": "string", "format": "date-time" },
+        "confirmedAt": { "type": "string", "format": "date-time" },
+        "revocationRequestedAt": { "type": "string", "format": "date-time" },
+        "revocationReason": { "type": "string", "minLength": 1 }
       }
     }
   }

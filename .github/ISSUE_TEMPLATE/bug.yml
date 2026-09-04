@@ -10,7 +10,7 @@ body:
     id: version
     attributes:
       label: Broker version
-      placeholder: 0.8.1
+      placeholder: 0.12.0
     validations:
       required: true
   - type: textarea

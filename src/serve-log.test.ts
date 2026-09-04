@@ -27,6 +27,39 @@ test("reports abandoned integration recovery", () => {
   );
 });
 
+test("makes publication recovery and its failures visible", () => {
+  assert.equal(
+    describeServeEvent({
+      kind: "publication-retrying",
+      batchId: "batch-1",
+      reason: "pending auto-merge",
+    }),
+    "retrying pending auto-merge for batch batch-1",
+  );
+  assert.match(
+    describeServeEvent({
+      kind: "publication-retried",
+      batchId: "batch-1",
+      state: "published",
+      autoMergeEnabled: true,
+    }),
+    /publication retry completed \(published, auto-merge enabled\)/u,
+  );
+  assert.equal(
+    isErrorEvent({ kind: "publication-failed", batchId: "batch-1", message: "forge unavailable" }),
+    true,
+  );
+  assert.equal(
+    describeServeEvent({
+      kind: "batch-refreshed",
+      batchId: "batch-1",
+      replacementBatchId: "batch-2",
+      state: "published",
+    }),
+    "batch batch-1 was stale; replacement batch-2 is published",
+  );
+});
+
 test("every line carries a timestamp", () => {
   const line = formatServeEvent({ kind: "merged", batchId: "20260818T040141471Z-ff92fd" }, NOW);
   assert.ok(line.startsWith("2026-08-18T04:30:00.000Z "));

@@ -21,11 +21,45 @@ import { createSupportBundle } from "./support.js";
 import { policyFromBase, verifyProvenance } from "./verify.js";
 import type {
   BatchRecord,
+  BrokerConfig,
   BrokerState,
   LocalValidationResult,
   SchedulePlan,
   TaskRecord,
 } from "./types.js";
+
+type PublicationRetryReason =
+  | "publication of prepared batch"
+  | "refreshing a stale base"
+  | "pending auto-merge";
+
+/**
+ * Publication is deliberately a durable second phase of integration. A process can stop after the
+ * candidate is prepared, or after its pull request exists but before auto-merge is queued. The
+ * service must resume those phases before trying to cut another batch.
+ */
+function publicationRetryReason(batch: BatchRecord, config: BrokerConfig): PublicationRetryReason | undefined {
+  if (
+    batch.refreshRequired &&
+    (batch.status === "prepared" || batch.status === "published")
+  ) {
+    return "refreshing a stale base";
+  }
+  if (batch.status === "prepared") return "publication of prepared batch";
+  if (batch.status !== "published") return undefined;
+  if (config.publish.autoMerge && (config.approval?.required || batch.candidate)) {
+    const candidate = batch.candidate;
+    if (
+      !config.approval?.required ||
+      !candidate?.approval ||
+      (candidate.state !== "approved" && candidate.state !== "merging")
+    ) {
+      return undefined;
+    }
+  }
+  if (!config.publish.autoMerge || batch.autoMergeEnabled) return undefined;
+  return "pending auto-merge";
+}
 
 const program = new Command();
 const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
@@ -174,6 +208,7 @@ function batchHuman(batch: BatchRecord): string {
     candidate?.reason ? `Candidate note: ${candidate.reason}` : undefined,
     batch.pullRequestUrl ? `Pull request: ${batch.pullRequestUrl}` : undefined,
     batch.autoMergeEnabled ? "Auto-merge: enabled" : undefined,
+    batch.autoMergePending && !batch.autoMergeEnabled ? "Auto-merge: pending retry" : undefined,
     // The batch is published either way; this says what still needs a hand.
     batch.publishWarning ? `Auto-merge not queued: ${batch.publishWarning}` : undefined,
     batch.error ? `Error: ${batch.error}` : undefined,
@@ -936,6 +971,7 @@ program
         `Output: ${result.logFile}`,
       ].join("\n"),
     );
+    if (!result.loaded) process.exitCode = 1;
   });
 
 program
@@ -1033,7 +1069,7 @@ program
 
 program
   .command("unlock [name]")
-  .description("release a stuck state or integration lock left by a crashed process")
+  .description("inspect locks, or release state, integration, or batch:<batch-id> after a crash")
   .option("--force", "release even when the holder cannot be proven gone")
   .action(async (name: string | undefined, options: { force?: boolean }) => {
     const broker = await openBroker();
@@ -1127,6 +1163,75 @@ program
         for (const abandoned of reconciliation.closed) {
           say({ kind: "closed", batchId: abandoned.id });
         }
+
+        // A successfully assembled candidate is intentionally retained before publication starts.
+        // Likewise, a pull request is recorded before auto-merge is attempted. Resume either
+        // durable hand-off on every publishing cycle so a temporary remote/forge outage cannot
+        // leave the queue permanently blocked by BATCH_OUTSTANDING.
+        if (options.publish) {
+          const failedSyncs = new Set(reconciliation.errors.map((failure) => failure.batchId));
+          const pendingPublications = Object.values((await broker.state()).batches)
+            .map((batch) => ({ batch, reason: publicationRetryReason(batch, broker.config) }))
+            .filter(
+              (item): item is { batch: BatchRecord; reason: PublicationRetryReason } =>
+                item.reason !== undefined &&
+                // When PR inspection failed, retrying could mistake an already merged/closed PR
+                // for an absent one and open a duplicate. Wait for a successful sync first.
+                !(item.batch.status === "published" && failedSyncs.has(item.batch.id)),
+            )
+            .sort((left, right) => left.batch.createdAt.localeCompare(right.batch.createdAt));
+          for (const { batch, reason } of pendingPublications) {
+            if (!options.once) say({ kind: "publication-retrying", batchId: batch.id, reason });
+            try {
+              if (reason === "refreshing a stale base") {
+                const refreshed = await broker.refreshBatch(batch.id, { publish: true });
+                if (refreshed.refreshed && refreshed.integration) {
+                  if (options.once) output(refreshed, batchHuman(refreshed.integration.batch));
+                  else {
+                    say({
+                      kind: "batch-refreshed",
+                      batchId: batch.id,
+                      replacementBatchId: refreshed.integration.batch.id,
+                      state: refreshed.integration.batch.status,
+                    });
+                  }
+                  continue;
+                }
+                if (refreshed.reason === "pull_request_closed") {
+                  if (options.once) output(refreshed, batchHuman(refreshed.closed));
+                  else say({ kind: "closed", batchId: batch.id });
+                  continue;
+                }
+                // The base may have moved back while the recovery was waiting for its lock. A
+                // normal retry re-checks freshness and clears the durable refresh marker only
+                // after publication succeeds.
+              }
+              const retried = await broker.publishBatch(batch.id);
+              if (options.once) output(retried, batchHuman(retried));
+              else {
+                say({
+                  kind: "publication-retried",
+                  batchId: retried.id,
+                  state: retried.status,
+                  ...(broker.config.publish.autoMerge
+                    ? { autoMergeEnabled: retried.autoMergeEnabled ?? false }
+                    : {}),
+                });
+              }
+            } catch (error) {
+              if (options.once) throw error;
+              say({
+                kind: "publication-failed",
+                batchId: batch.id,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+        }
+
+        const hasOutstandingBatch = Object.values((await broker.state()).batches).some(
+          (batch) => batch.status === "prepared" || batch.status === "published",
+        );
         const plan = await broker.plan();
         const oldest = plan.selected.reduce(
           (minimum, item) => Math.min(minimum, item.submittedAt ? Date.parse(item.submittedAt) : Date.now()),
@@ -1134,7 +1239,7 @@ program
         );
         const aged = Date.now() - oldest >= broker.config.scheduling.maxWaitSeconds * 1_000;
         const full = plan.selected.length >= broker.config.scheduling.maxTasks;
-        if (plan.selected.length > 0 && (options.eager || options.once || aged || full)) {
+        if (!hasOutstandingBatch && plan.selected.length > 0 && (options.eager || options.once || aged || full)) {
           // Announced before the work, not after it. Validators can run for
           // minutes, and the silence was the whole problem.
           if (!options.once) say({ kind: "integrating", tasks: plan.selected.map((item) => item.id) });

@@ -46,9 +46,11 @@ It is deliberately **not** an agent framework and **not** a replacement for prot
 
 `0.3.0` was the first public release: the local broker core, the GitHub CLI publishing adapter with auto-merge, and the remote provenance verifier.
 
-`0.11.0` is the current release. It adds first-class Windows support, permission-separated MCP
-servers, actionable status and sanitized support bundles, archive-aware metrics, composable hooks,
-and broader JavaScript, Swift, Go, Rust, and Python bootstrap detection.
+`0.12.0` is the current release. It makes pull-request auto-merge crash-recoverable and
+target-bound, adds unattended publication and stale-base recovery, and closes approval, refresh,
+revision, remote-retargeting, and reopened-pull-request races. It also retains the first-class
+Windows support, permission-separated MCP servers, diagnostics, and bootstrap detection added in
+`0.11.0`.
 
 The on-disk state, receipt, and provenance formats are versioned, but compatibility is not guaranteed until `1.0.0`. Expect format migrations before then.
 
@@ -232,7 +234,7 @@ installing dependencies:
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v0.11.0
+- uses: WeSpitfire/agent-merge-broker/verify@v0.12.0
 ```
 
 The check verifies the Ed25519 signature, branch and batch identity, real base history, one-file
@@ -295,7 +297,14 @@ merge-broker batch approve <batch-id> \
 
 Every binding is explicit on purpose. A stale command fails instead of approving whatever happens
 to be current. Approval also rechecks the open PR head, target base, task state, reviews, conflicts,
-and configured GitHub checks. The final `gh pr merge` uses GitHub's head-SHA guard.
+and configured GitHub checks. Approval becomes merge-authorizing only after it is durable and the
+broker observes that exact PR still open; the final `gh pr merge` uses GitHub's head-SHA guard.
+
+Protect the target branch with either “require branches to be up to date before merging” or a merge
+queue, and restrict bypass permission. GitHub's merge API can guard the head SHA but cannot
+atomically guard a base SHA. The broker rechecks the base immediately before queueing and proves the
+merged Git history afterward, but branch protection prevents an out-of-band base update in that
+final remote interval.
 
 If verification finds a problem, keep the task and PR:
 
@@ -322,9 +331,16 @@ Two configuration combinations cannot work and are rejected at load time rather 
 
 Auto-merge requires the setting to be enabled on the GitHub repository. Configurations written before this feature existed default to `autoMerge: false`, so upgrading never starts landing work on its own.
 
-Running `merge-broker serve --publish` reconciles checks, integrates the next batch, and publishes it.
-With exact approval enabled it deliberately stops at `ready_for_approval`; only `batch approve`
-grants merge permission.
+The broker resolves and records the exact Git push URL locator and GitHub `HOST/OWNER/REPO` when it
+assembles a batch. Later changes to the named Git remote or to `gh repo set-default` cannot redirect
+publication. Standard GitHub and GitHub Enterprise remote URLs are derived automatically. If the
+Git remote is a local mirror or proxy, set `publish.repository` explicitly; otherwise pull-request
+mode fails closed rather than guessing a GitHub repository.
+
+Running `merge-broker serve --publish` reconciles checks, finishes interrupted publication or
+auto-merge hand-offs, re-cuts stale batches, and only then integrates the next batch. With exact
+approval enabled it deliberately stops at `ready_for_approval`; only `batch approve` grants merge
+permission.
 
 ## Failure recovery
 
@@ -365,18 +381,21 @@ That closes the superseded pull request, returns the tasks to the queue without 
 budget, and integrates them again from the current tip, re-validating against the base that is
 actually being merged into. A batch already cut from the current tip is left alone.
 
-Publication is safe to retry. The pull request is recorded before auto-merge is attempted, so a
-forge that fails halfway leaves a published batch carrying a `publishWarning` rather than a batch
-whose pull request exists but whose state does not admit it. Running `batch publish` again finds the
-existing pull request and retries what is left.
+Publication is safe to retry. The pull request is recorded before auto-merge is attempted, and a
+durable intent is recorded before the remote queue is changed. A forge that fails halfway therefore
+leaves a resumable batch rather than silently stranding the queue. `serve --publish` resumes it
+automatically; `batch publish` does the same explicitly. Retries reuse the recorded PR URL, and a
+crash before that URL is recorded searches all PR states for the batch's unique branch before it can
+create anything new.
 
 A process that dies mid-integration can leave both a lock and durable `running` state. A holder on
-this machine is reclaimed automatically once its process is gone; a holder on another machine cannot
-be probed and waits out the stale window. Once the integration lock is safely acquired, `serve` and
-`integrate` automatically mark the abandoned batch failed, clean its broker-owned worktree and
-branch, and return its tasks to `submitted` without spending their attempt budget. `merge-broker
-recover` performs that reconciliation explicitly. `unlock --force` remains only for an owner that
-cannot be proven gone and must follow confirming no integration is active.
+this machine is reclaimed automatically once its process is proven gone. A holder on another machine
+cannot be probed and is never stolen merely because it is old; after confirming that process is
+gone, inspect or release it explicitly with `unlock batch:<batch-id> --force` (or `state` /
+`integration`). Once the integration lock is safely acquired, `serve` and `integrate` automatically
+mark abandoned work failed, clean its broker-owned worktree and branch, and return its tasks to
+`submitted` without spending their attempt budget. `merge-broker recover` performs that
+reconciliation explicitly.
 
 Candidate revisions also carry a durable intent before the broker moves their branch. If a process
 stops after the branch update but before state finalization, `recover` compares the real PR/local
@@ -458,6 +477,7 @@ The generated `.merge-broker/config.json` is intentionally explicit and reviewab
   },
   "publish": {
     "mode": "pull-request",
+    "repository": "owner/repository",
     "draft": false,
     "autoMerge": true,
     "mergeMethod": "squash",
@@ -553,7 +573,7 @@ merge-broker audit
 merge-broker metrics
 merge-broker events
 merge-broker prune [--older-than <days>] [--dry-run]
-merge-broker unlock [state|integration] [--force]
+merge-broker unlock [state|integration|batch:<batch-id>] [--force]
 merge-broker recover
 merge-broker serve [--publish] [--eager] [--log-file <path>]
 merge-broker-mcp -C <directory> [--profile worker|operator]

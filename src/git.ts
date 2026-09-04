@@ -1,5 +1,7 @@
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { BrokerError } from "./errors.js";
 import { runCommand, type CommandResult } from "./process.js";
 
@@ -14,6 +16,64 @@ export interface WorktreeInfo {
 
 function splitNull(value: string): string[] {
   return value.split("\0").map((part) => part.trim()).filter(Boolean);
+}
+
+export function remoteUrlFingerprint(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export function isHostQualifiedForgeRepository(value: string | undefined): value is string {
+  if (!value) return false;
+  const parts = value.split("/");
+  return parts.length === 3 && parts.every(Boolean);
+}
+
+function forgeRepositoryFromRemote(value: string): string | undefined {
+  let host: string | undefined;
+  let remotePath = value.trim();
+  try {
+    const parsed = new URL(remotePath);
+    // gh operates on a hosted forge, not a filesystem path. Treating `/tmp/acme/repo.git` or a
+    // `file:` URL as `acme/repo` would silently redirect PR operations to gh's github.com default
+    // while Git pushes somewhere else.
+    // `gh --repo HOST/OWNER/REPO` has no separately bound port in this adapter. Dropping an
+    // explicit GHES port would query a different forge than Git pushes to, so reject it.
+    if (
+      !parsed.hostname ||
+      parsed.protocol === "file:" ||
+      parsed.port ||
+      parsed.hostname.includes(":")
+    ) return undefined;
+    host = parsed.hostname;
+    remotePath = parsed.pathname;
+  } catch {
+    const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/u.exec(remotePath);
+    if (scp && !/^[A-Za-z]:[\\/]/u.test(remotePath)) {
+      host = scp[1];
+      remotePath = scp[2] ?? "";
+    }
+  }
+  if (!host) return undefined;
+  const parts = remotePath.replace(/\\/gu, "/").split("/").filter(Boolean);
+  if (parts.length < 2) return undefined;
+  const repository = (parts.at(-1) ?? "").replace(/\.git$/u, "");
+  const owner = parts.at(-2) ?? "";
+  if (!owner || !repository) return undefined;
+  return `${host.toLowerCase()}/${owner}/${repository}`;
+}
+
+function canonicalRemoteUrl(value: string, repoRoot: string): string {
+  const remote = value.trim();
+  if (path.isAbsolute(remote) || path.win32.isAbsolute(remote)) return path.normalize(remote);
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(remote) && !/^[A-Za-z]:[\\/]/u.test(remote)) {
+    return remote;
+  }
+  const scp = /^(?:[^@/]+@)?[^:/]+:.+$/u.test(remote);
+  if (scp) return remote;
+  // Passing a relative configured URL back to Git verbatim is ambiguous: if another remote has
+  // that name, `git push <token>` selects the remote instead of the filesystem path. Resolve local
+  // paths while we still know the repository directory in which Git interpreted them.
+  return path.resolve(repoRoot, remote);
 }
 
 export class GitRepository {
@@ -36,6 +96,95 @@ export class GitRepository {
 
   async git(args: string[], cwd = this.root, allowFailure = false): Promise<CommandResult> {
     return await runCommand("git", args, { cwd, allowFailure });
+  }
+
+  /** Resolve gh's host-qualified `HOST/OWNER/REPO` selector from the exact Git push remote. */
+  async forgeRepository(remote: string): Promise<string> {
+    const value = await this.remotePushUrl(remote);
+    return this.forgeRepositoryFromUrl(value);
+  }
+
+  forgeRepositoryFromUrl(value: string): string {
+    const repository = forgeRepositoryFromRemote(value);
+    if (!repository) {
+      throw new BrokerError(
+        "REMOTE_REPOSITORY_UNKNOWN",
+        `Could not derive a GitHub repository from publication remote ${value}; refusing to use gh's ambient default.`,
+        { remote: value },
+      );
+    }
+    return repository;
+  }
+
+  async remotePushUrl(remote: string): Promise<string> {
+    const configured = await this.git(["remote", "get-url", "--push", remote], this.root, true);
+    const value = configured.stdout.trim();
+    if (configured.exitCode !== 0 || !value) {
+      throw new BrokerError("REMOTE_URL_UNKNOWN", `Could not resolve the push URL for remote ${remote}.`, { remote });
+    }
+    const canonical = canonicalRemoteUrl(value, this.root);
+    let localPath: string | undefined;
+    if (canonical.startsWith("file:")) {
+      try {
+        localPath = fileURLToPath(canonical);
+      } catch {
+        throw new BrokerError(
+          "REMOTE_URL_UNKNOWN",
+          `Could not resolve local publication remote ${remote}.`,
+          { remote, url: value },
+        );
+      }
+    } else if (path.isAbsolute(canonical)) {
+      localPath = canonical;
+    }
+    if (!localPath) return canonical;
+    try {
+      // Use the physical target for both the durable fingerprint and later Git commands. Otherwise
+      // a symlink (or Windows junction) can be redirected after assembly while retaining the same
+      // configured URL, sending a validated batch to a different repository.
+      return await realpath(localPath);
+    } catch {
+      throw new BrokerError(
+        "REMOTE_URL_UNKNOWN",
+        `Could not resolve local publication remote ${remote}.`,
+        { remote, url: value },
+      );
+    }
+  }
+
+  /** Return the exact URL whose fingerprint was bound when the batch was assembled. */
+  async boundRemoteUrl(remote: string, expectedFingerprint?: string): Promise<string> {
+    const value = await this.remotePushUrl(remote);
+    if (expectedFingerprint && remoteUrlFingerprint(value) !== expectedFingerprint) {
+      throw new BrokerError(
+        "REMOTE_TARGET_CHANGED",
+        `Remote ${remote} no longer points at the Git target recorded when this batch was assembled.`,
+        { remote, expectedFingerprint, actualFingerprint: remoteUrlFingerprint(value) },
+      );
+    }
+    return value;
+  }
+
+  /**
+   * Commit-producing broker operations run with a stable committer identity, signing disabled,
+   * and an empty broker-owned hook directory. Ambient user config and repository hooks must not be
+   * able to inject bytes after validation or make a fresh clone fail with no Git identity.
+   */
+  private async brokerCommitGit(
+    args: string[],
+    cwd: string,
+    allowFailure = false,
+  ): Promise<CommandResult> {
+    const hooksDirectory = path.join(this.commonGitDir, "merge-broker-disabled-hooks");
+    await mkdir(hooksDirectory, { recursive: true, mode: 0o700 });
+    return await runCommand("git", [
+      "-c", `core.hooksPath=${hooksDirectory}`,
+      "-c", "commit.gpgSign=false",
+      "-c", "user.useConfigOnly=true",
+      "-c", "user.name=Agent Merge Broker",
+      "-c", "user.email=merge-broker@localhost",
+      ...args,
+    ], { cwd, allowFailure });
   }
 
   async resolveCommit(revision: string): Promise<string> {
@@ -154,7 +303,7 @@ export class GitRepository {
   }
 
   async cherryPick(cwd: string, commit: string): Promise<CommandResult> {
-    return await this.git(["cherry-pick", "-x", commit], cwd, true);
+    return await this.brokerCommitGit(["cherry-pick", "-x", commit], cwd, true);
   }
 
   async abortCherryPick(cwd: string): Promise<void> {
@@ -170,12 +319,19 @@ export class GitRepository {
   }
 
   async deleteBranch(name: string): Promise<void> {
-    await this.git(["branch", "-D", "--", name], this.root, true);
+    const deleted = await this.git(["branch", "-D", "--", name], this.root, true);
+    if (deleted.exitCode === 0) return;
+    const exists = await this.git(["show-ref", "--verify", "--quiet", `refs/heads/${name}`], this.root, true);
+    if (exists.exitCode !== 0) return;
+    throw new BrokerError("BRANCH_DELETE_FAILED", `Could not delete integration branch ${name}.`, {
+      stdout: deleted.stdout,
+      stderr: deleted.stderr,
+    });
   }
 
   async squash(cwd: string, baseSha: string, message: string): Promise<string> {
     await this.git(["reset", "--soft", baseSha], cwd);
-    await this.git(["commit", "-m", message], cwd);
+    await this.brokerCommitGit(["commit", "-m", message], cwd);
     return await this.currentHead(cwd);
   }
 
@@ -186,6 +342,22 @@ export class GitRepository {
   async fetchBranch(remote: string, branch: string): Promise<boolean> {
     const result = await this.git(["fetch", "--quiet", "--", remote, branch], this.root, true);
     return result.exitCode === 0;
+  }
+
+  /** Fetch a branch through an exact URL without sharing FETCH_HEAD or a durable tracking ref. */
+  async fetchBranchHead(remote: string, branch: string): Promise<string | undefined> {
+    const temporaryRef = `refs/merge-broker/fetch/${process.pid}-${randomBytes(8).toString("hex")}`;
+    try {
+      const result = await this.git(
+        ["fetch", "--quiet", "--no-tags", "--force", "--", remote, `refs/heads/${branch}:${temporaryRef}`],
+        this.root,
+        true,
+      );
+      if (result.exitCode !== 0) return undefined;
+      return await this.resolveCommit(temporaryRef);
+    } finally {
+      await this.git(["update-ref", "-d", temporaryRef], this.root, true);
+    }
   }
 
   async commitGeneratedFile(
@@ -202,15 +374,24 @@ export class GitRepository {
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, contents, "utf8");
     await this.git(["add", "--", relativePath], cwd);
-    await this.git(["commit", "-m", message], cwd);
+    await this.brokerCommitGit(["commit", "-m", message], cwd);
     return await this.currentHead(cwd);
   }
 
-  async push(remote: string, branch: string): Promise<void> {
-    await this.git(
-      ["push", "--set-upstream", "--", remote, `refs/heads/${branch}:refs/heads/${branch}`],
-      this.root,
-    );
+  /**
+   * Publishes an assembled batch from its recorded commit, never from the mutable local branch.
+   * An empty expected value makes the lease a create-only guard. Git still treats a retry at the
+   * same SHA as up to date, while refusing to replace any different remote value -- including a
+   * value that the recorded commit could fast-forward.
+   */
+  async push(remote: string, branch: string, headSha: string): Promise<void> {
+    await this.git([
+      "push",
+      `--force-with-lease=refs/heads/${branch}:`,
+      "--",
+      remote,
+      `${headSha}:refs/heads/${branch}`,
+    ]);
   }
 
   /**

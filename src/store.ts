@@ -34,7 +34,7 @@ export interface LockStatus {
   name: string;
   held: boolean;
   path: string;
-  owner?: { pid?: number; host?: string; createdAt?: string };
+  owner?: { pid?: number; host?: string; createdAt?: string; nonce?: string };
   ageMs?: number;
   /** True only when the holder is provably gone: this machine, and the process no longer exists. */
   abandoned?: boolean;
@@ -167,7 +167,28 @@ export class StateStore {
   }
 
   async withIntegrationLock<T>(operation: () => Promise<T>): Promise<T> {
-    return await this.withLock("integration", operation, 24 * 60 * 60 * 1_000);
+    return await this.withLock("integration", operation);
+  }
+
+  /**
+   * Serializes side-effecting work for one batch without blocking operations for unrelated batches.
+   * The nonce is passed to the operation as a fencing identity and is also used to ensure an old
+   * holder can never release a lock that has since been acquired by somebody else.
+   */
+  async withBatchLock<T>(batchId: string, operation: (ownerNonce: string) => Promise<T> | T): Promise<T> {
+    return await this.withLock(this.batchLockName(batchId), operation);
+  }
+
+  batchLockName(batchId: string): string {
+    return `batch-${safeName(batchId)}`;
+  }
+
+  async inspectBatchLock(batchId: string): Promise<LockStatus> {
+    return await this.inspectLock(this.batchLockName(batchId));
+  }
+
+  async releaseBatchLock(batchId: string, options: { force?: boolean } = {}): Promise<LockStatus> {
+    return await this.releaseLock(this.batchLockName(batchId), options);
   }
 
   async writeReceipt(receipt: CommitReceipt): Promise<string> {
@@ -402,11 +423,13 @@ export class StateStore {
         pid?: unknown;
         host?: unknown;
         createdAt?: unknown;
+        nonce?: unknown;
       };
       owner = {
         ...(Number.isInteger(parsed.pid) ? { pid: parsed.pid as number } : {}),
         ...(typeof parsed.host === "string" ? { host: parsed.host } : {}),
         ...(typeof parsed.createdAt === "string" ? { createdAt: parsed.createdAt } : {}),
+        ...(typeof parsed.nonce === "string" ? { nonce: parsed.nonce } : {}),
       };
     } catch {
       owner = undefined;
@@ -417,7 +440,7 @@ export class StateStore {
       path: lockDirectory,
       ...(owner ? { owner } : {}),
       ageMs: Date.now() - lockStat.mtimeMs,
-      abandoned: await this.lockOwnerCrashed(lockDirectory),
+      abandoned: this.lockOwnerCrashed(owner),
     };
   }
 
@@ -437,48 +460,151 @@ export class StateStore {
         { lock: status },
       );
     }
-    await rm(status.path, { recursive: true, force: true });
+    if (status.owner?.nonce) {
+      const released = await this.releaseOwnedLock(status.path, status.owner.nonce);
+      if (!released) return await this.inspectLock(name);
+    } else {
+      // Compatibility for locks written by releases before owner nonces were introduced. New locks
+      // always take the owner-checked path above.
+      await rm(status.path, { recursive: true, force: true });
+    }
     return { ...status, held: false };
   }
 
-  private async withLock<T>(name: string, operation: () => Promise<T>, staleMs = 60_000): Promise<T> {
+  private async withLock<T>(
+    name: string,
+    operation: (ownerNonce: string) => Promise<T> | T,
+  ): Promise<T> {
     await this.initialize();
     const lockDirectory = path.join(this.directory, `${name}.lock`);
     const startedAt = Date.now();
+    const ownerNonce = randomUUID();
+    const owner = {
+      pid: process.pid,
+      host: hostname(),
+      createdAt: new Date().toISOString(),
+      nonce: ownerNonce,
+    };
     while (true) {
-      try {
-        await mkdir(lockDirectory, { mode: 0o700 });
-        await writeFile(
-          path.join(lockDirectory, "owner.json"),
-          `${JSON.stringify({ pid: process.pid, host: hostname(), createdAt: new Date().toISOString() })}\n`,
-          { encoding: "utf8", mode: 0o600 },
-        );
-        break;
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "EEXIST") throw error;
-        const lockStat = await stat(lockDirectory).catch(() => undefined);
-        // A crashed holder on this machine can be detected directly, so its lock is reclaimed after a
-        // short grace period. A holder on another machine cannot be probed at all -- the state
-        // directory is shared, but process IDs are not -- so those wait out the full stale timeout
-        // rather than risk two integrations running at once.
-        const age = lockStat ? Date.now() - lockStat.mtimeMs : 0;
-        if (lockStat && (age > staleMs || (age > 2_000 && (await this.lockOwnerCrashed(lockDirectory))))) {
-          await rm(lockDirectory, { recursive: true, force: true });
-          continue;
-        }
-        if (Date.now() - startedAt > this.lockTimeoutMs) {
-          throw new BrokerError("LOCK_TIMEOUT", `Timed out waiting for the ${name} lock.`, { lockDirectory });
-        }
-        await delay(50 + Math.floor(Math.random() * 100));
+      if (await this.tryAcquireLock(lockDirectory, owner)) break;
+      const lockStat = await stat(lockDirectory).catch(() => undefined);
+      const currentOwner = lockStat ? await this.readLockOwner(lockDirectory) : undefined;
+      // Time is not proof that a holder stopped. Reclaim only a process proven dead on this host;
+      // foreign or unreadable owners require the explicit force-unlock path. Moving an old owner's
+      // directory to a nonce-specific tombstone prevents two delayed reclaimers from deleting a
+      // successor's lock.
+      if (
+        lockStat &&
+        Date.now() - lockStat.mtimeMs > 2_000 &&
+        this.lockOwnerCrashed(currentOwner) &&
+        await this.reclaimLock(lockDirectory, currentOwner)
+      ) {
+        continue;
       }
+      if (Date.now() - startedAt > this.lockTimeoutMs) {
+        throw new BrokerError("LOCK_TIMEOUT", `Timed out waiting for the ${name} lock.`, { lockDirectory });
+      }
+      await delay(50 + Math.floor(Math.random() * 100));
     }
 
     try {
-      return await operation();
+      return await operation(ownerNonce);
     } finally {
-      await rm(lockDirectory, { recursive: true, force: true });
+      await this.releaseOwnedLock(lockDirectory, ownerNonce);
     }
+  }
+
+  /** Builds a complete owner directory before atomically publishing it as the active lock. */
+  private async tryAcquireLock(
+    lockDirectory: string,
+    owner: { pid: number; host: string; createdAt: string; nonce: string },
+  ): Promise<boolean> {
+    const candidate = `${lockDirectory}.candidate-${owner.nonce}`;
+    await mkdir(candidate, { mode: 0o700 });
+    let acquired = false;
+    try {
+      await writeFile(path.join(candidate, "owner.json"), `${JSON.stringify(owner)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      try {
+        await rename(candidate, lockDirectory);
+        acquired = true;
+        return true;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        // The destination can disappear immediately after rename reports that another owner holds
+        // it. Classify the atomic collision itself rather than relying only on a later existence
+        // check, which otherwise turns ordinary high-contention handoff into a spurious ENOTEMPTY.
+        if (code === "EEXIST" || code === "ENOTEMPTY") return false;
+        if (await exists(lockDirectory)) return false;
+        throw error;
+      }
+    } finally {
+      if (!acquired) await rm(candidate, { recursive: true, force: true });
+    }
+  }
+
+  private async readLockOwner(lockDirectory: string): Promise<LockStatus["owner"]> {
+    try {
+      const parsed = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as {
+        pid?: unknown;
+        host?: unknown;
+        createdAt?: unknown;
+        nonce?: unknown;
+      };
+      return {
+        ...(Number.isInteger(parsed.pid) ? { pid: parsed.pid as number } : {}),
+        ...(typeof parsed.host === "string" ? { host: parsed.host } : {}),
+        ...(typeof parsed.createdAt === "string" ? { createdAt: parsed.createdAt } : {}),
+        ...(typeof parsed.nonce === "string" ? { nonce: parsed.nonce } : {}),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Removes only the active lock carrying this exact ownership nonce. */
+  private async releaseOwnedLock(lockDirectory: string, ownerNonce: string): Promise<boolean> {
+    const current = await this.readLockOwner(lockDirectory);
+    if (current?.nonce !== ownerNonce) return false;
+    const retired = `${lockDirectory}.released-${ownerNonce}`;
+    try {
+      await rename(lockDirectory, retired);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+    const moved = await this.readLockOwner(retired);
+    if (moved?.nonce !== ownerNonce) {
+      // This requires an out-of-protocol forced replacement between the owner check and rename.
+      // Restore it rather than deleting somebody else's lock.
+      await rename(retired, lockDirectory).catch(() => undefined);
+      return false;
+    }
+    await rm(retired, { recursive: true, force: true });
+    return true;
+  }
+
+  /**
+   * Atomically moves a provably dead owner aside. Its nonce-specific, non-empty tombstone is kept so
+   * a delayed second reclaimer cannot later move a newly acquired lock into the same destination.
+   */
+  private async reclaimLock(lockDirectory: string, owner: LockStatus["owner"]): Promise<boolean> {
+    const identity = lockOwnerIdentity(owner);
+    if (!identity) return false;
+    const reclaimed = `${lockDirectory}.reclaimed-${identity}`;
+    try {
+      await rename(lockDirectory, reclaimed);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "EEXIST" || code === "ENOTEMPTY" || await exists(reclaimed)) return false;
+      throw error;
+    }
+    const moved = await this.readLockOwner(reclaimed);
+    if (lockOwnerIdentity(moved) === identity) return true;
+    await rename(reclaimed, lockDirectory).catch(() => undefined);
+    return false;
   }
 
   /**
@@ -486,16 +612,8 @@ export class StateStore {
    * gone. An unreadable owner file is not proof -- it is also what a lock looks like in the instant
    * between creating the directory and recording its owner.
    */
-  private async lockOwnerCrashed(lockDirectory: string): Promise<boolean> {
-    let owner: { pid?: unknown; host?: unknown };
-    try {
-      owner = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as {
-        pid?: unknown;
-        host?: unknown;
-      };
-    } catch {
-      return false;
-    }
+  private lockOwnerCrashed(owner: LockStatus["owner"]): boolean {
+    if (!owner) return false;
     // Records written before owners carried a hostname fall back to the process check. Treating them
     // as foreign instead would strand a crashed holder's lock for the full stale timeout.
     if (owner.host !== undefined && owner.host !== hostname()) return false;
@@ -515,6 +633,13 @@ export class StateStore {
     await rename(temporary, target);
     await chmod(target, 0o600).catch(() => undefined);
   }
+}
+
+function lockOwnerIdentity(owner: LockStatus["owner"]): string | undefined {
+  if (!owner) return undefined;
+  if (owner.nonce) return owner.nonce.replace(/[^a-zA-Z0-9_-]/gu, "-");
+  if (owner.pid === undefined && owner.host === undefined && owner.createdAt === undefined) return undefined;
+  return `legacy-${createHash("sha256").update(JSON.stringify(owner)).digest("hex").slice(0, 24)}`;
 }
 
 function safeName(value: string): string {
