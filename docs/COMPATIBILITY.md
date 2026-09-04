@@ -4,9 +4,10 @@ This page states where Agent Merge Broker runs, which integrations are built in,
 project does not provide today. The distinction matters because the broker coordinates an
 integration authority; it is not a hosted agent platform or a distributed merge queue.
 
-The documentation site tracks the `main` branch. Features listed under **Unreleased** in the
-[changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md) are present in a
-source checkout but are not part of the latest npm package until the next release is published.
+The documentation site tracks the `main` branch and may be ahead of npm. Compare the package version
+with the topmost entry in the
+[changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md); if that current
+entry is **Unreleased**, it is source-checkout behavior until the next release is published.
 
 ## Platform matrix
 
@@ -76,17 +77,45 @@ changing the scheduler or transaction model. The repository does not currently s
 GitLab, Bitbucket, Azure DevOps, Gerrit, or other forge adapters. MCP is local stdio only; there is no
 built-in HTTP transport, remote MCP authentication layer, or multi-user MCP service.
 
-A custom `ForgePublisher` is part of the merge-safety boundary. `inspectPullRequest` must bind one
-forge observation to the exact `headRefOid`, `baseRefOid`, and `baseRefName`, and must return
-`autoMergeEnabled: true` only when the queue is observed enabled, `false` only when it is observed
-disabled, or `undefined` when the forge cannot determine the queue state. Unknown state must never be
-coerced to `false`. Publication, enable, disable, inspection, body update, and close operations must
-be safe to retry after a lost response. In particular, `disableAutoMerge` returns `true` only after
-the queue is confirmed disabled (or the PR is confirmed closed), returns `false` only when the PR is
-confirmed merged, and throws when the outcome is ambiguous. `closePullRequest` returns `true` only
-when this broker close is confirmed, returns `false` for a retryable non-close, and must distinguish
-an unrelated reviewer close from replay of its own durable close marker. An adapter that cannot
-provide these identities and terminal outcomes must fail closed rather than guess.
+### Exact `ForgePublisher` contract
+
+A custom `ForgePublisher` is part of the merge-safety boundary. Its methods may be repeated after a
+process stops or a response is lost, so every operation must be idempotent or become safe through
+remote observation. The batch's recorded target and immutable SHA are authoritative; a custom
+adapter must not replace them with its process directory, current branch, current configuration
+remote, or a forge client's ambient default repository.
+
+| Method | Required behavior |
+| --- | --- |
+| `publishBatch` | Publish exactly `batch.headSha` as `batch.branchName` to the remote whose canonical URL matches `batch.remoteUrlFingerprint`. Initial branch creation must accept a same-SHA retry but must not overwrite any different remote value. For pull-request mode, use `batch.forgeRepository` and `batch.baseBranch`; search open, closed, and merged requests for the unique branch/base pair before creating one. If absence cannot be proved, throw rather than create a possible duplicate. Return the actual mode and branch, a PR URL for pull-request mode, and `reusedPullRequest: true` when a prior request was recovered. |
+| `inspectPullRequest` | Return one coherent observation. Normalize state to literal `OPEN`, `CLOSED`, or `MERGED`; preserve the broker-significant `CHANGES_REQUESTED` review decision and `CONFLICTING` mergeability values. `headRefOid` and `baseRefName` are always required; `baseRefOid` is required while the request is open and may be absent for a terminal request. A merged observation needs `mergeCommitSha` whenever the reported base OID is absent or differs from the recorded base so topology can be proved. Return check names and states needed by policy. If multiple forge reads are necessary, detect a head change between them and fail closed. Do not use empty or guessed identities. |
+| `enableAutoMerge` | Honor `expectedHeadSha` when supplied so another head cannot be queued or merged. Return `true` only when the request was accepted, the exact head is already queued, or it is already merged. Return `false` only for a definite, safe-to-retry non-enablement. Throw when the remote outcome is unknown; the broker retains `autoMergePending` and retries by observation. |
+| `disableAutoMerge` | Return `true` only when the queue is confirmed disabled or the PR is confirmed closed. Return `false` only when the PR is confirmed merged. An already-disabled queue is an idempotent success. Throw when the command or observation cannot establish one of those outcomes; never turn unknown into disabled. |
+| `closePullRequest` | Return `true` only when this broker close is confirmed. Refresh comments contain a durable unique marker; replay against an already-closed PR is success only if that marker is observed. An unrelated reviewer close must remain distinguishable (the built-in adapter throws `PULL_REQUEST_ALREADY_CLOSED`). Return `false` for a retryable, unconfirmed non-close and throw for other ambiguous or terminal conflicts. |
+| `updatePullRequestBody` | Replace the informational body for the supplied batch and tasks and be safe to repeat. A failure must be reported rather than presented as an update; the broker retains the revised candidate and records a publication warning. |
+
+`PullRequestState.autoMergeEnabled` is explicitly tri-state: `true` only when the queue is observed
+enabled, `false` only when it is observed disabled, and `undefined` when the forge cannot determine
+the queue state. The property must still be present when its value is `undefined`. Unknown queue
+state is treated as possibly live for revocation and is never coerced to `false`. Likewise, a network
+or permissions failure during PR discovery is not proof that no pull request exists.
+
+An adapter that cannot provide exact identities, an exact-head merge guard, and the terminal outcomes
+above is not compatible with broker auto-merge. It must fail closed or limit itself to publication
+without merge control.
+
+### GitHub Enterprise addressing limits
+
+Automatic forge-repository derivation supports `github.com` and GitHub Enterprise Server targets
+whose forge API identity is a DNS hostname on the default endpoint. The broker and built-in `gh`
+adapter use a `HOST/OWNER/REPO` selector, which cannot represent a non-default forge API port or an
+IPv6 literal.
+
+Git transport is separate. Branch mode can use a fingerprinted explicit-port or IPv6 remote, and
+pull-request mode can use such a Git transport when an explicit `publish.repository` maps it to a
+supported DNS, host-qualified forge target—for example a local mirror or proxy. That mapping does
+not make `gh` address a forge API itself exposed only through a non-default port or IPv6 literal; a
+future target type and adapter contract would be needed for that endpoint.
 
 ## State and deployment model
 
@@ -103,6 +132,40 @@ Git commit objects available to its integration repository deliberately.
 The broker also does not start coding agents, write their prompts, create their implementation
 worktrees, sandbox their tools, or provide agent-to-agent messaging. It begins at the coordination
 boundary: claim scope, receive committed work, assemble a batch, validate it, and publish it.
+
+## Upgrade handling for batches without v0.12 target binding
+
+Version 0.12 records the selected `remote`, `publicationMode`, a SHA-256
+`remoteUrlFingerprint`, and, for pull-request publication, a host-qualified `forgeRepository` when
+a publishable batch is assembled. Older state can lack one or all of those fields. The broker does
+not fill them from current configuration: a
+remote name may have been retargeted, and a prepared record from an older process cannot prove that
+no branch or pull request was already created before the process stopped.
+
+- A `prepared` batch that explicitly records `publicationMode: "none"` is known to have had no
+  publication phase. If it already has every binding required by the newly selected mode, `batch
+  publish` can publish the unchanged validated candidate. Otherwise it marks the record for refresh
+  and returns `BATCH_TARGET_UNBOUND`; `batch refresh` may safely re-cut it against the current target
+  reached through its recorded remote name and base branch.
+- A `prepared` batch with no `publicationMode` cannot prove that it is side-effect free. Publication
+  and refresh both fail with `BATCH_TARGET_UNBOUND`; inspect and remove or reconcile any original
+  branch/PR before deliberately retrying its tasks.
+- A previously `published` pull-request batch can still use its stored PR URL for conservative
+  observation, but it is not automatically rebound. It cannot be safely refreshed, approved for
+  auto-merge without the required target fields, or use changed-base topology proof. A legacy
+  branch-only batch without `remoteUrlFingerprint` cannot be reconciled against a mutable remote
+  name.
+
+Do not repair these records by hand or copy the current remote into the missing fields. Resolve any
+possible old remote side effect first, then re-cut from task receipts or reclaim/retry the affected
+tasks as directed by state.
+
+There is a separate compatibility path for a published PR created before `CandidateRecord` existed:
+after approval policy is enabled, `batch sync` disables any observed or possibly live auto-merge,
+requires the stored head SHA, base SHA, and target branch to match the open PR, and only then creates
+candidate revision 1 with no inherited evidence or approval. A mismatch fails closed, and a PR that
+already merged is recorded as an invariant violation. This candidate adoption does not synthesize
+missing target fingerprints or make an otherwise unbound batch safe for auto-merge.
 
 ## Enforcement and workflow limits
 

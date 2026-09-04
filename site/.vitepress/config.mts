@@ -1,5 +1,5 @@
 import { defineConfig } from "vitepress";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,26 +7,16 @@ const REPO = "https://github.com/WeSpitfire/agent-merge-broker";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /**
- * Figures the landing page states about the package are read from the package itself, so a release
- * cannot leave the site claiming a version or a test count that is no longer true.
+ * Release facts shown on the landing page are read from the package itself, so version and
+ * dependency changes cannot leave the site stale.
  */
-function projectFacts(): { version: string; tests: number; dependencies: number } {
+function projectFacts(): { version: string; dependencies: number } {
   const manifest = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8")) as {
     version: string;
     dependencies?: Record<string, string>;
   };
 
-  const src = path.join(repoRoot, "src");
-  const tests = readdirSync(src)
-    .filter((file) => file.endsWith(".test.ts"))
-    .reduce((total, file) => {
-      const contents = readFileSync(path.join(src, file), "utf8");
-      return total + (contents.match(/^test\(/gmu)?.length ?? 0);
-    }, 0);
-
-  if (tests === 0) throw new Error("Counted no tests: the declaration pattern has drifted.");
-
-  return { version: manifest.version, tests, dependencies: Object.keys(manifest.dependencies ?? {}).length };
+  return { version: manifest.version, dependencies: Object.keys(manifest.dependencies ?? {}).length };
 }
 
 const project = projectFacts();
@@ -34,7 +24,7 @@ const project = projectFacts();
 export default defineConfig({
   title: "Agent Merge Broker",
   description:
-    "A transaction coordinator for parallel code-producing agents and humans. Workers submit commits; the broker batches, validates, and lands them.",
+    "Crash-recoverable repository transactions for code produced by agents and humans, with exact-candidate validation, approval, provenance, and forge reconciliation.",
   // The site is served from a repository subpath on github.io.
   base: "/agent-merge-broker/",
   cleanUrls: true,
@@ -47,7 +37,7 @@ export default defineConfig({
       {
         property: "og:description",
         content:
-          "Four agents just finished at the same time. Who merges first? The broker decides what can safely go together, validates it, and lands one branch.",
+          "Coordinate and reconcile exact code candidates with validation, optional approval and provenance, and durable forge target binding.",
       },
     ],
   ],
@@ -76,6 +66,13 @@ export default defineConfig({
           ],
         },
         {
+          text: "Project",
+          items: [
+            { text: "Vision", link: "/docs/vision" },
+            { text: "Roadmap", link: "/docs/roadmap" },
+          ],
+        },
+        {
           text: "Help",
           items: [{ text: "Support", link: "/docs/support" }],
         },
@@ -91,6 +88,8 @@ export default defineConfig({
           "docs/security.md": "docs/SECURITY.md",
           "docs/releasing.md": "docs/RELEASING.md",
           "docs/compatibility.md": "docs/COMPATIBILITY.md",
+          "docs/vision.md": "VISION.md",
+          "docs/roadmap.md": "ROADMAP.md",
           "docs/support.md": "SUPPORT.md",
         };
         return `https://github.com/WeSpitfire/agent-merge-broker/edit/main/${sources[filePath] ?? filePath}`;

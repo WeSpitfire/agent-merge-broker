@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.12.1 — 2026-09-04
+
+### Added
+
+- Added a truthful product vision and capability-based roadmap that distinguish today's Coordinate
+  mode from planned external-candidate Gate and generalized Verify modes.
+
+### Changed
+
+- Reframed the README, package metadata, and website around crash-recoverable exact-candidate
+  repository transactions while preserving the current package, CLI, and project identities.
+- Expanded the architecture, protocol, security, compatibility, and operations documentation to
+  cover v0.12 locks, durable intents, reconciliation, topology proofs, adapter obligations, upgrade
+  boundaries, and actionable error recovery.
+
+### Fixed
+
+- Aligned the published configuration schema with runtime support for declaring auto-merge while
+  publication remains disabled, while continuing to reject branch-mode and draft auto-merge.
+- Made the documentation site redeploy for every canonical content source and replaced its
+  inaccurate source-declaration test count with the supported cross-platform CI matrix.
+- Replaced a historical but copyable nonexistent `verify@v1` reference with an existing immutable
+  action tag.
+- Made abandoned-integration cleanup replayable across another process stop, use the persisted
+  branch name and expected SHA, remove partial worktree directories, and preserve branches checked
+  out for operator inspection.
+- Made JSON CLI usage errors follow the documented machine-readable error envelope and made
+  `serve --once --json` return exactly one summary document.
+- Made human refresh output distinguish an already-current batch, terminal reconciliation, and a
+  pull request that a reviewer had already closed.
+
 ## 0.12.0 — 2026-09-04
 
 ### Added
@@ -28,7 +59,8 @@
 - Merge reconciliation proves the accepted fast-forward, squash, two-parent merge, or linear rebase
   topology before releasing dependent tasks.
 - Revocation, reviewer closure, force-push, reopened pull request, remote retargeting, and
-  configuration-downgrade races now fail closed without leaving a possibly-live merge queue behind.
+  configuration-downgrade races now fail closed without leaving a possibly-live auto-merge request
+  behind.
 
 ### Fixed
 
@@ -332,7 +364,7 @@ not have to rebuild them.
   already contain. Verification policy is read from the configuration committed on the base branch,
   never from the change under review.
 - A composite GitHub Action at `verify/action.yml`, so requiring the gate is two lines:
-  `uses: WeSpitfire/agent-merge-broker/verify@v1`.
+  `uses: WeSpitfire/agent-merge-broker/verify@v0.3.0`.
 - `merge-broker task submit --since-base` submits the linear commits made after the base the broker
   handed out. Commits whose change is already upstream are skipped by patch identity, so a rebased
   branch does not resubmit landed work.

@@ -68,8 +68,56 @@ async function serveOnce(repo: string): Promise<CommandResult> {
     allowFailure: true,
   });
   assert.equal(result.exitCode, 0, result.stderr);
+  assert.doesNotThrow(() => JSON.parse(result.stdout), "serve --once --json must emit one JSON document");
   return result;
 }
+
+test("JSON mode envelopes command-line usage errors", async () => {
+  const sourceTest = fileURLToPath(import.meta.url).endsWith(".ts");
+  const cli = fileURLToPath(new URL(sourceTest ? "./cli.ts" : "./cli.js", import.meta.url));
+  const runtime = [...(sourceTest ? ["--import", "tsx"] : []), cli];
+
+  const malformed = await runCommand(process.execPath, [...runtime, "--json", "task", "claim"], {
+    cwd: PROJECT_ROOT,
+    allowFailure: true,
+  });
+  assert.equal(malformed.exitCode, 1);
+  assert.equal(malformed.stdout, "");
+  const body = JSON.parse(malformed.stderr) as { error?: { code?: string; message?: string } };
+  assert.equal(body.error?.code, "INVALID_ARGUMENTS");
+  assert.match(body.error?.message ?? "", /missing required argument 'id'/iu);
+
+  const missingCommand = await runCommand(process.execPath, [...runtime, "--json"], {
+    cwd: PROJECT_ROOT,
+    allowFailure: true,
+  });
+  assert.equal(missingCommand.exitCode, 1);
+  const missingBody = JSON.parse(missingCommand.stderr) as { error?: { code?: string; message?: string } };
+  assert.equal(missingBody.error?.code, "INVALID_ARGUMENTS");
+  assert.match(missingBody.error?.message ?? "", /command or subcommand is required/iu);
+
+  const help = await runCommand(process.execPath, [...runtime, "--json", "--help"], {
+    cwd: PROJECT_ROOT,
+    allowFailure: true,
+  });
+  assert.equal(help.exitCode, 0, help.stderr);
+  assert.equal(help.stderr, "");
+  assert.match(help.stdout, /Usage: merge-broker/iu);
+});
+
+test("serve --once --json returns one summary document when idle", async (context) => {
+  const repo = await repository(context);
+  const served = await serveOnce(repo);
+  const summary = JSON.parse(served.stdout) as {
+    recovery?: { batches?: string[]; tasks?: string[] };
+    events?: unknown[];
+    results?: unknown[];
+  };
+  assert.deepEqual(summary.recovery?.batches, []);
+  assert.deepEqual(summary.recovery?.tasks, []);
+  assert.deepEqual(summary.events, []);
+  assert.deepEqual(summary.results, []);
+});
 
 test("serve retries a prepared batch after a transient push failure", async (context) => {
   const repo = await repository(context);

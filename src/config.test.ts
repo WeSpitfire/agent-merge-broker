@@ -87,6 +87,14 @@ test("rejects auto-merge in branch mode, where there is no pull request to merge
   );
 });
 
+test("allows auto-merge intent while publication remains disabled", () => {
+  const config = defaultConfig();
+  config.publish.mode = "none";
+  config.publish.autoMerge = true;
+
+  assert.equal(validateConfig(config).publish.autoMerge, true);
+});
+
 test("accepts an explicit forge repository and rejects ambiguous or URL-shaped selectors", () => {
   const config = defaultConfig();
   config.publish.mode = "pull-request";

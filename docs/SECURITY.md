@@ -6,6 +6,13 @@ Agent Merge Broker is intended for trusted repositories and trusted integration 
 
 Do not run the broker automatically on untrusted fork configuration. A safe forge integration should load policy from the protected base branch, not from an incoming change.
 
+The local broker loads `.merge-broker/config.json` from the worktree in which it is opened. That is
+inside this trusted-host boundary; it is not protection against invoking an operator command from an
+untrusted fork checkout. The remote `verify-provenance` path is different: it reads its verification
+policy from the supplied protected-base commit and never trusts the candidate's copy. Run the
+service and operator MCP profile from a controlled checkout, and protect who may change its
+configuration or invoke it.
+
 ## Credentials
 
 - Lease tokens contain 192 bits of randomness and only SHA-256 digests are persisted in broker state.
@@ -36,6 +43,13 @@ state, audit, receipt, manifest, token, and key files are mode 0600 on POSIX sys
 modify the repository's Git directory can still modify broker state or audit records. The audit
 stream is append-only by convention, not cryptographically tamper-evident.
 
+State, integration, and per-batch locks are correctness controls between cooperating local
+processes, not authorization boundaries. Their owner nonces prevent an old process from releasing a
+successor's lock, and only a provably dead same-host process is reclaimed automatically. An operator
+with filesystem access can force-unlock, edit state, or replace Git objects; the security model
+already trusts that operator and host. A shared Git directory does not provide distributed consensus
+or protect against a hostile second machine.
+
 ## Git safety
 
 The broker never resets the user's base worktree, merges into the base branch, or deletes source
@@ -44,6 +58,14 @@ revision is the sole force update, limited to the broker's own integration branc
 `--force-with-lease` against the prior candidate SHA. Broker-created commits use a fixed identity,
 disable signing, and bypass ambient hooks so machine-specific Git configuration cannot alter the
 validated artifact. Temporary worktrees stay under the broker state directory.
+
+After every successful focused and authoritative validator set, the broker requires the same `HEAD`
+and a clean integration worktree. A validator that commits, checks out another revision, edits a
+tracked file, or creates a non-ignored untracked file causes `VALIDATOR_MUTATED_WORKTREE`; its claimed
+success is not retained. Broker-generated squash and provenance commits occur only afterward through
+the fixed identity and hook-free Git path. This byte-preservation check does not sandbox a validator:
+trusted configuration can still modify other refs, contact the network, write outside the worktree,
+or exfiltrate any credential available to its process.
 
 Failed integration worktrees are removed by default. Enabling `keepFailedWorktrees` can retain source content, generated artifacts, and secrets written by validators; operators must clean these worktrees deliberately after diagnosis.
 
@@ -57,15 +79,48 @@ actors. GitHub checks are accepted only from the live PR whose head matches the 
 re-reads the head/base, becomes effective only after a post-write OPEN observation, and the merge
 command uses `--match-head-commit`.
 
+That second observation is a causal boundary. An approval with `approvedAt` but no `confirmedAt`
+cannot authorize a queue. If policy revision or evidence requirements change, an approving actor is
+removed, a required check regresses, review requests changes, conflicts appear, or the PR head,
+target branch, or base SHA changes, reconciliation records revocation before attempting to disable
+auto-merge. While the PR remains open, it deletes approval only after the queue is observed disabled;
+a terminal PR is reconciled separately. An unknown queue state is treated as possibly live for
+revocation and never as proof of authorization.
+
+Turning `publish.autoMerge` off also disables an observed or possibly live queue. Turning
+`approval.required` off does not authorize a candidate assembled under required approval; that
+candidate must be re-cut. Turning it on for an existing open PR first disables any possibly live
+queue and adopts only an exact matching head/base as a new, unapproved candidate; an already-merged
+untracked candidate is an invariant failure. `policyRevision` remains an operator-maintained
+identifier rather than a digest of the complete configuration, so bump it whenever an
+approval-policy meaning changes. The broker additionally compares current evidence requirements and
+authorized actors, but the identifier does not cryptographically bind every validator or
+configuration field.
+
 This protects broker-mediated merges, not an administrator bypass in the forge UI. Repositories that
 need the invariant to be organizationally mandatory must also protect the base branch, limit bypass
 permission, require the configured checks, and restrict who can push broker integration branches.
 An out-of-band merge is detected during reconciliation and recorded as an invariant violation, but
 the broker cannot undo code that GitHub already merged.
 
+For a merged PR whose reported base has advanced, the broker does not trust terminal forge state or
+the final tree alone. It fetches the recorded target and accepts only a merge commit on that target
+whose history is rooted at the approved base and whose tree equals the candidate: the candidate
+itself as a fast-forward, a one-parent squash on the exact base, a two-parent merge with exact base
+and candidate parents, or a linear rebase with the same ordered tree at every commit. A forged or
+unrecognized topology fails the batch instead of releasing dependencies. A transient inability to
+fetch the bound target remains retryable.
+
 GitHub does not expose an atomic “match this base SHA” merge guard. Require branches to be up to date
-or use a merge queue when broker base binding must be preventative rather than only detected and
-proven during reconciliation.
+when broker base binding must be preventative rather than only detected and proven during
+reconciliation. Native merge-queue/`merge_group` verification is planned; the current broker does
+not authorize the combined artifact created by a forge merge queue.
+
+`batch complete` is a manual authority boundary, not equivalent to automatic reconciliation. It
+checks a causally confirmed, non-revoked exact approval plus the current approval policy and actor
+when approval policy applies, but it does not inspect the live PR or fetch the target. The operator
+is asserting that the result really landed. Use it only after independently verifying a workflow
+for which the forge cannot expose sufficient proof.
 
 Authorized actor names are local policy identifiers, not cryptographic identities. Adapters should
 derive them from an authenticated execution context and should not accept an untrusted worker's
@@ -96,14 +151,24 @@ integration, publication, evidence, or approval tools and never returns stored l
 operator profile is a control-plane credential: expose it only to a trusted client with the same
 authority as the integration host.
 
-Task and batch metadata must still be treated as untrusted display text by external dashboards. The bundled GitHub publisher constructs command arguments without a shell and sends PR content through stdin.
-It also fingerprints the selected Git push URL and records the host-qualified forge locator at assembly;
-publication fails if the named remote later points elsewhere, and every repository-ambiguous `gh`
-operation receives an explicit `--repo` selector.
+Task and batch metadata must still be treated as untrusted display text by external dashboards. The
+bundled GitHub publisher constructs command arguments without a shell and sends PR content through
+stdin. It fingerprints the selected canonical Git push URL and, for pull requests, records the
+host-qualified forge locator at assembly; the URL itself is not stored because it may embed
+credentials. Publication fails if the named remote later points elsewhere, and every
+repository-ambiguous `gh` operation receives an explicit `--repo` selector. Local paths are resolved
+to their physical target so a symlink or junction cannot be redirected after validation.
 
 These are locator guarantees, not a stable forge-object identity. Repository namespace transfers,
 delete-and-recreate operations at the same URL, DNS replacement, and a compromised Git/forge host
-remain trusted-infrastructure events; this release does not claim the stronger trusted-host threat model.
+remain trusted-infrastructure events; this release does not protect against replacement or
+compromise inside that trusted infrastructure.
+
+Batches written before `0.12.0` have no durable selected remote, URL fingerprint, publication mode,
+or forge selector. The broker fails closed rather than deriving a replacement identity from mutable
+current configuration. Drain prepared and published batches before upgrading. For an already
+in-flight legacy batch, restore and inspect the original remote and PR; never edit state to fabricate
+a target binding. Close and retry the work as a new batch when exact reconciliation is unavailable.
 
 ## Enforcement boundaries
 

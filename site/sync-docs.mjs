@@ -26,6 +26,8 @@ const INTERNAL = [
   [/\]\(docs\/SECURITY\.md\)/g, "](/docs/security)"],
   [/\]\(docs\/RELEASING\.md\)/g, "](/docs/releasing)"],
   [/\]\(docs\/COMPATIBILITY\.md\)/g, "](/docs/compatibility)"],
+  [/\]\(VISION\.md\)/g, "](/docs/vision)"],
+  [/\]\(ROADMAP\.md\)/g, "](/docs/roadmap)"],
   [/\]\(SUPPORT\.md\)/g, "](/docs/support)"],
   [/\]\(GETTING_STARTED\.md\)/g, "](/docs/getting-started)"],
   [/\]\(ARCHITECTURE\.md\)/g, "](/docs/architecture)"],
@@ -33,6 +35,8 @@ const INTERNAL = [
   [/\]\(SECURITY\.md\)/g, "](/docs/security)"],
   [/\]\(RELEASING\.md\)/g, "](/docs/releasing)"],
   [/\]\(COMPATIBILITY\.md\)/g, "](/docs/compatibility)"],
+  [/\]\(VISION\.md\)/g, "](/docs/vision)"],
+  [/\]\(ROADMAP\.md\)/g, "](/docs/roadmap)"],
 ];
 
 const PAGES = [
@@ -42,6 +46,8 @@ const PAGES = [
   { from: "docs/SECURITY.md", to: "security.md" },
   { from: "docs/RELEASING.md", to: "releasing.md" },
   { from: "docs/COMPATIBILITY.md", to: "compatibility.md" },
+  { from: "VISION.md", to: "vision.md" },
+  { from: "ROADMAP.md", to: "roadmap.md" },
   { from: "SUPPORT.md", to: "support.md" },
 ];
 

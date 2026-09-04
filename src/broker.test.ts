@@ -8,6 +8,8 @@ import { configPath, loadConfig } from "./config.js";
 import { BrokerError } from "./errors.js";
 import { runCommand } from "./process.js";
 import { githubCliPublisher } from "./publisher.js";
+import type { AuditRecorder } from "./store.js";
+import type { BrokerState } from "./types.js";
 
 async function git(repo: string, ...args: string[]): Promise<string> {
   return (await runCommand("git", args, { cwd: repo })).stdout.trim();
@@ -228,8 +230,10 @@ test("recovers an abandoned integration transaction and cleans its retained Git 
   const baseSha = await git(repo, "rev-parse", "main");
   const worktree = path.join(broker.store.worktreesDirectory, id);
   const branchName = `merge-broker/${id}`;
+  const unrelatedBranchName = `changed-prefix/${id}`;
   await broker.repo.addDetachedWorktree(worktree, baseSha);
   await broker.repo.createBranch(branchName, baseSha);
+  await broker.repo.createBranch(unrelatedBranchName, baseSha);
   await broker.store.transaction((state) => {
     const task = state.tasks.RECOVER;
     assert.ok(task);
@@ -241,28 +245,149 @@ test("recovers an abandoned integration transaction and cleans its retained Git 
       taskIds: [task.id],
       baseBranch: "main",
       baseSha,
+      branchName,
+      headSha: baseSha,
       worktree,
       validations: [],
       createdAt: new Date().toISOString(),
     };
   });
 
-  const recovered = await broker.recoverAbandonedIntegrations();
+  const config = await loadConfig(repo);
+  config.integration.branchPrefix = "changed-prefix/";
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const recoveryBroker = await MergeBroker.open(repo);
+
+  const recovered = await recoveryBroker.recoverAbandonedIntegrations();
   assert.deepEqual(recovered.batches, [id]);
   assert.deepEqual(recovered.tasks, ["RECOVER"]);
   assert.deepEqual(recovered.worktreesRemoved, [worktree]);
   assert.deepEqual(recovered.branchesRemoved, [branchName]);
   assert.equal(recovered.cleanupWarnings.length, 0);
-  assert.equal((await broker.task("RECOVER")).status, "submitted");
-  assert.equal((await broker.state()).batches[id]?.status, "failed");
-  assert.notEqual((await broker.repo.git(["show-ref", "--verify", `refs/heads/${branchName}`], repo, true)).exitCode, 0);
-  assert.equal((await broker.repo.listWorktrees()).some((item) => path.resolve(item.path) === worktree), false);
-  assert.ok((await broker.store.readAudit()).some((event) => event.event === "batch.recovered"));
+  assert.equal((await recoveryBroker.task("RECOVER")).status, "submitted");
+  assert.equal((await recoveryBroker.state()).batches[id]?.status, "failed");
+  assert.notEqual((await recoveryBroker.repo.git(["show-ref", "--verify", `refs/heads/${branchName}`], repo, true)).exitCode, 0);
+  assert.equal((await recoveryBroker.repo.git(["show-ref", "--verify", `refs/heads/${unrelatedBranchName}`], repo, true)).exitCode, 0);
+  assert.equal((await recoveryBroker.repo.listWorktrees()).some((item) => path.resolve(item.path) === worktree), false);
+  assert.ok((await recoveryBroker.store.readAudit()).some((event) => event.event === "batch.recovered"));
 
   // Recovery does not consume a task attempt; the same receipt can be integrated immediately.
-  const integrated = await broker.integrate();
+  const integrated = await recoveryBroker.integrate();
   assert.equal(integrated.batch.status, "prepared");
   assert.equal((await broker.task("RECOVER")).attempts ?? 0, 0);
+});
+
+test("replays abandoned cleanup after a stop before state finalization", async (context) => {
+  const repo = await createRepository();
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "RECOVERY-REPLAY", holder: "agent", expectedPaths: ["src/replay.ts"] });
+  const commit = await commitFile(repo, "recovery-replay", "src/replay.ts", "export const replay = true;\n");
+  await broker.submitTask("RECOVERY-REPLAY", [commit], claim.token);
+
+  const id = "abandoned-replay";
+  const baseSha = await git(repo, "rev-parse", "main");
+  const worktree = path.join(broker.store.worktreesDirectory, id);
+  const branchName = `merge-broker/${id}`;
+  // Model a stop partway through `git worktree add`: the directory exists, but Git never
+  // registered it. Recovery must remove it without losing the durable path first.
+  await mkdir(worktree, { recursive: true });
+  await writeFile(path.join(worktree, "partial"), "partial worktree\n", "utf8");
+  await broker.repo.createBranch(branchName, baseSha);
+  await broker.store.transaction((state) => {
+    const task = state.tasks["RECOVERY-REPLAY"];
+    assert.ok(task);
+    task.status = "integrating";
+    task.batchId = id;
+    state.batches[id] = {
+      id,
+      status: "running",
+      taskIds: [task.id],
+      baseBranch: "main",
+      baseSha,
+      branchName,
+      headSha: baseSha,
+      worktree,
+      validations: [],
+      createdAt: new Date().toISOString(),
+    };
+  });
+
+  const store = broker.store;
+  const originalTransaction = store.transaction;
+  let interrupted = false;
+  store.transaction = (async <T>(
+    mutator: (state: BrokerState, audit: AuditRecorder) => Promise<T> | T,
+  ): Promise<T> => {
+    if (!interrupted) {
+      interrupted = true;
+      throw new Error("simulated stop after Git cleanup");
+    }
+    return await (originalTransaction.call(store, mutator) as Promise<T>);
+  }) as typeof store.transaction;
+  try {
+    await assert.rejects(broker.recoverAbandonedIntegrations(), /simulated stop after Git cleanup/iu);
+  } finally {
+    store.transaction = originalTransaction;
+  }
+
+  assert.equal((await broker.state()).batches[id]?.status, "running");
+  assert.equal((await broker.task("RECOVERY-REPLAY")).status, "integrating");
+  await assert.rejects(stat(worktree), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
+  assert.notEqual((await broker.repo.git(["show-ref", "--verify", `refs/heads/${branchName}`], repo, true)).exitCode, 0);
+
+  const recovered = await broker.recoverAbandonedIntegrations();
+  assert.deepEqual(recovered.batches, [id]);
+  assert.deepEqual(recovered.tasks, ["RECOVERY-REPLAY"]);
+  assert.equal(recovered.cleanupWarnings.length, 0);
+  assert.equal((await broker.state()).batches[id]?.status, "failed");
+  assert.equal((await broker.state()).batches[id]?.worktree, undefined);
+  assert.equal((await broker.task("RECOVERY-REPLAY")).status, "submitted");
+});
+
+test("does not delete an abandoned branch checked out for operator inspection", async (context) => {
+  const repo = await createRepository();
+  const inspection = `${repo}-inspection`;
+  context.after(async () => {
+    await rm(inspection, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const broker = await MergeBroker.open(repo);
+  const claim = await broker.claimTask({ id: "RECOVERY-INSPECT", holder: "agent", expectedPaths: ["src/inspect.ts"] });
+  const commit = await commitFile(repo, "recovery-inspect", "src/inspect.ts", "export const inspect = true;\n");
+  await broker.submitTask("RECOVERY-INSPECT", [commit], claim.token);
+
+  const id = "abandoned-inspection";
+  const baseSha = await git(repo, "rev-parse", "main");
+  const branchName = `merge-broker/${id}`;
+  await broker.repo.createBranch(branchName, baseSha);
+  await git(repo, "worktree", "add", inspection, branchName);
+  await broker.store.transaction((state) => {
+    const task = state.tasks["RECOVERY-INSPECT"];
+    assert.ok(task);
+    task.status = "integrating";
+    task.batchId = id;
+    state.batches[id] = {
+      id,
+      status: "running",
+      taskIds: [task.id],
+      baseBranch: "main",
+      baseSha,
+      branchName,
+      headSha: baseSha,
+      validations: [],
+      createdAt: new Date().toISOString(),
+    };
+  });
+
+  const recovered = await broker.recoverAbandonedIntegrations();
+  assert.deepEqual(recovered.branchesRemoved, []);
+  assert.ok(recovered.cleanupWarnings.some((warning) => warning.includes(branchName)));
+  assert.equal((await broker.repo.git(["show-ref", "--verify", `refs/heads/${branchName}`], repo, true)).exitCode, 0);
+  assert.equal((await broker.state()).batches[id]?.status, "failed");
+  assert.equal((await broker.task("RECOVERY-INSPECT")).status, "submitted");
 });
 
 test("a missing signing key blocks integration without failing tasks and can be reprovisioned", async (context) => {
