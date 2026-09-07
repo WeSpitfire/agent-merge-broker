@@ -1,58 +1,73 @@
 /*
- * Carries the landing page's identity onto the documentation pages: signal amber as the brand,
- * monospace headings, and blue-biased neutrals. Everything else stays VitePress's default, which
- * is well-tuned for long technical prose.
+ * Carries the landing page's identity onto the documentation pages: stamp red as the brand, the
+ * condensed display face for headings, Plex for body and code. Everything else stays VitePress's
+ * default, which is well-tuned for long technical prose.
  */
 
 :root {
-  --vp-c-brand-1: #A9670C;
-  --vp-c-brand-2: #8A5309;
-  --vp-c-brand-3: #B0700F;
-  --vp-c-brand-soft: rgba(169, 103, 12, 0.12);
+  --vp-c-brand-1: #C4122C;
+  --vp-c-brand-2: #A30F25;
+  --vp-c-brand-3: #C4122C;
+  --vp-c-brand-soft: rgba(196, 18, 44, 0.12);
 
-  --vp-c-bg: #FFFFFF;
-  --vp-c-bg-alt: #F2F5F8;
-  --vp-c-bg-soft: #F2F5F8;
-  --vp-c-divider: #CDD6DF;
-  --vp-c-text-1: #0E1720;
-  --vp-c-text-2: #56677A;
+  --vp-c-bg: #FBFAF5;
+  --vp-c-bg-alt: #E4E9E6;
+  --vp-c-bg-soft: #EEF1EE;
+  --vp-c-divider: #C9D1CD;
+  --vp-c-text-1: #14181B;
+  --vp-c-text-2: #5F6A65;
 
-  --vp-font-family-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
+  --vp-font-family-base: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --vp-font-family-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 .dark {
-  --vp-c-brand-1: #E8A13A;
-  --vp-c-brand-2: #F2B65E;
-  --vp-c-brand-3: #E8A13A;
-  --vp-c-brand-soft: rgba(232, 161, 58, 0.13);
+  --vp-c-brand-1: #FF4A5E;
+  --vp-c-brand-2: #FF7383;
+  --vp-c-brand-3: #FF4A5E;
+  --vp-c-brand-soft: rgba(255, 74, 94, 0.14);
 
-  --vp-c-bg: #0C131B;
-  --vp-c-bg-alt: #121C26;
-  --vp-c-bg-soft: #16212C;
-  --vp-c-divider: #223040;
-  --vp-c-text-1: #E5ECF3;
-  --vp-c-text-2: #8496A6;
+  --vp-c-bg: #0F1416;
+  --vp-c-bg-alt: #161D20;
+  --vp-c-bg-soft: #1B2326;
+  --vp-c-divider: #2C373B;
+  --vp-c-text-1: #E7ECE9;
+  --vp-c-text-2: #8C978F;
 }
 
-/* Headings in the terminal's voice, matching the landing page. */
+/* Headings in the landing page's voice. */
 .vp-doc h1,
 .vp-doc h2,
 .vp-doc h3,
 .vp-doc h4 {
-  font-family: var(--vp-font-family-mono);
-  letter-spacing: -0.025em;
+  font-family: "Big Shoulders Display", "Arial Narrow", Impact, sans-serif;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 
 .vp-doc h1 {
-  font-size: 2rem;
-  line-height: 1.15;
+  font-size: 3rem;
+  line-height: 0.95;
 }
 
 .vp-doc h2 {
+  font-size: 2.25rem;
+  line-height: 1;
   border-top: 1px solid var(--vp-c-divider);
   padding-top: 1.75rem;
   margin-top: 3rem;
+}
+
+.vp-doc h3 {
+  font-size: 1.5rem;
+}
+
+.VPNavBarTitle .title {
+  font-family: "Big Shoulders Display", "Arial Narrow", Impact, sans-serif;
+  font-weight: 900;
+  text-transform: uppercase;
+  font-size: 1.25rem;
 }
 
 /* Generated-file banners are for maintainers reading the repository, not readers of the site. */

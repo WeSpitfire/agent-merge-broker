@@ -13,7 +13,10 @@ A worker needs only five capabilities:
 Finite operational CLI commands support `--json`: success writes one JSON value to stdout and exits
 zero, while usage and action errors write
 `{ "error": { "code": "...", "message": "...", "details": {} } }` to stderr and exit nonzero.
-The `details` field is omitted when no diagnostic details exist. Continuous `serve --json` is
+The `details` field is omitted when no diagnostic details exist. Since `0.14.0`,
+`candidate verify-attestation` also returns a JSON result on stdout with exit code 1 when the
+signature verifies but the recorded validation was rejected or failed; check both `verified` and
+`validationPassed`. Continuous `serve --json` is
 intentionally a newline-delimited stream of event objects until the process stops;
 `serve --once --json` returns one summary document containing recovery, events, and operation
 results. `candidate adopt` has one deliberate terminal-result exception: when it returns a durable
@@ -32,7 +35,7 @@ not by tool input, so a worker cannot request promotion.
 
 ## Retain and validate a trusted local candidate
 
-Gate intake is an operator/API capability in `0.13.0`. It is not registered by either bundled MCP
+Gate intake is an operator/API capability introduced in `0.13.0`. It is not registered by either bundled MCP
 profile. Gate requires Git 2.46 or newer. The
 source must be a trusted Git revision whose complete, repository-owned object graph is already
 addressable in the broker repository:
@@ -102,6 +105,7 @@ The returned record conforms to
 | `validated` | Every matching focused validator and every authoritative validator passed without changing `HEAD` or the worktree |
 | `rejected` | Repository validation failed, or a validator changed the candidate worktree |
 | `failed` | Policy loading, Git inspection, cleanup, restored retention loss, or another managed infrastructure operation failed while the final immutable identity remained provable |
+| `abandoned` (since `0.14.0`) | An operator durably stopped a pending submission; original identities/evidence remain, and cleanup may still require recovery |
 
 `recover` retries `received` and `validating` records under both the fixed authority lock and the
 integration lock. Each submission binds the authority digest present when it was received. If an
@@ -109,7 +113,7 @@ operator replaces authority while a submission is pending, recovery retains the 
 reports a warning rather than replaying it under the new trust root. Terminal records remain
 inspectable through `candidate show`, `candidate list`, `state().submissions`, and the private
 `submissions/` runtime-manifest directory. A submission is deliberately not a task, receipt, batch,
-approval candidate, provenance predicate, publication, or merge authorization; no batch command
+approval candidate, Coordinate provenance predicate, publication, or merge authorization; no batch command
 accepts its ID. A process stop or cleanup interruption may leave `validating` durable rather than
 guessing a terminal result.
 
@@ -135,6 +139,97 @@ private manifest. If manifest writing then fails, the command reports
 `SUBMISSION_MANIFEST_WRITE_FAILED`, and
 `recover` regenerates terminal sidecars from authoritative state before consulting Gate authority,
 so a missing or corrupt authority registration does not hide an already-terminal result.
+
+### Gate inspection, abandonment, and archival — 0.14.0
+
+`doctor --gate` returns local prerequisite and protected-policy readiness without fetching a remote
+or executing validators. `candidate show <id> --logs` exposes bounded captured validator output;
+the ordinary human summary omits those logs. `candidate list --all` includes archived records, and
+`candidate show` resolves a record from active state or its archive. Metrics include active and
+archived submission outcomes and validation counts.
+
+`candidate abandon <id> --reason <text>` accepts pending `received`/`validating` submissions. The
+reason is required and bounded to 4,096 characters. The operation first records `abandonedAt`,
+`abandonReason`, terminal `status: "abandoned"`, and finish/update timestamps, then attempts cleanup
+under the saved worktree identity. A cleanup interruption cannot restore validation eligibility.
+`recover` retries abandoned cleanup and reports `submissionsAbandonedCleaned`; it never reruns the
+abandoned candidate's validators. Existing validator evidence and the retained Git ref remain.
+
+`candidate archive [ids...] [--older-than <days>] [--apply] [--release-artifacts]` is a dry run unless
+`--apply` is present. The default age is 30 days without IDs and zero with explicit IDs. Pending
+records or terminal records with unfinished worktree cleanup cannot be archived. The preview
+returns `submissions`, `retainedPending`, `cutoff`, `dryRun`, `releaseArtifacts`, and `archivePaths`.
+Application durably records `archiveIntent: { requestedAt, releaseArtifact }`, writes the complete
+historical record with `archivedAt`, and retires it from active state. `recover` completes recorded
+intents and reports `submissionsArchived`.
+
+By default archival preserves `artifact.retainedRef`. Explicit release deletes only the exact
+broker-owned direct ref at its recorded artifact SHA and records `artifactReleasedAt`; it refuses
+changed or symbolic refs. It does not delete objects or invoke Git garbage collection. Archive
+records remain inspectable under their generated IDs. Releasing a ref is irreversible as a retention
+promise: other refs may still retain the objects, but later Git maintenance can remove unreachable
+objects. Choose the release option before applying archival: the command does not reopen archived
+records for a later ref release. Export needed attestations before archival; signing accepts active
+retained records only.
+
+### Detached Gate validation attestation — 0.14.0
+
+```bash
+merge-broker candidate attest <submission-id> --output candidate.dsse.json
+merge-broker --json candidate verify-attestation candidate.dsse.json \
+  --public-key trusted-public.pem \
+  --candidate <commit-sha> --tree <tree-sha> --base <base-sha> \
+  --policy-digest <sha256> --authority-digest <sha256> \
+  --config-blob <blob-sha> --evaluator <evaluator-version>
+```
+
+`--output` creates a new file exclusively; without it, `attest` prints the JSON envelope. The
+broker loads an eligible saved terminal `validated`, `rejected`, or `failed` record under authority
+and integration locks, reproves the exact artifact/base/policy, and uses an existing local Ed25519
+key matching the protected policy's public key. Abandoned, archived, released, cleanup-pending, and
+archive-pending records cannot be signed. A successful result with compromised retention cannot
+be signed as success. There is no arbitrary-payload or caller-selected-key CLI signing operation.
+
+The envelope follows [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/protocol.md), with
+`payloadType: "application/vnd.in-toto+json"` and Ed25519 signatures over DSSE v1 pre-authentication
+encoding of that media type and the exact payload bytes. Base64 and base64url are accepted;
+`keyid` is an unauthenticated hint, never a trust root. The payload is an
+[in-toto Statement/v1](https://github.com/in-toto/attestation/blob/main/spec/v1/statement.md) with
+exact `git-commit` and `git-tree` subjects using SHA-1 or SHA-256 Git object IDs and predicate type
+`urn:agent-merge-broker:gate-validation:v1`.
+
+The predicate binds the submission ID, authority digest, protected base, full recorded policy
+identity (including config blob, policy digest, and evaluator), terminal outcome, timestamps, and
+validator names/scopes/exit codes/durations. It omits commands, stdout, stderr, and raw error text.
+`purpose` is `validation-evidence`, and `mergeAuthorized` is always false. The payload is bounded
+to 1 MiB and 10,000 validator summaries. Signed success requires at least one authoritative validator
+summary and no failed result; empty or focused-only placeholder success is rejected. Consumers must
+still independently decide whether their expected policy is sufficient.
+
+Verification is offline and requires the trusted public PEM plus expected commit, tree, base,
+policy digest, and authority digest. `--config-blob` and `--evaluator` are additional optional
+expectations. The verifier authenticates the exact payload bytes, validates the supported
+statement/predicate and internal consistency, then compares every supplied identity. A passing
+result reports `verified: true`, `validationPassed: true`, and exit code 0; signed rejected/failed
+results report `verified: true`, `validationPassed: false`, and exit code 1. Invalid signatures,
+unsupported envelopes, and identity mismatches fail with normal error envelopes. Signatures do not
+prove producer identity, validator isolation, current branch protection, or merge authorization.
+
+### Schema identities — 0.14.0
+
+[`identities.json`](../schemas/identities.json) maps each current root schema alias and its legacy
+`$id` to a packaged snapshot under `schemas/immutable/`. A snapshot's `$id` is
+`urn:agent-merge-broker:schema:<name>:sha256:<fingerprint>`. The fingerprint covers canonical JSON
+with sorted object keys and only the root `$id` removed to avoid a self-referential hash; all other
+keywords, including descriptions, remain covered. Local fragment references resolve within the
+same snapshot. Consumers can load the snapshot offline and verify its fingerprint.
+
+Existing root schemas retain their historical aliases for compatibility; a `main` URL is still a
+mutable locator. The new URNs are content identities, not claimed live network URLs. Pin a released
+package or immutable Git commit when retrieving a snapshot. Changes create new fingerprint files;
+existing snapshots must not be rewritten. Maintainers run `npm run build` followed by
+`node scripts/update-schema-snapshots.mjs --write`; `--check` verifies generated schemas, mappings,
+and both current and historical snapshots without writing.
 
 ## Claim
 
@@ -452,7 +547,7 @@ not message text. These are the currently emitted categories and the normal resp
   precondition before adopting again. `GATE_AUTHORITY_EXISTS` requires deliberate `--replace`; never
   automate replacement. For a durable `received` or `validating` record, run `recover`; do not edit
   its identity or move its broker-owned ref. An authority-change warning requires restoring the
-  original registration; `0.13.0` does not migrate a pending submission between authorities.
+  original registration; the broker does not migrate a pending submission between authorities.
 - Locks and state — `LOCK_HELD`, `LOCK_TIMEOUT`, `STATE_CORRUPT`, and `STATE_VERSION`. A timeout may
   be retried after the holder finishes. Corrupt or unsupported state requires operator recovery; an
   adapter must not initialize over it. `unlock` and `doctor` include the fixed-root `gate-authority`
@@ -512,8 +607,18 @@ const result = await broker.integrate({ dryRun: true });
 const authority = await broker.registerCandidateAuthority();
 const submission = await broker.adoptCandidate({ ref: "refs/heads/external-candidate" });
 const sameSubmission = await broker.submission(submission.id);
+
+// Gate operations added in 0.14.0:
+const readiness = await broker.candidateReadiness();
+const envelope = await broker.attestSubmission(submission.id);
+const preview = await broker.archiveSubmissions({ ids: [submission.id] });
+const history = await broker.submissions({ includeArchived: true });
 ```
 
 Programmatic callers share the same filesystem locks and state machine as CLI callers. The
 additive `state().submissions` collection is normalized to an empty object when reading a state file
-written before trusted local-ref intake.
+written before trusted local-ref intake. Since `0.14.0`, saved-state reads validate known fields,
+collections, lifecycle values, and numeric/timestamp types and report `STATE_CORRUPT` with a field
+path instead of continuing with malformed state. Unknown additive fields are preserved; an
+unsupported format version reports `STATE_VERSION`. This structural check does not replace the
+Git, policy, and target identity proofs required by each operation.

@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import path from "node:path";
-import { appendFile, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { MergeBroker } from "./broker.js";
 import { configPath, loadConfig } from "./config.js";
 import { BrokerError } from "./errors.js";
 import { runCommand } from "./process.js";
 import { githubCliPublisher } from "./publisher.js";
+import { fakeProcess } from "./test-support/fake-process.js";
 
 const PULL_REQUEST = "https://github.example.invalid/owner/repo/pull/42";
 
@@ -45,44 +46,28 @@ async function repository(context: TestContext): Promise<{
   await writeFile(headFile, `${baseSha}\n`, "utf8");
   await writeFile(checkFile, "SUCCESS\n", "utf8");
   await writeFile(logFile, "", "utf8");
-  const script = path.join(bin, "gh");
-  await writeFile(
-    script,
-    [
-      "#!/bin/sh",
-      "printf '%s\\n' \"$*\" >> \"$MERGE_BROKER_GH_LOG\"",
-      "case \"$*\" in",
-      "  *\"pr list\"*) echo '[]' ;;",
-      `  *"pr create"*) cat >/dev/null; echo "${PULL_REQUEST}" ;;`,
-      "  *\"pr edit\"*) cat >/dev/null; echo updated ;;",
-      "  *\"pr view\"*)",
-      "    head=$(tr -d '\\n' < \"$MERGE_BROKER_GH_HEAD\")",
-      "    base=$(tr -d '\\n' < \"$MERGE_BROKER_GH_BASE\")",
-      "    check=$(tr -d '\\n' < \"$MERGE_BROKER_GH_CHECK\")",
-      "    printf '{\"state\":\"OPEN\",\"headRefOid\":\"%s\",\"baseRefOid\":\"%s\",\"baseRefName\":\"main\",\"mergeStateStatus\":\"CLEAN\",\"mergeable\":\"MERGEABLE\",\"reviewDecision\":\"\",\"statusCheckRollup\":[{\"name\":\"CI\",\"status\":\"COMPLETED\",\"conclusion\":\"%s\",\"detailsUrl\":\"https://ci.example.invalid/run/1\"}]}\\n' \"$head\" \"$base\" \"$check\" ;;",
-      "  *\"--disable-auto\"*) echo disabled ;;",
-      "  *\"--auto\"*) echo queued ;;",
-      "  *\"pr merge\"*) echo merged ;;",
-      "  *) exit 1 ;;",
-      "esac",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  await chmod(script, 0o755);
-  const previousPath = process.env.PATH;
-  process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
-  process.env.MERGE_BROKER_GH_LOG = logFile;
-  process.env.MERGE_BROKER_GH_HEAD = headFile;
-  process.env.MERGE_BROKER_GH_BASE = baseFile;
-  process.env.MERGE_BROKER_GH_CHECK = checkFile;
+  await fakeProcess(context, "gh", `
+    appendFileSync(${JSON.stringify(logFile)}, command + "\\n");
+    if (command.startsWith("pr list")) console.log("[]");
+    else if (command.startsWith("pr create")) console.log(${JSON.stringify(PULL_REQUEST)});
+    else if (command.startsWith("pr edit")) console.log("updated");
+    else if (command.startsWith("pr view")) {
+      console.log(JSON.stringify({
+        state: "OPEN",
+        headRefOid: readFileSync(${JSON.stringify(headFile)}, "utf8").trim(),
+        baseRefOid: readFileSync(${JSON.stringify(baseFile)}, "utf8").trim(),
+        baseRefName: "main",
+        mergeStateStatus: "CLEAN",
+        mergeable: "MERGEABLE",
+        reviewDecision: "",
+        statusCheckRollup: [{ name: "CI", status: "COMPLETED", conclusion: readFileSync(${JSON.stringify(checkFile)}, "utf8").trim(), detailsUrl: "https://ci.example.invalid/run/1" }],
+      }));
+    } else if (args.includes("--disable-auto")) console.log("disabled");
+    else if (args.includes("--auto")) console.log("queued");
+    else if (command.startsWith("pr merge")) console.log("merged");
+    else process.exitCode = 1;
+  `);
   context.after(async () => {
-    if (previousPath === undefined) delete process.env.PATH;
-    else process.env.PATH = previousPath;
-    delete process.env.MERGE_BROKER_GH_LOG;
-    delete process.env.MERGE_BROKER_GH_HEAD;
-    delete process.env.MERGE_BROKER_GH_BASE;
-    delete process.env.MERGE_BROKER_GH_CHECK;
     await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     await rm(bin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -126,7 +111,6 @@ async function fixCommit(repo: string): Promise<string> {
 
 test(
   "gates auto-merge on exact evidence and approval, then revises on the same pull request",
-  { skip: process.platform === "win32" ? "POSIX fake GitHub fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const broker = await MergeBroker.open(fixture.repo);
@@ -277,7 +261,6 @@ test(
 
 test(
   "blocks evidence and approval when the pull request head changes outside the broker",
-  { skip: process.platform === "win32" ? "POSIX fake GitHub fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const broker = await MergeBroker.open(fixture.repo);
@@ -307,7 +290,6 @@ test(
 
 test(
   "revises a published candidate against its durable target after configuration drift",
-  { skip: process.platform === "win32" ? "POSIX fake GitHub fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     let broker = await MergeBroker.open(fixture.repo);
@@ -377,7 +359,6 @@ test(
 
 test(
   "rechecks required GitHub checks in the approval snapshot",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -449,7 +430,6 @@ test(
 
 test(
   "does not retroactively authorize a pull request that merged before approval confirmation",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -521,7 +501,6 @@ test(
 
 test(
   "recovers a candidate revision when the branch moved before state finalization",
-  { skip: process.platform === "win32" ? "POSIX fake GitHub fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const broker = await MergeBroker.open(fixture.repo);
@@ -573,7 +552,6 @@ test(
 
 test(
   "serializes approval and revocation so a revoked candidate cannot be re-queued",
-  { skip: process.platform === "win32" ? "POSIX fake GitHub fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -639,7 +617,6 @@ test(
 
 test(
   "finishes durable revocation before a publication retry can re-enable auto-merge",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -744,7 +721,6 @@ test(
 
 test(
   "keeps revocation durable when a changed pull-request head wins the disable race",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -835,7 +811,6 @@ test(
 
 test(
   "keeps automatic approval revocation durable after losing the remote disable response",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -949,7 +924,6 @@ test(
 
 test(
   "keeps a confirmed queued approval immutable when the identical approval is retried",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -1023,7 +997,6 @@ test(
 
 test(
   "records an approved merged candidate without trying to disable auto-merge after the base advances",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -1100,7 +1073,6 @@ test(
 
 test(
   "rejects a same-length forged merge history that only copies the candidate's final tree",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -1180,7 +1152,6 @@ test(
 
 test(
   "revokes queued auto-merge when the protected approval policy changes",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -1268,7 +1239,6 @@ test(
 
 test(
   "revokes a queued approval when its actor is removed without a policy revision bump",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -1360,7 +1330,6 @@ test(
 
 test(
   "disables a forge-observed legacy auto-merge queue after local markers are lost",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -1445,7 +1414,6 @@ test(
 
 test(
   "revokes a force-pushed legacy queue before reporting its missing candidate identity",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);
@@ -1535,7 +1503,6 @@ test(
 
 test(
   "does not let a config downgrade auto-merge a candidate assembled under required approval",
-  { skip: process.platform === "win32" ? "POSIX Git fixture" : false },
   async (context) => {
     const fixture = await repository(context);
     const config = await loadConfig(fixture.repo);

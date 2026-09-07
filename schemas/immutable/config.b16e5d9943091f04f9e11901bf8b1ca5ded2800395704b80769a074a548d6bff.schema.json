@@ -1,0 +1,565 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-merge-broker:schema:config:sha256:b16e5d9943091f04f9e11901bf8b1ca5ded2800395704b80769a074a548d6bff",
+  "title": "Agent Merge Broker configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "baseBranch",
+    "baseRef",
+    "remote",
+    "stateDirectory",
+    "leases",
+    "policies",
+    "scheduling",
+    "integration",
+    "validation",
+    "publish"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "baseBranch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "baseRef": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Git revision used for integration, such as origin/main; separate from the forge target branch."
+    },
+    "remote": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stateDirectory": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "Conservative portable relative directory beneath Git's common directory; Git-reserved top-level names, aliases, device names, non-ASCII components, and Windows-unsafe spellings are rejected."
+    },
+    "leases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ttlSeconds",
+        "lockTimeoutSeconds",
+        "serializedPatterns"
+      ],
+      "properties": {
+        "ttlSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lockTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "serializedPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unexpectedPaths",
+        "requireCleanWorktree",
+        "requireDependencies"
+      ],
+      "properties": {
+        "unexpectedPaths": {
+          "enum": [
+            "error",
+            "warn",
+            "allow"
+          ]
+        },
+        "requireCleanWorktree": {
+          "type": "boolean"
+        },
+        "requireDependencies": {
+          "type": "boolean"
+        }
+      }
+    },
+    "scheduling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxTasks",
+        "maxCommits",
+        "maxWaitSeconds",
+        "allowPathOverlap"
+      ],
+      "properties": {
+        "maxTasks": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxCommits": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxWaitSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "allowPathOverlap": {
+          "type": "boolean"
+        }
+      }
+    },
+    "integration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "branchPrefix",
+        "history",
+        "keepFailedWorktrees"
+      ],
+      "properties": {
+        "branchPrefix": {
+          "type": "string",
+          "minLength": 1
+        },
+        "history": {
+          "enum": [
+            "preserve",
+            "squash"
+          ]
+        },
+        "keepFailedWorktrees": {
+          "type": "boolean"
+        },
+        "refreshBase": {
+          "type": "boolean",
+          "description": "Fetch the remote base branch before cutting a batch so the branch is not born behind it.",
+          "default": true
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many times a task may be automatically returned to the queue before it is left failed.",
+          "default": 3
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "directory"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "directory": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requireSignature": {
+              "type": "boolean",
+              "default": false,
+              "description": "Require manifests signed by the Ed25519 public key committed on the protected base."
+            },
+            "publicKey": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Trusted Ed25519 public key in PEM form. The private key stays in Git runtime state."
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "requireSignature": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "requireSignature"
+                ]
+              },
+              "then": {
+                "type": "object",
+                "required": [
+                  "publicKey"
+                ],
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  },
+                  "publicKey": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "focused",
+        "authoritative"
+      ],
+      "properties": {
+        "authority": {
+          "enum": [
+            "broker",
+            "required-ci"
+          ],
+          "default": "broker",
+          "description": "Where the complete integration decision is made. required-ci publishes after focused preflight and relies on protected pull-request checks."
+        },
+        "shell": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Interpreter used to run validator commands. Defaults to /bin/sh on macOS/Linux and non-profile PowerShell on Windows. Never a login shell: validation must not depend on personal dotfiles."
+        },
+        "focused": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/validator"
+          }
+        },
+        "authoritative": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/validator"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "authority": {
+                "const": "required-ci"
+              }
+            },
+            "required": [
+              "authority"
+            ]
+          },
+          "then": {
+            "properties": {
+              "authoritative": {
+                "type": "array",
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "policyRevision",
+        "requiredVerifications",
+        "requiredChecks",
+        "authorizedActors"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require SHA/base/policy-bound verification and explicit approval before the broker may merge."
+        },
+        "policyRevision": {
+          "type": "string",
+          "minLength": 1,
+          "default": "default",
+          "description": "Operator-controlled policy identifier bound into every candidate, evidence record, and approval."
+        },
+        "requiredVerifications": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Manual evidence names, such as browser, responsive, or security."
+        },
+        "requiredChecks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Exact GitHub check names that must pass on the candidate SHA."
+        },
+        "authorizedActors": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Actors allowed to approve. Empty permits any explicitly named actor."
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "draft",
+        "labels",
+        "titleTemplate"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "none",
+            "branch",
+            "pull-request"
+          ]
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9.-]+/)?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "allOf": [
+            {
+              "not": {
+                "pattern": "(?:^|/)\\.\\.?(?:/|$)"
+              }
+            },
+            {
+              "not": {
+                "pattern": "\\.git$"
+              }
+            }
+          ],
+          "description": "Optional [HOST/]OWNER/REPO identity for local mirrors or proxy remotes. Hosted Git remotes are derived automatically."
+        },
+        "draft": {
+          "type": "boolean"
+        },
+        "autoMerge": {
+          "type": "boolean",
+          "description": "Ask GitHub to merge the pull request once required checks pass. May be declared while publication is disabled, but even dormant auto-merge intent requires draft false; branch mode is unsupported.",
+          "default": false
+        },
+        "mergeMethod": {
+          "enum": [
+            "squash",
+            "merge",
+            "rebase"
+          ],
+          "default": "squash"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "titleTemplate": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "autoMerge": {
+                "const": true
+              }
+            },
+            "required": [
+              "autoMerge"
+            ]
+          },
+          "then": {
+            "properties": {
+              "draft": {
+                "const": false
+              },
+              "mode": {
+                "enum": [
+                  "none",
+                  "pull-request"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "approval": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "const": true
+              }
+            },
+            "required": [
+              "required"
+            ]
+          }
+        },
+        "required": [
+          "approval"
+        ]
+      },
+      "then": {
+        "properties": {
+          "publish": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "pull-request"
+              },
+              "draft": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "validation": {
+            "type": "object",
+            "properties": {
+              "authority": {
+                "const": "required-ci"
+              }
+            },
+            "required": [
+              "authority"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "publish": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "pull-request"
+              }
+            }
+          },
+          "integration": {
+            "type": "object",
+            "required": [
+              "provenance"
+            ],
+            "properties": {
+              "provenance": {
+                "type": "object",
+                "required": [
+                  "enabled",
+                  "requireSignature",
+                  "publicKey"
+                ],
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  },
+                  "requireSignature": {
+                    "const": true
+                  },
+                  "publicKey": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "validator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "command"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workingDirectory": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$",
+          "description": "Repository-relative directory in which the validator runs."
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "filesInput": {
+          "enum": [
+            "inline",
+            "json"
+          ],
+          "description": "Deliver changed paths through the compatibility inline surface or the bounded JSON-file surface."
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Additional validator environment. Trusted local-ref Gate rejects Git repository, index, object, history, and GIT_CONFIG injection overrides here and scrubs inherited values."
+        },
+        "executionArchitecture": {
+          "enum": [
+            "process",
+            "native"
+          ],
+          "description": "Run the validator under the Node process architecture or the host's native architecture."
+        }
+      }
+    }
+  }
+}

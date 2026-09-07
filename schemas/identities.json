@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "fingerprintAlgorithm": "sha256-canonical-json-without-root-id",
+  "description": "Local packaged snapshots have immutable content identities. Alias URLs may change; URNs identify content and are not network locations.",
+  "schemas": [
+    {
+      "name": "candidate",
+      "alias": "schemas/candidate.schema.json",
+      "aliasId": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/candidate.schema.json",
+      "id": "urn:agent-merge-broker:schema:candidate:sha256:36fa2d519ef286301b4294bf9b32e325b84d556c48f762361cab057a5926c22e",
+      "fingerprint": "36fa2d519ef286301b4294bf9b32e325b84d556c48f762361cab057a5926c22e",
+      "path": "schemas/immutable/candidate.36fa2d519ef286301b4294bf9b32e325b84d556c48f762361cab057a5926c22e.schema.json"
+    },
+    {
+      "name": "config",
+      "alias": "schemas/config.schema.json",
+      "aliasId": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/config.schema.json",
+      "id": "urn:agent-merge-broker:schema:config:sha256:b16e5d9943091f04f9e11901bf8b1ca5ded2800395704b80769a074a548d6bff",
+      "fingerprint": "b16e5d9943091f04f9e11901bf8b1ca5ded2800395704b80769a074a548d6bff",
+      "path": "schemas/immutable/config.b16e5d9943091f04f9e11901bf8b1ca5ded2800395704b80769a074a548d6bff.schema.json"
+    },
+    {
+      "name": "gate-authority",
+      "alias": "schemas/gate-authority.schema.json",
+      "aliasId": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/gate-authority.schema.json",
+      "id": "urn:agent-merge-broker:schema:gate-authority:sha256:ee9db06506f1628e58bfacd86fac4a292cda55e0f83236c82fa9eb285fc2817a",
+      "fingerprint": "ee9db06506f1628e58bfacd86fac4a292cda55e0f83236c82fa9eb285fc2817a",
+      "path": "schemas/immutable/gate-authority.ee9db06506f1628e58bfacd86fac4a292cda55e0f83236c82fa9eb285fc2817a.schema.json"
+    },
+    {
+      "name": "provenance",
+      "alias": "schemas/provenance.schema.json",
+      "aliasId": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/provenance.schema.json",
+      "id": "urn:agent-merge-broker:schema:provenance:sha256:0c70eee61e81b91705ced11df623caa1c3d621f710fffa645e709fd1e662db41",
+      "fingerprint": "0c70eee61e81b91705ced11df623caa1c3d621f710fffa645e709fd1e662db41",
+      "path": "schemas/immutable/provenance.0c70eee61e81b91705ced11df623caa1c3d621f710fffa645e709fd1e662db41.schema.json"
+    },
+    {
+      "name": "receipt",
+      "alias": "schemas/receipt.schema.json",
+      "aliasId": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/receipt.schema.json",
+      "id": "urn:agent-merge-broker:schema:receipt:sha256:c8b78ab9d86e9228d58c4b8bdb1547ff2142809bafe9bf05551638e7cbe644af",
+      "fingerprint": "c8b78ab9d86e9228d58c4b8bdb1547ff2142809bafe9bf05551638e7cbe644af",
+      "path": "schemas/immutable/receipt.c8b78ab9d86e9228d58c4b8bdb1547ff2142809bafe9bf05551638e7cbe644af.schema.json"
+    },
+    {
+      "name": "submission-attestation-envelope",
+      "alias": "schemas/submission-attestation-envelope.schema.json",
+      "aliasId": "urn:agent-merge-broker:schema:submission-attestation-envelope:v1",
+      "id": "urn:agent-merge-broker:schema:submission-attestation-envelope:sha256:fa16a61bdbf08fa447d42a9f1a71f45563a8a2e792055f0906603c9d29d96ca0",
+      "fingerprint": "fa16a61bdbf08fa447d42a9f1a71f45563a8a2e792055f0906603c9d29d96ca0",
+      "path": "schemas/immutable/submission-attestation-envelope.fa16a61bdbf08fa447d42a9f1a71f45563a8a2e792055f0906603c9d29d96ca0.schema.json"
+    },
+    {
+      "name": "submission-attestation-statement",
+      "alias": "schemas/submission-attestation-statement.schema.json",
+      "aliasId": "urn:agent-merge-broker:schema:submission-attestation-statement:v1",
+      "id": "urn:agent-merge-broker:schema:submission-attestation-statement:sha256:e4d76e08ed099c18d184b2a489570f58624f7af0df0c685f3a5c200d763d92cb",
+      "fingerprint": "e4d76e08ed099c18d184b2a489570f58624f7af0df0c685f3a5c200d763d92cb",
+      "path": "schemas/immutable/submission-attestation-statement.e4d76e08ed099c18d184b2a489570f58624f7af0df0c685f3a5c200d763d92cb.schema.json"
+    },
+    {
+      "name": "submission",
+      "alias": "schemas/submission.schema.json",
+      "aliasId": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/submission.schema.json",
+      "id": "urn:agent-merge-broker:schema:submission:sha256:8fddd4d1951a2303d7be3fa74a545ab9c35edbf06dcc2280e88f4038342e550b",
+      "fingerprint": "8fddd4d1951a2303d7be3fa74a545ab9c35edbf06dcc2280e88f4038342e550b",
+      "path": "schemas/immutable/submission.8fddd4d1951a2303d7be3fa74a545ab9c35edbf06dcc2280e88f4038342e550b.schema.json"
+    }
+  ]
+}

@@ -212,6 +212,49 @@ export class LocalRefSubmissionManager {
     return structuredClone(requireSubmission(state.submissions, id));
   }
 
+  /** Caller holds the authority/integration locks; no validator or source ref is executed again. */
+  async attestationInputs(submission: SubmissionRecord): Promise<{ publicKey: string; privateKey: string }> {
+    if (!["validated", "rejected", "failed"].includes(submission.status) || submission.archiveIntent ||
+      submission.worktree || submission.worktreeIdentity || submission.artifactReleasedAt) {
+      throw new BrokerError("SUBMISSION_NOT_ATTESTABLE", "Attestation requires a retained terminal submission with completed cleanup.");
+    }
+    await this.repo.assertGateGitSupported();
+    this.assertAuthorityIdentity(submission);
+    const policy = await this.loadPolicy(submission.base.sha);
+    assertGateAuthorityMatchesProtectedConfig(this.authority, policy.config);
+    this.assertPolicyIdentity(submission.policy, policy.identity);
+    await this.assertRecordedIdentity(submission);
+    await this.repo.assertPinnedLocalRef(submission.id, submission.artifact.sha);
+    const publicKey = policy.config.integration.provenance?.publicKey;
+    if (!publicKey) {
+      throw new BrokerError("PROVENANCE_KEY_MISSING", "The recorded protected-base policy must contain a trusted Ed25519 public key before attestation.");
+    }
+    const privateKey = await this.store.readProvenanceSigningKey(publicKey);
+    if (!privateKey) throw new BrokerError("PROVENANCE_KEY_MISSING", "The private key for the recorded protected-base policy is unavailable.");
+    return { publicKey, privateKey };
+  }
+
+  /** Inspect local prerequisites without fetching a remote, pinning a ref, or executing code. */
+  async readiness(): Promise<Record<string, unknown>> {
+    await this.repo.assertGateGitSupported();
+    await this.repo.assertGateObjectStoreSupported();
+    const baseSha = await this.repo.resolveLocalCommit(this.authority.target.baseRef);
+    const policy = await this.loadPolicy(baseSha);
+    assertGateAuthorityMatchesProtectedConfig(this.authority, policy.config);
+    if (policy.config.validation.authority !== "broker" || policy.config.validation.authoritative.length === 0) {
+      throw new BrokerError("SUBMISSION_VALIDATION_UNAVAILABLE", "Gate requires at least one authoritative broker validator in protected-base policy.");
+    }
+    return {
+      ready: true,
+      authorityDigest: this.authority.digest,
+      baseSha,
+      policyDigest: policy.identity.digest,
+      validators: policy.config.validation.authoritative.map((validator) => validator.name),
+      baseObservation: "local-only",
+      refreshBeforeAdoption: this.authority.target.refreshBase,
+    };
+  }
+
   async recoverPending(): Promise<SubmissionRecovery> {
     return await this.store.withIntegrationLock(async () => {
       const pending = Object.values((await this.store.read()).submissions)

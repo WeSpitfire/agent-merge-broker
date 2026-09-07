@@ -5,11 +5,14 @@ path. Start locally, prove the Coordinate workflow with a small task, then enabl
 publication. A separate section covers validation-only intake for a trusted Git ref assembled
 outside that workflow.
 
+This guide describes version `0.14.0`, including Gate operations and detached attestations. The
+documentation tracks source; check npm's version history to confirm published availability.
+
 ## Before you begin
 
 You need:
 
-- Node.js 20.12 or newer;
+- Node.js 22 or newer;
 - Git 2.31 or newer with worktree support;
 - a clean Git repository with a known base branch; and
 - GitHub CLI (`gh`) only if the broker will create pull requests.
@@ -38,6 +41,11 @@ npm run example
 
 You should see two non-overlapping workers accepted, an overlapping claim refused, and four commits
 assembled into one validated branch.
+
+For the trusted local-ref route, run `npm run example:gate` after building. This example
+creates a local bare remote and two candidate branches, shows a successful and rejected result,
+verifies detached signed evidence outside the repository, and previews archival. Both examples
+remove their temporary repositories unless `KEEP=1` is set.
 
 ## 2. Install and initialize
 
@@ -249,7 +257,7 @@ an ancestor.
 
 ## 7. Validate a trusted local Git candidate
 
-Version `0.13.0` includes validation-only Gate intake. Use it when another trusted process has
+Gate intake, introduced in `0.13.0`, is validation-only. Use it when another trusted process has
 already assembled the candidate in this
 repository and you want broker policy to validate its exact bytes without pretending that it used
 task leases.
@@ -318,8 +326,86 @@ with status `validated`, `rejected`, or `failed`. Validator rejection and candid
 the durable diagnostic record and make the CLI exit nonzero. If the final object/ref identity cannot
 be reproduced, the record instead stays `validating` and recovery warns until the exact identity is
 restored. A validated record is evidence only: it is not a task, batch, approval candidate,
-provenance statement, published branch, pull request, or authorization to merge. Use Coordinate
-mode for that end-to-end lifecycle today.
+published branch, pull request, or authorization to merge. Version `0.14.0` can separately
+export its validation evidence as a detached signed statement. Use Coordinate mode for the complete
+approval and publication lifecycle today.
+
+### Inspect and retire Gate records — 0.14.0
+
+`doctor --gate` checks local Gate prerequisites and the registered protected policy without fetching
+or running validators. A failed readiness check exits nonzero. Inspect a result and its bounded,
+locally captured validator output with:
+
+```bash
+npx merge-broker doctor --gate
+npx merge-broker candidate show <submission-id> --logs
+```
+
+Logs may contain repository data or accidental secrets; review them before sharing. `metrics`
+includes submission counts, including archived records. To deliberately stop an unrecoverable
+submission, record an operator reason:
+
+```bash
+npx merge-broker candidate abandon <submission-id> --reason 'Superseded by a corrected candidate'
+```
+
+Abandonment becomes durable before disposable-worktree cleanup. It preserves the artifact identity,
+earlier validator results, reason, and retained ref. If cleanup cannot complete, `recover` retries
+cleanup without running those validators again. Abandonment does not claim validation success or
+grant permission to delete an unfamiliar worktree.
+
+Preview retirement before applying it:
+
+```bash
+npx merge-broker candidate archive <submission-id>
+npx merge-broker candidate archive <submission-id> --apply
+npx merge-broker candidate archive --older-than 30
+npx merge-broker candidate list --all
+npx merge-broker candidate show <archived-submission-id>
+```
+
+The default is a dry run. Without IDs, records must be at least 30 days old unless `--older-than`
+changes the threshold; explicit IDs default to no minimum age. Only terminal records without
+pending cleanup are eligible. Applied archival writes a durable historical record and retires it
+from active state while preserving its Git ref. Add `--release-artifacts` to the preview and apply
+commands only when the exact broker-owned refs should also be released. That option deletes those
+refs using their expected commit IDs; it never deletes Git objects or runs garbage collection.
+Other refs may continue to retain the objects, and later Git maintenance controls their lifetime.
+Choose retention before applying: the current archive command does not reopen archived records to
+release their refs later.
+
+### Export and verify Gate evidence — 0.14.0
+
+Sign an eligible active result before archiving it:
+
+```bash
+npx merge-broker candidate attest <submission-id> --output candidate.dsse.json
+```
+
+The output file must not exist. Without `--output`, the envelope is printed as JSON. The broker
+rechecks saved artifact and policy identities and uses the existing local private key matching the
+public key in the protected-base configuration; it does not generate a replacement key or accept a
+caller-supplied statement. The candidate commit remains unchanged. Successful signed evidence
+requires at least one authoritative validator result and no failing result. An older or empty-policy
+`validated` record is not enough: commit a meaningful authoritative policy on the reviewed base and
+adopt a candidate against it again. `doctor --gate` also treats missing authoritative validators as
+not ready; ordinary adoption retains its existing empty-policy compatibility behavior.
+
+An offline consumer independently selects the trusted public PEM and expected identities:
+
+```bash
+merge-broker candidate verify-attestation candidate.dsse.json \
+  --public-key trusted-public.pem \
+  --candidate <commit-sha> --tree <tree-sha> --base <base-sha> \
+  --policy-digest <sha256> --authority-digest <sha256>
+```
+
+Optional `--config-blob <sha>` and `--evaluator <version>` also constrain those policy fields.
+Verification needs no repository, configuration file, forge, or network. It verifies Ed25519 DSSE
+signatures and a versioned in-toto statement, then checks every expected identity. A signed rejection
+or failure returns `verified: true`, `validationPassed: false`, and exit code 1. A passing validation
+returns exit code 0. `mergeAuthorized` is always false; the signature proves the signer's validation
+claim, not a right to publish or merge. Never derive all trust inputs from the untrusted envelope.
 
 ## 8. Keep the broker running
 
@@ -416,14 +502,17 @@ Use the recovery command that owns the interrupted transition:
 | Batch left `running`; tasks left `integrating` | `npx merge-broker recover` | After acquiring the integration lock, replay-safely removes broker-owned artifacts, marks the abandoned batch failed, and requeues tasks without spending an attempt; changed or checked-out refs are retained with a warning |
 | Candidate revision stopped around its branch update | `npx merge-broker recover` | Finalizes an exact new head, rolls back an exact old head, or retains an unexpected third head for inspection |
 | Gate submission left `received` or `validating` | `npx merge-broker recover` | Re-pins the recorded immutable artifact if needed, rechecks its base, tree, history, paths, and protected-base policy identity, then reruns validation to a terminal record or reports a warning |
+| Gate abandonment left a disposable worktree | `npx merge-broker recover` | Retries cleanup under the saved physical identity without rerunning validators or releasing the retained ref |
+| Gate record has an archive intent | `npx merge-broker recover` | Completes the recorded archive and optional exact-ref release, preserving the historical record |
 | Batch is `prepared`, or push/PR creation failed | `npx merge-broker batch publish <id>` or `serve --publish` | Pushes the recorded SHA and rediscovers an existing PR across all PR states before creating one |
 | `autoMergePending` or an auto-merge warning is visible | `npx merge-broker batch sync <id>`, then `batch publish <id>` if an authorized enable still needs retrying; `serve --publish` automates both | Reconciles the possibly live queue before safely completing or retrying the exact-head hand-off |
 | Change request or automatic approval revocation was interrupted | `npx merge-broker batch sync <id>` | Finishes disabling any possibly live queue before finalizing local revocation |
 | Base moved, or refresh was interrupted after disabling/closing the PR | `npx merge-broker batch refresh <id> --publish` or `serve --publish` | Distinguishes the broker's marked close from reviewer rejection, then re-cuts and revalidates on the recorded target |
 | PR was closed by a reviewer | `npx merge-broker batch sync <id>` | Closes the batch and marks its tasks failed; reclaim and correct them, or use `task retry` only after deciding the unchanged receipts are safe |
 
-`recover` is deliberately limited to abandoned local integration, candidate-revision branch
-movement, and retained local-ref validation. It does not guess the result of a forge call.
+`recover` is deliberately limited to interrupted local integration, candidate-revision branch
+movement, retained local-ref validation, and Gate abandonment/archival operations.
+It does not guess the result of a forge call.
 Publication, auto-merge, revocation, and refresh recovery use `batch publish`, `batch sync`, `batch
 refresh`, or the publishing service so the real remote state can be observed.
 

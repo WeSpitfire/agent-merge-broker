@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "payloadType": {
+      "type": "string",
+      "const": "application/vnd.in-toto+json"
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1398104
+    },
+    "signatures": {
+      "minItems": 1,
+      "maxItems": 64,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "keyid": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "sig": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "sig"
+        ]
+      }
+    }
+  },
+  "required": [
+    "payloadType",
+    "payload",
+    "signatures"
+  ],
+  "$id": "urn:agent-merge-broker:schema:submission-attestation-envelope:v1",
+  "title": "Agent Merge Broker Gate validation DSSE envelope v1",
+  "description": "DSSE envelope carrying an in-toto Statement/v1 with the Gate validation v1 predicate and Ed25519 signatures. The keyid is an unauthenticated hint; consumers supply a trusted key independently."
+}

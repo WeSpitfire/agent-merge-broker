@@ -27,7 +27,7 @@
       "maxLength": 128,
       "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:@/-]{0,127}$"
     },
-    "status": { "enum": ["received", "validating", "validated", "rejected", "failed"] },
+    "status": { "enum": ["received", "validating", "validated", "rejected", "failed", "abandoned"] },
     "authorityDigest": { "$ref": "#/$defs/sha256" },
     "source": {
       "type": "object",
@@ -117,6 +117,19 @@
     "updatedAt": { "type": "string", "format": "date-time" },
     "validationStartedAt": { "type": "string", "format": "date-time" },
     "finishedAt": { "type": "string", "format": "date-time" },
+    "abandonedAt": { "type": "string", "format": "date-time" },
+    "abandonReason": { "type": "string", "minLength": 1 },
+    "archiveIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestedAt", "releaseArtifact"],
+      "properties": {
+        "requestedAt": { "type": "string", "format": "date-time" },
+        "releaseArtifact": { "type": "boolean" }
+      }
+    },
+    "archivedAt": { "type": "string", "format": "date-time" },
+    "artifactReleasedAt": { "type": "string", "format": "date-time" },
     "errorCode": { "type": "string", "minLength": 1 },
     "error": { "type": "string", "minLength": 1 }
   },

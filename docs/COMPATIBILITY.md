@@ -7,17 +7,21 @@ integration authority; it is not a hosted agent platform or a distributed merge 
 The documentation site tracks the `main` branch and may be ahead of npm. Compare the package version
 with the topmost entry in the
 [changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md); if that current
-entry is **Unreleased**, it is source-checkout behavior until the next release is published.
+entry is **Unreleased**, it is source-checkout behavior until the next release is published. This
+page describes version `0.14.0`, including Gate operations and detached attestations; npm's version
+history confirms published availability.
 
 ## Platform matrix
 
 | Host | Default validator shell | Per-user background runner | Release-gating CI |
 | --- | --- | --- | --- |
-| Windows | non-profile Windows PowerShell | Task Scheduler | Windows, Node.js 24 |
-| macOS | `/bin/sh` | launchd agent | macOS, Node.js 24 |
-| Linux | `/bin/sh` | systemd user service | Ubuntu, Node.js 20, 22, 24, and 26 |
+| Windows | non-profile Windows PowerShell | Task Scheduler | Windows, Node.js 22, 24, and 26 |
+| macOS | `/bin/sh` | launchd agent | macOS, Node.js 22, 24, and 26 |
+| Linux | `/bin/sh` | systemd user service | Ubuntu, Node.js 22, 24, and 26 |
 
-Every host requires Node.js 20.12 or newer and Git 2.31 or newer. GitHub pull-request publication
+Version `0.14.0` requires Node.js 22 or newer; `0.13.0` supported Node.js 20.12. The table describes
+the reusable nine-lane release matrix introduced in `0.14.0`, not a retroactive change to the checks
+run for `0.13.0`. Every host requires Git 2.31 or newer. GitHub pull-request publication
 also requires an authenticated GitHub CLI (`gh`) for the same user that runs the broker. The
 trusted local-ref Gate intake specifically requires Git 2.46 or newer so
 `GIT_NO_LAZY_FETCH` is honored for object reads.
@@ -82,7 +86,7 @@ The package provides:
   `gh`; and
 - a read-only GitHub Actions provenance verifier.
 
-Version `0.13.0` additionally contains validation-only adoption of trusted repository-local Git refs
+Since version `0.13.0`, the package also provides validation-only adoption of trusted repository-local Git refs
 through the CLI and Node API.
 
 `MergeBroker.open` accepts an injected `ForgePublisher`, so another forge can be integrated without
@@ -163,7 +167,7 @@ boundary: claim scope, receive committed work, assemble a batch, validate it, an
 
 ## Trusted local-ref intake limits
 
-In `0.13.0`, `candidate adopt --ref` and
+Since `0.13.0`, `candidate adopt --ref` and
 `MergeBroker.adoptCandidate({ ref })` are supported on Windows, macOS, and Linux with Git 2.46 or
 newer for trusted source refs whose complete object graph is already present in the broker's own
 object store. Before any candidate or base lookup, Gate rejects nonempty ambient Git repository,
@@ -240,13 +244,52 @@ Crossing a candidate/object ceiling fails with `SUBMISSION_TOO_LARGE`, `GIT_OBJE
 Adoption runs matching focused validators once over the union of paths touched by the candidate's
 commits, then runs every authoritative validator. It records `validated`, `rejected`, or `failed`
 evidence in a separate `SubmissionRecord`. It does not create or enter a task, lease, receipt, batch,
-approval, provenance, branch publication, pull request, merge queue, merge reconciliation, or
-dependency lifecycle. Neither MCP profile exposes adoption in `0.13.0`. Terminal submission
-records and their broker-owned refs are retained indefinitely; `prune` does not yet retire them. If
+approval, Coordinate provenance, branch publication, pull request, merge queue, merge reconciliation, or
+dependency lifecycle. Neither MCP profile exposes adoption in `0.14.0`. Version `0.13.0` retained
+terminal submission records and their broker-owned refs indefinitely. In `0.14.0`,
+`candidate archive` provides separate journaled retirement; `prune` still handles tasks and batches. If
 the final object/ref identity cannot be reproduced, the record remains `validating` for fail-closed
 operator recovery rather than claiming a terminal outcome. Recovery repairs missing or stale
 manifests for already-terminal records before it loads Gate authority, so an absent or corrupt
 registration cannot hide terminal state; pending validation still requires its original authority.
+
+### Gate operations and detached evidence — 0.14.0
+
+- `doctor --gate` inspects local prerequisites and protected policy without fetching or running
+  validators. `candidate show --logs` exposes bounded locally captured stdout/stderr, and metrics
+  include active and archived submission results.
+- `candidate abandon --reason` stops a pending submission durably before cleanup. Recovery retries
+  owned-worktree cleanup only; the retained ref, prior validation evidence, and operator reason
+  remain. It cannot make unsafe cleanup safe or turn abandonment into a passing validation.
+- `candidate archive` defaults to preview, selects terminal records without pending cleanup, and
+  preserves full historical records. Refs remain unless `--release-artifacts` explicitly releases
+  their exact recorded targets. No objects are deleted and Git GC is not invoked. The release
+  decision belongs to the active record's archive operation; this command does not reopen an
+  already archived record to release its ref later. Use `candidate list --all` or `candidate show`
+  to inspect archived records.
+- `candidate attest` exports eligible active validation results using an existing local Ed25519
+  key matching the protected-base public key. It cannot sign abandoned, archived, released, or
+  unfinished records and does not mutate the candidate commit.
+  Successful signing and `doctor --gate` readiness require authoritative validation. Adoption
+  preserves its older empty-policy behavior, but an empty-policy `validated` record cannot become
+  successful signed evidence; commit authoritative policy on the reviewed base and re-adopt.
+- `candidate verify-attestation` works offline with independently supplied key, expected commit,
+  tree, base, policy digest, and authority digest. Config-blob and evaluator expectations are
+  optional. It supports the versioned Gate validation in-toto predicate carried in DSSE, not
+  arbitrary in-toto predicates, KMS signing, identity certificates, or remote signer discovery.
+- Signed rejection is valid evidence of rejection: it reports `verified: true`,
+  `validationPassed: false`, and CLI exit code 1. Every result reports `mergeAuthorized: false`.
+  The payload is bounded to 1 MiB and 10,000 validator summaries; it omits commands, logs, and raw
+  errors but still contains reviewed policy labels and validator names.
+- Existing schema aliases remain compatible. Packaged fingerprint snapshots and
+  [`identities.json`](../schemas/identities.json) supply immutable content identities; their URNs
+  are not live retrieval URLs. Pin a released package or Git commit when retrieving schemas.
+
+Saved-state reads now validate known nested structure and report `STATE_CORRUPT` with a field path.
+Missing legacy `submissions` normalizes to an empty collection; unknown additive fields survive
+normal reads/writes. Existing state version 1 remains readable. Older binaries do not understand the
+new abandonment/archive lifecycle; finish pending maintenance and preserve a backup before any
+downgrade. Runtime validation does not migrate unknown format versions or silently repair corruption.
 
 ## Upgrade handling for batches without v0.12 target binding
 
@@ -308,7 +351,7 @@ In short, the current project does **not** include:
 - distributed or highly available broker state;
 - a hosted dashboard, remote API, or HTTP MCP server;
 - an agent runner, worktree farm, prompt manager, or execution sandbox;
-- Gate approval, provenance, publication, merge authorization, pull-request intake, bundle intake,
+- Gate approval, publication, merge authorization, pull-request intake, bundle intake,
   or remote candidate submission;
 - semantic conflict prediction or automatic conflict resolution;
 - a Windows machine service that runs before user logon; or

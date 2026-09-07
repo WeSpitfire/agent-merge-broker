@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import path from "node:path";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { defaultConfig } from "./config.js";
 import { BrokerError } from "./errors.js";
 import {
@@ -12,45 +11,24 @@ import {
   inspectPullRequest,
   publishBatch,
 } from "./publisher.js";
+import { fakeProcess } from "./test-support/fake-process.js";
 
 const PULL_REQUEST = "https://github.example.invalid/owner/repo/pull/1";
 
-/**
- * Installs a fake `gh` ahead of the real one. The auto-merge decision is a branch of behavior that
- * only appears when GitHub declines to queue a merge, which is impractical to reach against the
- * real forge.
- */
-async function fakeGh(context: TestContext, mergeStateStatus: string): Promise<string> {
-  const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-bin-"));
-  await writeFile(
-    path.join(bin, "gh"),
-    [
-      "#!/bin/sh",
-      "case \"$*\" in",
-      // GitHub refuses to queue auto-merge here. The message is deliberately not English prose the
-      // broker could pattern-match; the decision must come from the structured state below.
-      '  *--auto*) echo "auto-merge konnte nicht aktiviert werden" >&2; exit 1 ;;',
-      `  *"pr view"*) echo '{"state":"OPEN","mergeStateStatus":"${mergeStateStatus}","mergeable":"MERGEABLE"}' ;;`,
-      '  *"pr merge"*) echo "merged" ;;',
-      "  *) exit 1 ;;",
-      "esac",
-      "",
-    ].join("\n"),
-    { encoding: "utf8", mode: 0o755 },
-  );
-  const previous = process.env.PATH;
-  process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
-  context.after(async () => {
-    if (previous === undefined) delete process.env.PATH;
-    else process.env.PATH = previous;
-    await rm(bin, { recursive: true, force: true });
-  });
-  return bin;
+async function fakeGh(context: TestContext, mergeStateStatus: string): Promise<void> {
+  await fakeProcess(context, "gh", `
+    if (args.includes("--auto")) {
+      console.error("auto-merge konnte nicht aktiviert werden");
+      process.exitCode = 1;
+    } else if (command.startsWith("pr view")) {
+      console.log(JSON.stringify({ state: "OPEN", mergeStateStatus: ${JSON.stringify(mergeStateStatus)}, mergeable: "MERGEABLE" }));
+    } else if (command.startsWith("pr merge")) console.log("merged");
+    else process.exitCode = 1;
+  `);
 }
 
 test(
   "merges directly when GitHub reports a clean pull request in any language",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     await fakeGh(context, "CLEAN");
     assert.equal(await enableAutoMerge(process.cwd(), PULL_REQUEST, defaultConfig()), true);
@@ -59,7 +37,6 @@ test(
 
 test(
   "reports the merge state instead of guessing when auto-merge is unavailable",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     await fakeGh(context, "BLOCKED");
     await assert.rejects(
@@ -74,29 +51,12 @@ test(
 
 test(
   "recognizes auto-merge that an interrupted earlier attempt already queued",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
-    const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-bin-"));
-    await writeFile(
-      path.join(bin, "gh"),
-      [
-        "#!/bin/sh",
-        'case "$*" in',
-        '  *"--auto"*) echo "response lost" >&2; exit 1 ;;',
-        '  *"pr view"*) echo \'{"state":"OPEN","autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"}}\' ;;',
-        "  *) exit 1 ;;",
-        "esac",
-        "",
-      ].join("\n"),
-      { encoding: "utf8", mode: 0o755 },
-    );
-    const previous = process.env.PATH;
-    process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
-    context.after(async () => {
-      if (previous === undefined) delete process.env.PATH;
-      else process.env.PATH = previous;
-      await rm(bin, { recursive: true, force: true });
-    });
+    await fakeProcess(context, "gh", `
+      if (args.includes("--auto")) { console.error("response lost"); process.exitCode = 1; }
+      else if (command.startsWith("pr view")) console.log(JSON.stringify({ state: "OPEN", autoMergeRequest: { enabledAt: "2026-01-01T00:00:00Z" } }));
+      else process.exitCode = 1;
+    `);
 
     const config = defaultConfig();
     config.publish.autoMerge = true;
@@ -106,29 +66,12 @@ test(
 
 test(
   "only treats an already-closed pull request as our completed close when its intent marker exists",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
-    const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-bin-"));
-    await writeFile(
-      path.join(bin, "gh"),
-      [
-        "#!/bin/sh",
-        'case "$*" in',
-        '  *"pr close"*) echo "already closed"; exit 0 ;;',
-        '  *"pr view"*) echo \'{"state":"CLOSED","comments":[{"body":"done <!-- merge-broker-refresh:ours -->"}]}\' ;;',
-        "  *) exit 1 ;;",
-        "esac",
-        "",
-      ].join("\n"),
-      { encoding: "utf8", mode: 0o755 },
-    );
-    const previous = process.env.PATH;
-    process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
-    context.after(async () => {
-      if (previous === undefined) delete process.env.PATH;
-      else process.env.PATH = previous;
-      await rm(bin, { recursive: true, force: true });
-    });
+    await fakeProcess(context, "gh", `
+      if (command.startsWith("pr close")) console.log("already closed");
+      else if (command.startsWith("pr view")) console.log(JSON.stringify({ state: "CLOSED", comments: [{ body: "done <!-- merge-broker-refresh:ours -->" }] }));
+      else process.exitCode = 1;
+    `);
 
     assert.equal(
       await closePullRequest(process.cwd(), PULL_REQUEST, "superseded <!-- merge-broker-refresh:ours -->"),
@@ -143,47 +86,22 @@ test(
 
 test(
   "treats already-disabled or closed auto-merge as a completed revocation retry",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
-    const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-bin-"));
-    await writeFile(
-      path.join(bin, "gh"),
-      [
-        "#!/bin/sh",
-        'case "$*" in',
-        '  *"--disable-auto"*) echo "not enabled" >&2; exit 1 ;;',
-        '  *"pr view"*) echo \'{"state":"OPEN","autoMergeRequest":null}\' ;;',
-        "  *) exit 1 ;;",
-        "esac",
-        "",
-      ].join("\n"),
-      { encoding: "utf8", mode: 0o755 },
-    );
-    const previous = process.env.PATH;
-    process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
-    context.after(async () => {
-      if (previous === undefined) delete process.env.PATH;
-      else process.env.PATH = previous;
-      await rm(bin, { recursive: true, force: true });
-    });
+    const fixture = await fakeProcess(context, "gh", `
+      if (args.includes("--disable-auto")) { console.error("not enabled"); process.exitCode = 1; }
+      else if (command.startsWith("pr view")) console.log(JSON.stringify({ state: "OPEN", autoMergeRequest: null }));
+      else process.exitCode = 1;
+    `);
 
     assert.equal(await disableAutoMerge(process.cwd(), PULL_REQUEST), true);
 
     // Refresh can stop after closing its PR but before finalizing local state. A retry must regard a
     // terminal CLOSED PR as having no live queue instead of wedging on the redundant disable call.
-    await writeFile(
-      path.join(bin, "gh"),
-      [
-        "#!/bin/sh",
-        'case "$*" in',
-        '  *"--disable-auto"*) echo "already closed" >&2; exit 1 ;;',
-        '  *"pr view"*) echo \'{"state":"CLOSED","autoMergeRequest":null}\' ;;',
-        "  *) exit 1 ;;",
-        "esac",
-        "",
-      ].join("\n"),
-      { encoding: "utf8", mode: 0o755 },
-    );
+    await fixture.update(`
+      if (args.includes("--disable-auto")) { console.error("already closed"); process.exitCode = 1; }
+      else if (command.startsWith("pr view")) console.log(JSON.stringify({ state: "CLOSED", autoMergeRequest: null }));
+      else process.exitCode = 1;
+    `);
     assert.equal(await disableAutoMerge(process.cwd(), PULL_REQUEST), true);
   },
 );
@@ -192,37 +110,21 @@ async function fakeLegacyGh(
   context: TestContext,
   apiHeadRefOid = "1".repeat(40),
 ): Promise<string> {
-  const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-bin-"));
-  const log = path.join(bin, "gh.log");
-  await writeFile(log, "", "utf8");
-  await writeFile(
-    path.join(bin, "gh"),
-    [
-      "#!/bin/sh",
-      `printf '%s\\n' "$*" >> "${log}"`,
-      "case \"$*\" in",
-      `  *"pr view"*baseRefOid*) echo 'Unknown JSON field: "baseRefOid"' >&2; exit 1 ;;`,
-      `  *"pr view"*) echo '{"state":"OPEN","headRefOid":"${"1".repeat(40)}","baseRefName":"main","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","statusCheckRollup":[]}' ;;`,
-      `  *"api repos/owner/repo/pulls/1"*) echo '{"headRefOid":"${apiHeadRefOid}","baseRefOid":"${"0".repeat(40)}","baseRefName":"main"}' ;;`,
-      "  *) exit 1 ;;",
-      "esac",
-      "",
-    ].join("\n"),
-    { encoding: "utf8", mode: 0o755 },
-  );
-  const previous = process.env.PATH;
-  process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
-  context.after(async () => {
-    if (previous === undefined) delete process.env.PATH;
-    else process.env.PATH = previous;
-    await rm(bin, { recursive: true, force: true });
-  });
-  return log;
+  const fixture = await fakeProcess(context, "gh", `
+    appendFileSync(new URL("./gh.log", import.meta.url), command + "\\n");
+    if (command.startsWith("pr view") && command.includes("baseRefOid")) {
+      console.error('Unknown JSON field: "baseRefOid"'); process.exitCode = 1;
+    } else if (command.startsWith("pr view")) {
+      console.log(JSON.stringify({ state: "OPEN", headRefOid: "${"1".repeat(40)}", baseRefName: "main", mergeStateStatus: "CLEAN", mergeable: "MERGEABLE", statusCheckRollup: [] }));
+    } else if (command.startsWith("api repos/owner/repo/pulls/1")) {
+      console.log(JSON.stringify({ headRefOid: ${JSON.stringify(apiHeadRefOid)}, baseRefOid: "${"0".repeat(40)}", baseRefName: "main" }));
+    } else process.exitCode = 1;
+  `);
+  return path.join(fixture.directory, "gh.log");
 }
 
 test(
   "falls back to the GitHub API when gh pr view does not support baseRefOid",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     const log = await fakeLegacyGh(context);
 
@@ -239,7 +141,6 @@ test(
 
 test(
   "fails closed when the pull request head moves during the legacy fallback",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     await fakeLegacyGh(context, "2".repeat(40));
 
@@ -257,32 +158,15 @@ async function fakeGhForInspection(
   viewResponse: Record<string, unknown>,
   apiResponse: Record<string, unknown> = {},
 ): Promise<void> {
-  const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-bin-"));
-  await writeFile(
-    path.join(bin, "gh"),
-    [
-      "#!/bin/sh",
-      "case \"$*\" in",
-      `  *"pr view"*) echo '${JSON.stringify(viewResponse)}' ;;`,
-      `  *"api repos/owner/repo/pulls/1"*) echo '${JSON.stringify(apiResponse)}' ;;`,
-      "  *) exit 1 ;;",
-      "esac",
-      "",
-    ].join("\n"),
-    { encoding: "utf8", mode: 0o755 },
-  );
-  const previous = process.env.PATH;
-  process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
-  context.after(async () => {
-    if (previous === undefined) delete process.env.PATH;
-    else process.env.PATH = previous;
-    await rm(bin, { recursive: true, force: true });
-  });
+  await fakeProcess(context, "gh", `
+    if (command.startsWith("pr view")) console.log(JSON.stringify(${JSON.stringify(viewResponse)}));
+    else if (command.startsWith("api repos/owner/repo/pulls/1")) console.log(JSON.stringify(${JSON.stringify(apiResponse)}));
+    else process.exitCode = 1;
+  `);
 }
 
 test(
   "fails closed when GitHub omits the pull request head or target branch",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     for (const response of [
       { state: "MERGED", baseRefOid: "0".repeat(40), baseRefName: "main", statusCheckRollup: [] },
@@ -302,7 +186,6 @@ test(
 
 test(
   "fails closed when an open pull request has no current base SHA",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     const headRefOid = "1".repeat(40);
     await fakeGhForInspection(
@@ -326,35 +209,16 @@ test(
 async function fakeGhForPublish(
   context: TestContext,
   options: { existingUrl?: string; listExitCode?: number },
-): Promise<string> {
-  const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-bin-"));
-  const listBody = options.existingUrl ? `[{"url":"${options.existingUrl}"}]` : "[]";
-  await writeFile(
-    path.join(bin, "gh"),
-    [
-      "#!/bin/sh",
-      "case \"$*\" in",
-      options.listExitCode
-        ? `  *"pr list"*"--repo github.example.invalid/owner/repo"*"--state all"*) echo "the forge is unavailable" >&2; exit ${options.listExitCode} ;;`
-        : `  *"pr list"*"--repo github.example.invalid/owner/repo"*"--state all"*) echo '${listBody}' ;;`,
-      // The body arrives on stdin. Exiting without draining it makes the writer see EPIPE on Linux,
-      // where the pipe is torn down promptly; macOS hid this.
-      `  *"pr create"*"--repo github.example.invalid/owner/repo"*) cat >/dev/null; echo "${PULL_REQUEST}" ;;`,
-      '  *--auto*) echo "queued" ;;',
-      "  *) exit 1 ;;",
-      "esac",
-      "",
-    ].join("\n"),
-    { encoding: "utf8", mode: 0o755 },
-  );
-  const previous = process.env.PATH;
-  process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
-  context.after(async () => {
-    if (previous === undefined) delete process.env.PATH;
-    else process.env.PATH = previous;
-    await rm(bin, { recursive: true, force: true });
-  });
-  return bin;
+): Promise<void> {
+  const list = options.existingUrl ? [{ url: options.existingUrl }] : [];
+  await fakeProcess(context, "gh", `
+    if (command.startsWith("pr list") && command.includes("--repo github.example.invalid/owner/repo") && command.includes("--state all")) {
+      if (${options.listExitCode ?? 0}) { console.error("the forge is unavailable"); process.exitCode = ${options.listExitCode ?? 0}; }
+      else console.log(JSON.stringify(${JSON.stringify(list)}));
+    } else if (command.startsWith("pr create") && command.includes("--repo github.example.invalid/owner/repo")) console.log(${JSON.stringify(PULL_REQUEST)});
+    else if (args.includes("--auto")) console.log("queued");
+    else process.exitCode = 1;
+  `);
 }
 
 function publishFixture() {
@@ -415,7 +279,6 @@ test("refuses publication when the durable batch has no recorded head", async ()
 
 test(
   "reuses the pull request an earlier attempt already opened even if it is no longer open",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     // The process can die after `pr create` and the PR can close or merge before recovery. Looking
     // only at open PRs would then create a second PR for the same immutable batch.
@@ -436,7 +299,6 @@ test(
 
 test(
   "refuses to publish when the forge cannot say whether a pull request exists",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     // "I do not know" must not read as "there is none": the response to none is to create one, and
     // that is how a retry during an outage produces duplicates.
@@ -453,7 +315,6 @@ test(
 
 test(
   "opens one when the branch provably has none",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     await fakeGhForPublish(context, {});
     const { config, batch, tasks, repo } = publishFixture();
@@ -472,7 +333,6 @@ test(
 
 test(
   "uses the forge repository durably recorded on the batch",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     await fakeGhForPublish(context, {});
     const { config, batch, tasks, repo } = publishFixture();

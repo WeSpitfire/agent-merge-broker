@@ -96,7 +96,7 @@ auto-merge.
 This mode serves linked worktrees, independent local sessions, and mixed agent/human teams that
 participate in the receipt protocol.
 
-### Gate mode — validation intake available in 0.13.0
+### Gate mode — validation and evidence in 0.14.0
 
 A producer that has already coordinated its own work can present a trusted Git ref already available
 to the broker without first acquiring a path lease. An operator first registers the
@@ -108,17 +108,20 @@ filter-free retained bytes in a disposable worktree. It records a separate valid
 rather than inventing Coordinate-mode tasks, leases, receipts, or batches. This is not an
 untrusted-code sandbox.
 
-This first slice stops at validation. It does not create an approval candidate, provenance,
-publication, reconciliation, or merge authority. Connecting validated submissions to those later
-Gate stages—and adding pull-request intake, bundles, or authenticated remote submission—remains
-planned.
+The `0.13.0` slice stopped at the saved validation result. Version `0.14.0` adds operational
+inspection, deliberate abandonment, journaled archival, and detached Ed25519 DSSE evidence for that
+exact artifact and policy. Evidence can travel without changing the candidate commit; an offline
+consumer supplies its trusted key and expected identities. The evidence explicitly grants no merge
+authority. Gate approval, publication, reconciliation, pull-request intake, bundles, and authenticated
+remote submission remain planned.
 
 ### Verify mode — planned
 
-A lightweight verifier should eventually let a protected workflow check standardized Agent Merge
-Broker policy and attestation claims for work assembled elsewhere. The current
-`verify-provenance` command is narrower: it verifies provenance produced by today's broker workflow;
-it is not yet a general admission check for arbitrary external candidates.
+A lightweight verifier should eventually let a protected workflow admit work assembled through a
+wider set of authenticated workflows. `verify-provenance` checks Coordinate provenance; the
+`candidate verify-attestation`, added in `0.14.0`, checks detached Gate validation evidence against explicit
+trust inputs. Neither is a general admission policy for arbitrary external producers. Connecting
+Gate evidence to exact approval and target-bound publication comes before broader Verify mode.
 
 ## Non-goals
 

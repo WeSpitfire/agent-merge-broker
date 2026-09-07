@@ -1,6 +1,6 @@
 {
   "name": "agent-merge-broker",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Crash-recoverable repository transactions, validation, provenance, and exact-candidate approval for agents and humans.",
   "type": "module",
   "bin": {
@@ -19,6 +19,7 @@
   "files": [
     "dist",
     "!dist/**/*.test.*",
+    "!dist/test-support/**",
     "schemas",
     "templates",
     "examples",
@@ -38,12 +39,14 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --test-reporter=spec dist/*.test.js",
     "example": "node examples/two-agents/run.mjs",
+    "example:gate": "node examples/local-gate/run.mjs",
     "test:source": "tsx --test src/*.test.ts",
+    "test:package": "npm run build && node scripts/packaged-smoke.mjs",
     "verify": "npm run lint && npm run build && npm test",
     "prepublishOnly": "npm run verify"
   },
   "engines": {
-    "node": ">=20.12"
+    "node": ">=22"
   },
   "keywords": [
     "ai-agents",
@@ -65,7 +68,7 @@
   "bugs": {
     "url": "https://github.com/WeSpitfire/agent-merge-broker/issues"
   },
-  "homepage": "https://wespitfire.github.io/agent-merge-broker/",
+  "homepage": "https://agentmerge.org",
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
     "commander": "^14.0.3",

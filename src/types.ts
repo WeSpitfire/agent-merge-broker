@@ -33,7 +33,7 @@ export type TaskStatus =
   | "cancelled";
 export type BatchStatus = "running" | "verified" | "prepared" | "published" | "merged" | "closed" | "failed";
 /** Validation-only lifecycle for an immutable candidate adopted from outside Coordinate mode. */
-export type SubmissionStatus = "received" | "validating" | "validated" | "rejected" | "failed";
+export type SubmissionStatus = "received" | "validating" | "validated" | "rejected" | "failed" | "abandoned";
 
 export interface ValidatorConfig {
   name: string;
@@ -370,6 +370,15 @@ export interface SubmissionRecord {
   retentionEstablishedAt?: string;
   /** Durable tombstone: the broker-owned retention ref disappeared and had to be repaired. */
   retentionCompromisedAt?: string;
+  /** Operator abandonment is terminal; cleanup can be retried without running validators again. */
+  abandonedAt?: string;
+  abandonReason?: string;
+  /** Durable retirement intent, recorded before changing the retained Git ref or active state. */
+  archiveIntent?: { requestedAt: string; releaseArtifact: boolean };
+  /** Present on an archived record after retirement from active state. */
+  archivedAt?: string;
+  /** The broker ref was explicitly released; other Git refs/reflogs may still retain the objects. */
+  artifactReleasedAt?: string;
   createdAt: string;
   updatedAt: string;
   validationStartedAt?: string;
@@ -534,6 +543,25 @@ export interface PruneOptions {
   dryRun?: boolean;
 }
 
+export interface SubmissionArchiveOptions {
+  /** Limit retirement to these submission IDs; omission selects eligible terminal records. */
+  ids?: string[];
+  olderThanDays?: number;
+  /** Preview by default; callers must explicitly set false to apply retirement. */
+  dryRun?: boolean;
+  /** Remove only the exact broker retention ref; never delete objects or run Git GC. */
+  releaseArtifacts?: boolean;
+}
+
+export interface SubmissionArchiveResult {
+  submissions: string[];
+  retainedPending: string[];
+  cutoff: string;
+  dryRun: boolean;
+  releaseArtifacts: boolean;
+  archivePaths: string[];
+}
+
 export interface PruneResult {
   tasks: string[];
   batches: string[];
@@ -558,6 +586,8 @@ export interface RecoveryResult {
   candidateRevisionWarnings?: string[];
   /** Validation submissions whose durable in-progress state was replayed to a safe outcome. */
   submissionsRecovered?: string[];
+  submissionsArchived?: string[];
+  submissionsAbandonedCleaned?: string[];
   /** Validation submissions retained because recovery could not prove a safe next state. */
   submissionWarnings?: string[];
 }

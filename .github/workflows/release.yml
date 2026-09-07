@@ -6,15 +6,51 @@ on:
 
 permissions:
   contents: read
-  id-token: write
+
+concurrency:
+  group: npm-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
 
 jobs:
-  npm:
+  resolve:
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
+      - name: Resolve and validate the release once
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          git check-ref-format "refs/tags/$RELEASE_TAG"
+          package_version=$(node -p "require('./package.json').version")
+          test "$RELEASE_TAG" = "v$package_version"
+          resolved_sha=$(git rev-parse 'HEAD^{commit}')
+          test "$resolved_sha" = "$RELEASE_SHA"
+          echo "sha=$resolved_sha" >> "$GITHUB_OUTPUT"
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: resolve
+    uses: ./.github/workflows/verify.yml
+    with:
+      revision: ${{ needs.resolve.outputs.sha }}
+
+  npm:
+    needs: [resolve, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -23,13 +59,23 @@ jobs:
       # Trusted publishing needs a recent npm. Pin it so a release cannot change underneath us
       # between verification and publication.
       - run: npm install -g npm@12.0.2
-      - run: npm ci
-      - run: npm run verify
-      - name: Verify tag matches package version
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package-${{ needs.resolve.outputs.sha }}
+          path: release-package
+      - name: Verify publication checkout and package
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
         run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           package_version=$(node -p "require('./package.json').version")
-          test "$GITHUB_REF_NAME" = "v$package_version"
+          test "$RELEASE_VERSION" = "$package_version"
+          node scripts/verify-release-artifact.mjs release-package "$EXPECTED_SHA" "$RELEASE_VERSION"
       # Authentication is the id-token permission above: npm exchanges the workflow's OIDC token for
       # a short-lived publish credential. There is deliberately no NODE_AUTH_TOKEN here, so a leaked
       # repository secret cannot publish this package.
-      - run: npm publish --provenance --access public
+      - name: Publish the verified tarball
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: npm publish "release-package/agent-merge-broker-$RELEASE_VERSION.tgz" --provenance --access public

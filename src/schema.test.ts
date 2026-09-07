@@ -243,3 +243,17 @@ test("the Gate authority schema exposes only a fingerprinted protected-target lo
   outsideState.stateDirectory = "../alternate-state";
   assert.equal(validateGateAuthority(outsideState), false);
 });
+
+test("the submission schema preserves abandoned and archived audit records with explicit retention intent", () => {
+  const value = submission();
+  value.status = "abandoned";
+  value.abandonedAt = "2026-09-06T13:00:00Z";
+  value.abandonReason = "Operator retired the interrupted candidate.";
+  value.archiveIntent = { requestedAt: "2026-09-06T13:01:00Z", releaseArtifact: false };
+  value.archivedAt = "2026-09-06T13:02:00Z";
+  assert.equal(validateSubmission(value), true, JSON.stringify(validateSubmission.errors));
+  value.artifactReleasedAt = "2026-09-06T13:03:00Z";
+  assert.equal(validateSubmission(value), true, JSON.stringify(validateSubmission.errors));
+  (value.archiveIntent as unknown as { releaseArtifact: string }).releaseArtifact = "yes";
+  assert.equal(validateSubmission(value), false);
+});

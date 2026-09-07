@@ -76,7 +76,7 @@ Commit receipts are immutable IDs, but their objects can disappear after aggress
 
 ## Trusted local-ref intake
 
-Version `0.13.0` ships this capability. `candidate adopt --ref` is for candidate code trusted to
+Version `0.13.0` introduced this capability. `candidate adopt --ref` is for candidate code trusted to
 execute on the broker host. The disposable
 worktree is filesystem hygiene, not workload isolation. Focused and authoritative validators can
 run candidate-controlled build scripts with the broker process's ordinary filesystem and network
@@ -154,17 +154,56 @@ prevent a trusted validator from changing other host resources.
 
 The submission record and retained ref share the same local trust boundary as the rest of broker
 state. Their policy digest detects accidental or replay inconsistency; it is not a remote signature
-or defense against an operator who can edit the Git common directory. Records and refs are not
-pruned in this first slice. `validated` means every validator selected by the protected-base policy
+or defense against an operator who can edit the Git common directory. Version `0.13.0` retained
+records and refs indefinitely; `0.14.0` journaled archival can retire records and explicitly
+release their exact broker-owned refs. `validated` means every validator selected by the protected-base policy
 passed; an empty validator policy can therefore produce an empty successful result and is not a
-substitute for configuring a real gate. Most importantly, the status grants no approval,
-publication, provenance, or merge authority. It is not accepted by batch commands and is not an
+substitute for configuring a real gate. The status grants no approval,
+publication, or merge authority. It is not accepted by batch commands and is not an
 enforceable protected-branch result.
 
 The broker records `retentionEstablishedAt` before any validator runs. If that established ref is
 later missing, it records `retentionCompromisedAt` before create-only repair. The tombstone survives
 a stop after repair and permanently invalidates an otherwise-passing run; recovery cannot mistake
 the loss for an initial pin that never happened.
+
+### Gate operations and signed evidence — 0.14.0
+
+`doctor --gate` inspects local readiness; it does not fetch or execute validators. Explicit
+`candidate show --logs` exposes the bounded output already captured by validation. Commands, logs,
+and raw error messages may contain sensitive data and should not be copied into public reports.
+
+Abandonment records a terminal state and operator reason before trying to clean the saved
+disposable worktree. Recovery cannot rerun abandoned validators and will not remove a directory
+whose recorded ownership cannot be proved. Archival is a dry run unless applied, preserves Git refs
+by default, and preserves the full audit record. `--release-artifacts` deletes only the exact
+broker-owned direct ref at the expected commit after journaling the decision. It does not erase
+objects, run GC, or guarantee that other refs no longer retain the candidate. A changed/symbolic ref
+is a mismatch to inspect, never an invitation to delete more broadly.
+
+Detached Gate attestations authenticate a validation claim under an existing local Ed25519 key.
+Signing loads an active eligible saved record, reproves its artifact and protected policy under
+locks, and requires a key matching that policy's public key. It cannot sign a caller-provided JSON
+statement or a record that is abandoned, archived, released, or still awaiting cleanup. The signed
+in-toto predicate binds commit/tree/base/policy/authority identities and validator result summaries
+while excluding commands, stdout, stderr, and raw error text. Signed success requires at least one
+authoritative result and no failing validator; an older empty-policy `validated` record is not
+sufficient. Commit an authoritative policy and re-adopt to produce meaningful evidence. This is
+stricter than the existing adoption behavior, which remains compatible with empty policies.
+Validator names and policy labels are
+still operator-controlled metadata; do not put secrets into them.
+
+Offline consumers must obtain the trusted public key and expected artifact/policy/authority
+identities independently of the attestation. DSSE signs both the media type and exact payload bytes;
+the envelope's `keyid` is only a hint. Successful signature verification can describe a rejected or
+failed candidate, so consumers must also check `validationPassed`. Every result explicitly states
+`mergeAuthorized: false`. A signature does not prove the signer host was uncompromised, establish
+producer identity, sandbox candidate code, ensure policy remains current, or grant forge permission.
+
+The `urn:agent-merge-broker:gate-validation:v1` predicate and fingerprinted schema snapshots define
+what is verified. Unknown predicates, malformed payloads, signature failures, contradictory success
+evidence, and unexpected identities are rejected. Schema fingerprints protect document identity;
+they do not establish which schema, signer, policy, or candidate a consumer should trust.
 
 ## Merge authorization
 

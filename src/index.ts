@@ -74,4 +74,17 @@ export {
   type VerifyProvenanceOptions,
 } from "./verify.js";
 export { BrokerError, CommandError, ValidationError } from "./errors.js";
+export {
+  signSubmissionAttestation,
+  verifySubmissionAttestation,
+  submissionAttestationEnvelopeSchema,
+  submissionAttestationStatementSchema,
+  SUBMISSION_ATTESTATION_PAYLOAD_TYPE,
+  SUBMISSION_ATTESTATION_PREDICATE_TYPE,
+  type SubmissionAttestationEnvelope,
+  type SubmissionAttestationStatement,
+  type SubmissionAttestationVerificationOptions,
+  type SubmissionAttestationVerificationResult,
+} from "./submission-attestation.js";
+export { schemaFingerprint, schemaSnapshotIdentity } from "./schema-identity.js";
 export type * from "./types.js";

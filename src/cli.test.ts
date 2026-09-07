@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { MergeBroker } from "./broker.js";
 import { configPath, loadConfig } from "./config.js";
 import { runCommand, type CommandResult } from "./process.js";
+import { fakeProcess } from "./test-support/fake-process.js";
 
 const PULL_REQUEST = "https://github.example.invalid/owner/repo/pull/17";
 const PROJECT_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -89,8 +90,9 @@ async function candidateCommit(repo: string, branch = "candidate/local-ref"): Pr
   return sha;
 }
 
-async function serveOnce(repo: string): Promise<CommandResult> {
-  const result = await runCommand(process.execPath, cliArguments(repo), {
+async function serveOnce(repo: string, preload?: string): Promise<CommandResult> {
+  const args = [...(preload ? ["--import", pathToFileURL(preload).href] : []), ...cliArguments(repo)];
+  const result = await runCommand(process.execPath, args, {
     cwd: PROJECT_ROOT,
     timeoutMs: 30_000,
     allowFailure: true,
@@ -388,28 +390,15 @@ test("serve re-cuts a stale prepared batch before publishing it", async (context
   assert.match(served.stdout, /"refreshed": true/u);
 });
 
-test("serve finishes warning and warning-free auto-merge hand-offs", {
-  skip: process.platform === "win32" ? "POSIX gh fixture" : false,
-}, async (context) => {
+test("serve finishes warning and warning-free auto-merge hand-offs", async (context) => {
   const repo = await repository(context);
   const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-cli-remote-"));
   const remote = path.join(remoteParent, "origin.git");
   const bin = await mkdtemp(path.join(tmpdir(), "merge-broker-cli-bin-"));
-  const gh = path.join(bin, "gh");
   const headFile = path.join(bin, "head");
   const baseFile = path.join(bin, "base");
   const logFile = path.join(bin, "gh.log");
-  const previousPath = process.env.PATH;
-  process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
-  process.env.MERGE_BROKER_GH_HEAD = headFile;
-  process.env.MERGE_BROKER_GH_BASE = baseFile;
-  process.env.MERGE_BROKER_GH_LOG = logFile;
   context.after(async () => {
-    if (previousPath === undefined) delete process.env.PATH;
-    else process.env.PATH = previousPath;
-    delete process.env.MERGE_BROKER_GH_HEAD;
-    delete process.env.MERGE_BROKER_GH_BASE;
-    delete process.env.MERGE_BROKER_GH_LOG;
     await rm(remoteParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     await rm(bin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
@@ -420,24 +409,16 @@ test("serve finishes warning and warning-free auto-merge hand-offs", {
   const baseSha = await git(repo, "rev-parse", "main");
   await writeFile(baseFile, `${baseSha}\n`, "utf8");
   await writeFile(logFile, "", "utf8");
-  await writeFile(
-    gh,
-    [
-      "#!/bin/sh",
-      'case "$*" in',
-      '  *"pr list"*) echo "[]" ;;',
-      `  *"pr create"*) cat >/dev/null; echo "${PULL_REQUEST}" ;;`,
-      '  *"pr view"*)',
-      '    head=$(tr -d "\\n" < "$MERGE_BROKER_GH_HEAD")',
-      '    base=$(tr -d "\\n" < "$MERGE_BROKER_GH_BASE")',
-      '    printf \'{"state":"OPEN","headRefOid":"%s","baseRefOid":"%s","baseRefName":"main","mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","autoMergeRequest":null,"statusCheckRollup":[]}\\n\' "$head" "$base" ;;',
-      '  *) echo "temporary forge failure" >&2; exit 1 ;;',
-      "esac",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  await chmod(gh, 0o755);
+  const fakeGh = await fakeProcess(context, "gh", `
+    if (command.startsWith("pr list")) console.log("[]");
+    else if (command.startsWith("pr create")) console.log(${JSON.stringify(PULL_REQUEST)});
+    else if (command.startsWith("pr view")) console.log(JSON.stringify({
+      state: "OPEN", headRefOid: readFileSync(${JSON.stringify(headFile)}, "utf8").trim(),
+      baseRefOid: readFileSync(${JSON.stringify(baseFile)}, "utf8").trim(), baseRefName: "main",
+      mergeStateStatus: "BLOCKED", mergeable: "MERGEABLE", autoMergeRequest: null, statusCheckRollup: [],
+    }));
+    else { console.error("temporary forge failure"); process.exitCode = 1; }
+  `);
 
   const config = await loadConfig(repo);
   config.baseRef = "origin/main";
@@ -455,27 +436,19 @@ test("serve finishes warning and warning-free auto-merge hand-offs", {
   assert.equal(partial.autoMergeEnabled, false);
   assert.match(partial.publishWarning ?? "", /auto-merge/iu);
 
-  await writeFile(
-    gh,
-    [
-      "#!/bin/sh",
-      'printf "%s\\n" "$*" >> "$MERGE_BROKER_GH_LOG"',
-      'case "$*" in',
-      `  *"pr list"*) echo '[{"url":"${PULL_REQUEST}"}]' ;;`,
-      '  *"pr view"*)',
-      '    head=$(tr -d "\\n" < "$MERGE_BROKER_GH_HEAD")',
-      '    base=$(tr -d "\\n" < "$MERGE_BROKER_GH_BASE")',
-      '    printf \'{"state":"OPEN","headRefOid":"%s","baseRefOid":"%s","baseRefName":"main","mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","statusCheckRollup":[]}\\n\' "$head" "$base" ;;',
-      '  *"--auto"*) echo queued ;;',
-      "  *) exit 1 ;;",
-      "esac",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  await chmod(gh, 0o755);
+  await fakeGh.update(`
+    appendFileSync(${JSON.stringify(logFile)}, command + "\\n");
+    if (command.startsWith("pr list")) console.log(JSON.stringify([{ url: ${JSON.stringify(PULL_REQUEST)} }]));
+    else if (command.startsWith("pr view")) console.log(JSON.stringify({
+      state: "OPEN", headRefOid: readFileSync(${JSON.stringify(headFile)}, "utf8").trim(),
+      baseRefOid: readFileSync(${JSON.stringify(baseFile)}, "utf8").trim(), baseRefName: "main",
+      mergeStateStatus: "BLOCKED", mergeable: "MERGEABLE", statusCheckRollup: [],
+    }));
+    else if (args.includes("--auto")) console.log("queued");
+    else process.exitCode = 1;
+  `);
 
-  await serveOnce(repo);
+  await serveOnce(repo, fakeGh.preload);
   let recovered = (await broker.state()).batches[integrated.batch.id];
   assert.equal(recovered?.autoMergeEnabled, true);
   assert.equal(recovered?.publishWarning, undefined);
@@ -490,7 +463,7 @@ test("serve finishes warning and warning-free auto-merge hand-offs", {
   });
   await writeFile(logFile, "", "utf8");
 
-  await serveOnce(repo);
+  await serveOnce(repo, fakeGh.preload);
   recovered = (await broker.state()).batches[integrated.batch.id];
   assert.equal(recovered?.autoMergeEnabled, true);
   assert.match(await readFile(logFile, "utf8"), /pr merge .*--auto/u);

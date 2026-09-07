@@ -28,6 +28,8 @@ export type ServeEvent =
       batches: string[];
       tasks: string[];
       submissions?: string[];
+      archivedSubmissions?: string[];
+      abandonedSubmissionsCleaned?: string[];
       submissionWarnings?: string[];
     }
   | { kind: "integrated"; batchId: string; state: string; published: boolean }
@@ -71,6 +73,8 @@ export function describeServeEvent(event: ServeEvent): string {
     case "recovered":
       return `recovered ${event.batches.length} abandoned batch(es); requeued ${event.tasks.length} task(s)`
         + `; recovered ${event.submissions?.length ?? 0} candidate submission(s)`
+        + (event.archivedSubmissions?.length ? `; archived ${event.archivedSubmissions.length} candidate submission(s)` : "")
+        + (event.abandonedSubmissionsCleaned?.length ? `; cleaned ${event.abandonedSubmissionsCleaned.length} abandoned submission(s)` : "")
         + (event.submissionWarnings?.length
           ? `; warnings: ${event.submissionWarnings.join(" | ")}`
           : "");

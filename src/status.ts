@@ -34,6 +34,7 @@ function submissionLine(submission: SubmissionRecord): string {
     `commits=${submission.commits.length}`,
     `paths=${submission.paths.length}`,
     submission.errorCode ? `error=${submission.errorCode}` : undefined,
+    submission.archiveIntent ? "archival=pending" : undefined,
   ].filter(Boolean);
   return `  ${submission.id.padEnd(46)} ${submission.status.padEnd(10)} ${details.join("  ")}`.trimEnd();
 }
@@ -88,7 +89,9 @@ export function formatBrokerStatus(state: BrokerState, config: BrokerConfig, at 
     }
   }
   for (const submission of submissions) {
-    if (submission.status === "received" || submission.status === "validating") {
+    if (submission.archiveIntent || (submission.status === "abandoned" && submission.worktree)) {
+      actions.push(`Finish candidate maintenance ${submission.id}: merge-broker recover`);
+    } else if (submission.status === "received" || submission.status === "validating") {
       actions.push(`Resume candidate ${submission.id}: merge-broker recover`);
     } else if (submission.status === "rejected" || submission.status === "failed") {
       actions.push(`Inspect candidate ${submission.id}: merge-broker candidate show ${submission.id}`);

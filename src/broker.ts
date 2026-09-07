@@ -18,7 +18,7 @@ import {
 } from "./bootstrap.js";
 import { patternSetsMayOverlap, unexpectedPaths } from "./patterns.js";
 import { scheduleTasks } from "./scheduler.js";
-import { StateStore, type AuditRecorder, type LockStatus } from "./store.js";
+import { StateStore, type LockStatus } from "./store.js";
 import {
   createValidationCacheDirectory,
   removeValidationCacheDirectory,
@@ -38,6 +38,22 @@ import {
 } from "./provenance.js";
 import { installHooks, uninstallHooks, type HookInstallation } from "./hooks.js";
 import { LocalRefSubmissionManager } from "./submission.js";
+import { SubmissionRetentionManager } from "./submission-retention.js";
+import { signSubmissionAttestation, type SubmissionAttestationEnvelope } from "./submission-attestation.js";
+import {
+  requireTask,
+  requireBatch,
+  approvalPolicy,
+  requiredEvidenceNames,
+  candidateState,
+  makeCandidate,
+  requireCurrentCandidate,
+  assertNoPendingRevision,
+  finalizeCandidateRevision,
+  assertCandidateBinding,
+  assertCurrentApprovalPolicy,
+  upsertEvidence,
+} from "./candidate-lifecycle.js";
 import {
   assertGateAuthorityMatchesCurrentConfig,
   deriveGateAuthorityRegistration,
@@ -71,6 +87,8 @@ import type {
   PruneResult,
   SchedulePlan,
   SubmissionRecord,
+  SubmissionArchiveOptions,
+  SubmissionArchiveResult,
   TaskRecord,
   ValidationResult,
   VerificationEvidence,
@@ -98,18 +116,6 @@ function versionAtLeast(version: string, minimum: [number, number]): boolean {
 
 function leaseExpired(task: TaskRecord, at = Date.now()): boolean {
   return Boolean(task.lease && Date.parse(task.lease.expiresAt) <= at);
-}
-
-function requireTask(state: BrokerState, taskId: string): TaskRecord {
-  const task = Object.hasOwn(state.tasks, taskId) ? state.tasks[taskId] : undefined;
-  if (!task) throw new BrokerError("UNKNOWN_TASK", `Unknown task: ${taskId}`);
-  return task;
-}
-
-function requireBatch(state: BrokerState, id: string): BatchRecord {
-  const batch = Object.hasOwn(state.batches, id) ? state.batches[id] : undefined;
-  if (!batch) throw new BrokerError("UNKNOWN_BATCH", `Unknown batch: ${id}`);
-  return batch;
 }
 
 function sameSubmittedReceipt(current: TaskRecord, selected: TaskRecord): boolean {
@@ -141,204 +147,6 @@ function verifyLease(task: TaskRecord, token: string): void {
   if (task.lease.tokenHash !== hashToken(token)) {
     throw new BrokerError("LEASE_TOKEN", `Invalid lease token for task ${task.id}.`);
   }
-}
-
-function approvalPolicy(config: BrokerConfig): NonNullable<BrokerConfig["approval"]> {
-  return config.approval ?? {
-    required: false,
-    policyRevision: "default",
-    requiredVerifications: [],
-    requiredChecks: [],
-    authorizedActors: [],
-  };
-}
-
-function requiredEvidenceNames(config: BrokerConfig): string[] {
-  const policy = approvalPolicy(config);
-  return [
-    ...policy.requiredVerifications,
-    ...policy.requiredChecks.map((name) => `github-check:${name}`),
-  ];
-}
-
-function candidateState(candidate: CandidateRecord): CandidateRecord["state"] {
-  if (
-    candidate.state === "changes_requested" ||
-    candidate.state === "blocked" ||
-    candidate.state === "superseded" ||
-    candidate.state === "abandoned" ||
-    candidate.state === "merged"
-  ) {
-    return candidate.state;
-  }
-  const evidence = new Map(candidate.verifications.map((item) => [item.name, item]));
-  if (candidate.requiredVerifications.some((name) => evidence.get(name)?.status === "failed")) {
-    return "verification_failed";
-  }
-  if (candidate.requiredVerifications.every((name) => evidence.get(name)?.status === "passed")) {
-    return candidate.approval ? (candidate.state === "merging" ? "merging" : "approved") : "ready_for_approval";
-  }
-  return "verifying";
-}
-
-function makeCandidate(config: BrokerConfig, sha: string, baseSha: string, revision: number): CandidateRecord {
-  const policy = approvalPolicy(config);
-  const candidate: CandidateRecord = {
-    revision,
-    sha,
-    baseSha,
-    policyRevision: policy.policyRevision,
-    state: "verifying",
-    requiredVerifications: requiredEvidenceNames(config),
-    verifications: [],
-    createdAt: now(),
-  };
-  candidate.state = candidateState(candidate);
-  return candidate;
-}
-
-function requireCurrentCandidate(batch: BatchRecord): CandidateRecord {
-  if (!batch.candidate) {
-    throw new BrokerError("NO_CANDIDATE", `Batch ${batch.id} has no approval candidate.`);
-  }
-  return batch.candidate;
-}
-
-function assertNoPendingRevision(batch: BatchRecord): void {
-  if (batch.revisionIntent) {
-    throw new BrokerError(
-      "REVISION_IN_PROGRESS",
-      `Batch ${batch.id} has a candidate revision awaiting recovery; retry after recovery completes.`,
-      { batchId: batch.id, candidateSha: batch.revisionIntent.candidateSha },
-    );
-  }
-}
-
-function finalizeCandidateRevision(
-  state: BrokerState,
-  audit: AuditRecorder,
-  batchId: string,
-  intent: CandidateRevisionIntent,
-): RevisionResult {
-  const storedBatch = requireBatch(state, batchId);
-  const storedIntent = storedBatch.revisionIntent;
-  if (
-    !storedIntent ||
-    storedIntent.candidateSha !== intent.candidateSha ||
-    storedIntent.previousCandidateSha !== intent.previousCandidateSha
-  ) {
-    throw new BrokerError("REVISION_INTENT_CHANGED", `Candidate revision intent changed for batch ${batchId}.`);
-  }
-  const storedCandidate = requireCurrentCandidate(storedBatch);
-  if (
-    storedCandidate.sha !== intent.previousCandidateSha ||
-    storedCandidate.state !== "changes_requested"
-  ) {
-    throw new BrokerError("CANDIDATE_CHANGED", "Candidate state changed while its revision was published.");
-  }
-  const superseded: CandidateRecord = {
-    ...structuredClone(storedCandidate),
-    state: "superseded",
-    reason: `Superseded by candidate revision ${intent.revision}.`,
-  };
-  const nextBatch = structuredClone(intent.nextBatch) as BatchRecord;
-  nextBatch.candidateHistory = [...(storedBatch.candidateHistory ?? []), superseded];
-  delete nextBatch.revisionIntent;
-  state.batches[batchId] = nextBatch;
-
-  const nextTask = requireTask(state, intent.taskId);
-  const actor = nextTask.lease?.holder;
-  nextTask.commits = [...intent.revisedTask.commits];
-  nextTask.actualPaths = [...intent.revisedTask.actualPaths];
-  nextTask.warnings = [...intent.revisedTask.warnings];
-  nextTask.submittedAt = intent.revisedTask.submittedAt;
-  nextTask.updatedAt = now();
-  delete nextTask.lease;
-  delete nextTask.lastError;
-  for (const id of nextBatch.taskIds) {
-    const batchTask = requireTask(state, id);
-    batchTask.validations = nextBatch.validations.filter(
-      (result) => !result.taskId || result.taskId === id,
-    );
-    batchTask.updatedAt = now();
-  }
-  audit("batch.candidate_revised", {
-    ...(actor ? { actor } : {}),
-    taskId: intent.taskId,
-    batchId,
-    details: {
-      previousCandidateSha: intent.previousCandidateSha,
-      candidateSha: intent.candidateSha,
-      previousBaseSha: superseded.baseSha,
-      baseSha: nextBatch.candidate?.baseSha,
-      revision: intent.revision,
-    },
-  });
-  return {
-    batch: structuredClone(nextBatch),
-    task: structuredClone(nextTask),
-    previousCandidate: superseded,
-  };
-}
-
-function assertCandidateBinding(
-  candidate: CandidateRecord,
-  binding: { candidateSha: string; baseSha: string; policyRevision?: string },
-): void {
-  const policyRevision = binding.policyRevision ?? candidate.policyRevision;
-  if (
-    binding.candidateSha !== candidate.sha ||
-    binding.baseSha !== candidate.baseSha ||
-    policyRevision !== candidate.policyRevision
-  ) {
-    throw new BrokerError(
-      "CANDIDATE_MISMATCH",
-      "The supplied candidate SHA, base SHA, or policy revision does not match the current candidate.",
-      {
-        expected: {
-          candidateSha: candidate.sha,
-          baseSha: candidate.baseSha,
-          policyRevision: candidate.policyRevision,
-        },
-        supplied: { ...binding, policyRevision },
-      },
-    );
-  }
-}
-
-function assertCurrentApprovalPolicy(config: BrokerConfig, candidate: CandidateRecord): void {
-  const policy = approvalPolicy(config);
-  const required = requiredEvidenceNames(config);
-  const approvalActorCurrent =
-    !candidate.approval ||
-    policy.authorizedActors.length === 0 ||
-    policy.authorizedActors.includes(candidate.approval.actor);
-  if (
-    candidate.policyRevision !== policy.policyRevision ||
-    candidate.requiredVerifications.length !== required.length ||
-    candidate.requiredVerifications.some((name) => !required.includes(name)) ||
-    !approvalActorCurrent
-  ) {
-    throw new BrokerError(
-      "CANDIDATE_POLICY_STALE",
-      "The approval policy changed after this candidate was assembled. Rebuild it before verification or approval.",
-      {
-        candidatePolicyRevision: candidate.policyRevision,
-        currentPolicyRevision: policy.policyRevision,
-        candidateRequiredVerifications: candidate.requiredVerifications,
-        currentRequiredVerifications: required,
-        candidateApprover: candidate.approval?.actor,
-        currentAuthorizedActors: policy.authorizedActors,
-      },
-    );
-  }
-}
-
-function upsertEvidence(candidate: CandidateRecord, evidence: VerificationEvidence): void {
-  candidate.verifications = candidate.verifications.filter((item) => item.name !== evidence.name);
-  candidate.verifications.push(evidence);
-  candidate.state = candidateState(candidate);
-  delete candidate.reason;
 }
 
 /**
@@ -1244,8 +1052,65 @@ export class MergeBroker {
   async submission(id: string): Promise<SubmissionRecord> {
     const state = await this.store.read();
     const submission = Object.hasOwn(state.submissions, id) ? state.submissions[id] : undefined;
-    if (!submission) throw new BrokerError("UNKNOWN_SUBMISSION", `Unknown candidate submission: ${id}`);
-    return structuredClone(submission);
+    const resolved = submission ?? await this.store.readArchivedSubmission(id);
+    if (!resolved) throw new BrokerError("UNKNOWN_SUBMISSION", `Unknown candidate submission: ${id}`);
+    return structuredClone(resolved);
+  }
+
+  async submissions(options: { includeArchived?: boolean } = {}): Promise<SubmissionRecord[]> {
+    const state = await this.store.read();
+    const records = new Map<string, SubmissionRecord>();
+    if (options.includeArchived) {
+      for (const record of await this.store.readArchivedSubmissions()) records.set(record.id, record);
+    }
+    for (const record of Object.values(state.submissions)) records.set(record.id, record);
+    return [...records.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async abandonSubmission(id: string, reason: string): Promise<SubmissionRecord> {
+    return await this.store.withGateAuthorityLock(async () =>
+      await new SubmissionRetentionManager(this.repo, this.store).abandon(id, reason));
+  }
+
+  async archiveSubmissions(options: SubmissionArchiveOptions = {}): Promise<SubmissionArchiveResult> {
+    return await this.store.withGateAuthorityLock(async () =>
+      await new SubmissionRetentionManager(this.repo, this.store).archive(options));
+  }
+
+  async attestSubmission(id: string): Promise<SubmissionAttestationEnvelope> {
+    return await this.store.withGateAuthorityLock(async () => await this.store.withIntegrationLock(async () => {
+      const state = await this.store.read();
+      const submission = Object.hasOwn(state.submissions, id) ? state.submissions[id] : undefined;
+      if (!submission) throw new BrokerError("UNKNOWN_SUBMISSION", "Attestation requires an active retained submission.");
+      const authority = await new GateAuthorityStore(this.repo.commonGitDir).require();
+      await assertGateAuthorityMatchesCurrentConfig(authority, this.config, this.repo);
+      const manager = new LocalRefSubmissionManager(this.repo, this.store, authority);
+      const { publicKey, privateKey } = await manager.attestationInputs(submission);
+      const envelope = signSubmissionAttestation(submission, privateKey, publicKey);
+      await this.store.transaction(async (current, audit) => {
+        if (JSON.stringify(current.submissions[id]) !== JSON.stringify(submission)) {
+          throw new BrokerError("SUBMISSION_CHANGED", "Submission changed before attestation completed.");
+        }
+        await this.repo.assertPinnedLocalRef(submission.id, submission.artifact.sha);
+        audit("submission.attested", { submissionId: id, details: { candidateSha: submission.artifact.sha } });
+      });
+      return envelope;
+    }));
+  }
+
+  async candidateReadiness(): Promise<Record<string, unknown>> {
+    const state = await this.store.read();
+    const pending = Object.values(state.submissions).filter((record) =>
+      record.status === "received" || record.status === "validating" || record.archiveIntent ||
+      (record.status === "abandoned" && (record.worktree || record.worktreeIdentity))).map((record) => record.id);
+    try {
+      const authority = await new GateAuthorityStore(this.repo.commonGitDir).require();
+      await assertGateAuthorityMatchesCurrentConfig(authority, this.config, this.repo);
+      const readiness = await new LocalRefSubmissionManager(this.repo, this.store, authority).readiness();
+      return { ...readiness, pending, warnings: pending.length ? ["Candidate operations are pending; inspect status and recover before new work."] : [] };
+    } catch (error) {
+      return { ready: false, pending, errorCode: error instanceof BrokerError ? error.code : "GATE_NOT_READY", warnings: [errorMessage(error)] };
+    }
   }
 
   async task(taskId: string): Promise<TaskRecord> {
@@ -2005,6 +1870,8 @@ export class MergeBroker {
     const recovered = await this.store.withIntegrationLock(
       async () => await this.recoverAbandonedIntegrationsLocked(),
     );
+    const maintenance = await this.store.withGateAuthorityLock(async () =>
+      await new SubmissionRetentionManager(this.repo, this.store).recover());
     const submissions = await this.store.withGateAuthorityLock(async () => {
       const records = Object.values((await this.store.read()).submissions);
       const manifestWarnings: string[] = [];
@@ -2013,10 +1880,10 @@ export class MergeBroker {
       // byte needed, and a missing/corrupt authority file must not prevent honest terminal output
       // from being regenerated after a crash.
       for (const submission of records
-        .filter((item) => item.status !== "received" && item.status !== "validating")
+        .filter((item) => item.status !== "received" && item.status !== "validating" && !item.archiveIntent && !item.worktree)
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
         try {
-          await this.store.writeSubmissionManifest(submission);
+          await this.store.ensureSubmissionManifest(submission);
         } catch (error) {
           manifestWarnings.push(
             `Could not repair candidate submission manifest ${submission.id}: ${errorMessage(error)}`,
@@ -2081,7 +1948,9 @@ export class MergeBroker {
     return {
       ...recovered,
       submissionsRecovered: submissions.recovered,
-      submissionWarnings: submissions.warnings,
+      submissionsArchived: maintenance.archived,
+      submissionsAbandonedCleaned: maintenance.cleaned,
+      submissionWarnings: [...maintenance.warnings, ...submissions.warnings],
     };
   }
 
@@ -4565,6 +4434,15 @@ export class MergeBroker {
     const archivedBatches = archived.flatMap((slice) => Object.values(slice.batches));
     const tasks = [...archivedTasks, ...activeTasks];
     const batches = [...archivedBatches, ...activeBatches];
+    // Read archives after the active snapshot: retirement writes its archive before deleting the
+    // active record. Prefer that captured active record during an overlap, and use the same
+    // snapshot for counts so concurrent retirement cannot count one submission as both states.
+    const submissionRecords = new Map(
+      (await this.store.readArchivedSubmissions()).map((record) => [record.id, record]),
+    );
+    for (const record of Object.values(state.submissions)) submissionRecords.set(record.id, record);
+    const submissions = [...submissionRecords.values()];
+    const submissionValidations = submissions.flatMap((record) => record.validations);
     const statusCounts = Object.fromEntries(
       [...new Set(tasks.map((task) => task.status))]
         .sort()
@@ -4607,10 +4485,31 @@ export class MergeBroker {
         failures: validations.filter((validation) => validation.exitCode !== 0).length,
         durationMs: validations.reduce((sum, validation) => sum + validation.durationMs, 0),
       },
+      submissions: {
+        total: submissions.length,
+        active: Object.keys(state.submissions).length,
+        archived: submissions.filter((record) => record.archivedAt).length,
+        byStatus: Object.fromEntries(["received", "validating", "validated", "rejected", "failed", "abandoned"]
+          .map((status) => [status, submissions.filter((record) => record.status === status).length])),
+        retainedArtifacts: submissions.filter((record) => !record.artifactReleasedAt).length,
+        validationRuns: submissionValidations.length,
+        validationFailures: submissionValidations.filter((result) => result.exitCode !== 0).length,
+        validationDurationMs: submissionValidations.reduce((sum, result) => sum + result.durationMs, 0),
+      },
     };
   }
 
-  async doctor(): Promise<Record<string, unknown>> {
+  async doctor(options: { gate?: boolean } = {}): Promise<Record<string, unknown>> {
+    if (options.gate) {
+      const gate = await this.candidateReadiness();
+      return {
+        repository: this.repo.root,
+        stateDirectory: this.store.directory,
+        operational: gate.ready === true,
+        warnings: gate.warnings,
+        gate,
+      };
+    }
     const [
       baseResolution,
       clean,

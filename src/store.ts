@@ -18,6 +18,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
+import { decodeSubmissionRecord } from "./state-codec.js";
+import { decodeBrokerState } from "./state-codec.js";
 import {
   generateProvenanceSigningIdentity,
   provenanceKeyId,
@@ -84,6 +86,7 @@ export class StateStore {
   readonly archiveDirectory: string;
   readonly tokensDirectory: string;
   readonly submissionsDirectory: string;
+  readonly archivedSubmissionsDirectory: string;
   readonly provenanceSigningKeyFile: string;
   readonly provenanceKeysDirectory: string;
   private readonly stateFile: string;
@@ -112,6 +115,7 @@ export class StateStore {
     this.archiveDirectory = path.join(this.directory, "archive");
     this.tokensDirectory = path.join(this.directory, "tokens");
     this.submissionsDirectory = path.join(this.directory, "submissions");
+    this.archivedSubmissionsDirectory = path.join(this.archiveDirectory, "submissions");
     this.provenanceSigningKeyFile = path.join(this.directory, "provenance-signing-key.pem");
     this.provenanceKeysDirectory = path.join(this.directory, "provenance-keys");
     this.stateFile = path.join(this.directory, "state.json");
@@ -177,6 +181,7 @@ export class StateStore {
         this.archiveDirectory,
         this.tokensDirectory,
         this.submissionsDirectory,
+        this.archivedSubmissionsDirectory,
         this.provenanceKeysDirectory,
       ].map(async (directory) => {
         await this.ensurePhysicalDirectoryTree(directory);
@@ -206,29 +211,15 @@ export class StateStore {
   async read(): Promise<CurrentBrokerState> {
     await this.initialize();
     const source = await readFile(this.stateFile, "utf8");
-    let state: BrokerState;
+    let state: unknown;
     try {
-      state = JSON.parse(source) as BrokerState;
+      state = JSON.parse(source) as unknown;
     } catch (error) {
       throw new BrokerError("STATE_CORRUPT", `Broker state is not valid JSON: ${this.stateFile}`, {
         cause: error instanceof Error ? error.message : String(error),
       });
     }
-    if (state.version !== STATE_VERSION) {
-      throw new BrokerError("STATE_VERSION", `Unsupported broker state version: ${String(state.version)}`);
-    }
-    if (state.submissions === undefined) {
-      // Additive v1 migration: old readers preserve unknown fields, and old state files become
-      // current on their next normal transaction without a separate destructive migration step.
-      state.submissions = {};
-    } else if (
-      state.submissions === null ||
-      typeof state.submissions !== "object" ||
-      Array.isArray(state.submissions)
-    ) {
-      throw new BrokerError("STATE_CORRUPT", "Broker state submissions must be an object keyed by submission ID.");
-    }
-    return state as CurrentBrokerState;
+    return decodeBrokerState(state);
   }
 
   async transaction<T>(mutator: (state: CurrentBrokerState, audit: AuditRecorder) => Promise<T> | T): Promise<T> {
@@ -435,6 +426,73 @@ export class StateStore {
     const target = path.join(this.submissionsDirectory, `${safeName(submission.id)}.json`);
     await this.atomicWrite(target, submission);
     return target;
+  }
+
+  /** Repair derived snapshots only when absent or stale, keeping routine recovery read-only. */
+  async ensureSubmissionManifest(submission: SubmissionRecord): Promise<string> {
+    await this.initialize();
+    const target = path.join(this.submissionsDirectory, `${safeName(submission.id)}.json`);
+    const expected = `${JSON.stringify(submission, null, 2)}\n`;
+    const current = await readFile(target, "utf8").catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (current !== expected) await this.atomicWrite(target, submission);
+    return target;
+  }
+
+  /** A deterministic per-ID archive makes retirement replayable after the Git side effect. */
+  async writeArchivedSubmission(submission: SubmissionRecord): Promise<string> {
+    await this.initialize();
+    if (!submission.archivedAt || submission.archiveIntent) {
+      throw new BrokerError("INVALID_SUBMISSION_ARCHIVE", "An archive needs a completed retirement snapshot.");
+    }
+    const target = path.join(this.archivedSubmissionsDirectory, `${safeName(submission.id)}.json`);
+    await this.atomicWrite(target, submission);
+    return target;
+  }
+
+  async readArchivedSubmission(id: string): Promise<SubmissionRecord | undefined> {
+    await this.initialize();
+    const target = path.join(this.archivedSubmissionsDirectory, `${safeName(id)}.json`);
+    const source = await readFile(target, "utf8").catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (source === undefined) return undefined;
+    let value: unknown;
+    try {
+      value = JSON.parse(source) as unknown;
+    } catch {
+      throw new BrokerError("STATE_CORRUPT", `Archived submission ${id} is not valid JSON.`);
+    }
+    const record = decodeSubmissionRecord(value, `archive[${JSON.stringify(id)}]`);
+    if (record.id !== id || record.version !== 1 || !record.archivedAt || record.archiveIntent) {
+      throw new BrokerError("STATE_CORRUPT", `Archived submission ${id} has an invalid identity.`);
+    }
+    return record;
+  }
+
+  async readArchivedSubmissions(): Promise<SubmissionRecord[]> {
+    await this.initialize();
+    const files = (await readdir(this.archivedSubmissionsDirectory)).filter((file) => file.endsWith(".json"));
+    const records: SubmissionRecord[] = [];
+    for (const file of files.sort()) {
+      const source = await readFile(path.join(this.archivedSubmissionsDirectory, file), "utf8");
+      let value: unknown;
+      try {
+        value = JSON.parse(source) as unknown;
+      } catch {
+        throw new BrokerError("STATE_CORRUPT", `Archived submission ${file} is not valid JSON.`);
+      }
+      const record = decodeSubmissionRecord(value, `archive[${JSON.stringify(file)}]`);
+      if (typeof record.id !== "string" || `${safeName(record.id)}.json` !== file) {
+        throw new BrokerError("STATE_CORRUPT", `Archived submission ${file} has an invalid identity.`);
+      }
+      const validated = await this.readArchivedSubmission(record.id);
+      if (validated) records.push(validated);
+    }
+    return records;
   }
 
   private async readAuditFile(target: string, limit: number): Promise<AuditEvent[]> {

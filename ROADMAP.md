@@ -6,22 +6,25 @@ This roadmap is organized by capability rather than promised release numbers or 
 
 ## Now — consolidate the recoverable transaction core
 
-Version `0.13.0` is the current baseline. It ships Coordinate mode: leases and commit receipts,
+Version `0.14.0` is the current baseline. It includes Coordinate mode: leases and commit receipts,
 deterministic batching, disposable-worktree validation, optional exact-candidate approval, signed
 provenance support, bound Git/GitHub publication, and recovery for interrupted publication,
 auto-merge, revocation, revision, and stale-base refresh. It also ships the trusted local-ref Gate
 validation increment below.
 
-Near-term work should make that foundation easier to operate and change safely:
+Version `0.14.0` adds:
 
-- document every durable intent, retry rule, ambiguous state, lock, and recovery transition;
-- keep the public `MergeBroker` API stable while separating candidate lifecycle and transaction
-  mechanics into smaller internal modules;
-- extend the proven local-ref submission boundary toward merge-authorized candidate lifecycle
-  without conflating the two records;
-- strengthen repository governance, cross-platform release evidence, and real-forge canary coverage;
-- keep current package, repository, CLI, and on-disk identities stable; and
-- preserve Coordinate mode as the supported local-first workflow.
+- Gate readiness diagnostics, saved validator logs, terminal abandonment, journaled archival,
+  explicit retained-ref release, and submission metrics;
+- detached Ed25519 DSSE validation statements and offline verification with independent key,
+  artifact, base, policy, and authority expectations;
+- packaged immutable schema identities, strict saved-state diagnostics, focused lifecycle/Git
+  modules, and an accepted/rejected Gate example; and
+- a mandatory Linux/macOS/Windows release matrix, portable forge fixtures, subprocess crash/restart
+  tests, and installation/publication of the actual tested npm tarball.
+
+Version `0.14.0` requires Node.js 22; `0.13.0` supported Node.js 20.12. The documentation tracks
+source; check npm's version history for published availability.
 
 This phase does not add a remote service or claim that arbitrary pull requests can already enter the
 candidate lifecycle.
@@ -59,15 +62,16 @@ origin. It is complete only when the broker can:
 
 1. create an exact candidate identity without inventing a path lease, task receipt, or synthetic
    Coordinate-mode batch history;
-2. define provenance that honestly identifies the retained external artifact and protected-base
-   policy;
+2. consume the versioned detached validation evidence that identifies the retained external
+   artifact and protected-base policy, while keeping validation separate from authorization;
 3. bind evidence and approval to that exact candidate, base, and policy;
 4. publish or reject it through target-bound, crash-recoverable operations; and
 5. reconcile merge completion from accepted Git history before granting any downstream authority.
 
 Implementation should extract only the ports this slice actually needs—starting with a candidate
 source and candidate-lifecycle boundary. A broad storage rewrite, generic workflow engine, PR
-intake, and remote authentication do not need to land in the same change.
+intake, and remote authentication do not need to land in the same change. HTTP hosting, another
+database, additional forges, and a dashboard remain deferred until this Gate workflow is complete.
 
 The first slice remains explicitly trusted-source-only: a disposable Git worktree is not a security
 sandbox, and validators executing candidate-controlled code can otherwise reach the broker user's
@@ -90,8 +94,7 @@ Later capabilities are directional and will be prioritized by real integrations:
 - a second state backend that proves the storage boundary before any distributed or highly
   available design;
 - generalized evidence providers and signed approval attestations;
-- an additive standard attestation envelope, such as in-toto/DSSE, around a versioned broker
-  predicate;
+- additional versioned attestation predicates beyond the implemented Gate validation envelope;
 - KMS- or identity-backed signing alongside the local Ed25519 signer;
 - stable forge repository identity beyond a mutable locator;
 - GitHub App and webhook reconciliation;

@@ -2,7 +2,7 @@
 import os from "node:os";
 import path from "node:path";
 import { appendFileSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Command, CommanderError, Option } from "commander";
 import { BrokerError, CommandError } from "./errors.js";
@@ -19,6 +19,7 @@ import { prePushHook } from "./hooks.js";
 import { formatBrokerStatus } from "./status.js";
 import { createSupportBundle } from "./support.js";
 import { policyFromBase, verifyProvenance } from "./verify.js";
+import { verifySubmissionAttestation } from "./submission-attestation.js";
 import type {
   BatchRecord,
   BrokerConfig,
@@ -241,7 +242,7 @@ function localValidationHuman(result: LocalValidationResult): string {
   return lines.filter((line) => line !== undefined).join("\n");
 }
 
-function submissionHuman(submission: SubmissionRecord): string {
+function submissionHuman(submission: SubmissionRecord, logs = false): string {
   const validations = submission.validations.map(
     (validation) =>
       `  ${validation.exitCode === 0 ? "ok  " : "FAIL"} ${validation.name} (${validation.scope})`,
@@ -254,11 +255,22 @@ function submissionHuman(submission: SubmissionRecord): string {
     `Retained ref: ${submission.artifact.retainedRef}`,
     `Base: ${submission.base.ref} @ ${submission.base.sha}`,
     `Policy: ${submission.policy.revision} (${submission.policy.digest})`,
+    submission.archivedAt ? `Archived: ${submission.archivedAt}` : undefined,
+    submission.artifactReleasedAt ? `Artifact ref released: ${submission.artifactReleasedAt}` : undefined,
+    submission.archiveIntent ? "Archival pending: run recover to finish the recorded retention decision." : undefined,
+    submission.abandonReason ? `Abandoned: ${submission.abandonReason}` : undefined,
     `Commits: ${submission.commits.length}`,
     `Files: ${submission.paths.length}`,
     ...(validations.length > 0 ? ["Validation:", ...validations] : ["Validation results: none"]),
     submission.errorCode ? `Error code: ${submission.errorCode}` : undefined,
     submission.error ? `Error: ${submission.error}` : undefined,
+    ...(logs ? submission.validations.flatMap((validation) => {
+      const text = [validation.stdout, validation.stderr].filter(Boolean).join("\n");
+      const bytes = Buffer.from(text, "utf8");
+      return ["", `--- ${validation.name} (${validation.exitCode === 0 ? "passed" : "failed"}) ---`,
+        bytes.subarray(0, 65_536).toString("utf8").trimEnd(),
+        ...(bytes.length > 65_536 ? ["[Display truncated at 64 KiB; inspect the JSON record for stored output.]"] : [])];
+    }) : []),
   ]
     .filter((line): line is string => line !== undefined)
     .join("\n");
@@ -269,7 +281,7 @@ function submissionListHuman(submissions: SubmissionRecord[]): string {
   return submissions
     .map(
       (submission) =>
-        `${submission.id}: ${submission.status} ${submission.artifact.sha} (base ${submission.base.sha})`,
+        `${submission.id}: ${submission.status}${submission.archivedAt ? " [archived]" : ""} ${submission.artifact.sha} (base ${submission.base.sha})`,
     )
     .join("\n");
 }
@@ -288,6 +300,28 @@ function gateAuthorityHuman(registration: GateAuthorityRegistration): string {
 
 async function openBroker(): Promise<MergeBroker> {
   return await MergeBroker.open(globalOptions().cwd);
+}
+
+/** Offline verification accepts regular files only and bounds reads even if a file grows. */
+async function readBoundedFile(file: string, maximum: number): Promise<string> {
+  const handle = await open(path.resolve(file), "r");
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maximum) {
+      throw new BrokerError("INVALID_ARGUMENTS", `Expected a regular file of at most ${maximum} bytes: ${file}`);
+    }
+    const buffer = Buffer.alloc(maximum + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > maximum) throw new BrokerError("INVALID_ARGUMENTS", `File exceeds ${maximum} bytes: ${file}`);
+    return buffer.subarray(0, length).toString("utf8");
+  } finally {
+    await handle.close();
+  }
 }
 
 program
@@ -358,9 +392,11 @@ program
   .command("doctor")
   .description("verify repository discovery, configuration, state, and base branch")
   .option("--support-bundle", "emit sanitized diagnostics and recent events for a support request")
-  .action(async (options: { supportBundle?: boolean }) => {
+  .option("--gate", "check local Gate authority, protected policy, and pending maintenance without fetching or executing validators")
+  .action(async (options: { supportBundle?: boolean; gate?: boolean }) => {
     const broker = await openBroker();
-    const result = await broker.doctor();
+    const result = await broker.doctor({ gate: options.gate ?? false });
+    if (options.gate && result.operational === false) process.exitCode = 1;
     if (options.supportBundle) {
       output(createSupportBundle({
         brokerVersion: PACKAGE_VERSION,
@@ -815,9 +851,9 @@ candidateAuthority
 candidate
   .command("list")
   .description("list retained candidate submissions")
-  .action(async () => {
-    const submissions = Object.values((await (await openBroker()).state()).submissions ?? {})
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  .option("--all", "include archived submission records")
+  .action(async (options: { all?: boolean }) => {
+    const submissions = await (await openBroker()).submissions({ includeArchived: options.all ?? false });
     output(submissions, submissionListHuman(submissions));
   });
 
@@ -834,9 +870,86 @@ candidate
 candidate
   .command("show <id>")
   .description("show one retained candidate submission")
-  .action(async (id: string) => {
+  .option("--logs", "include stored validator output (bounded to 64 KiB per validator in human output)")
+  .action(async (id: string, options: { logs?: boolean }) => {
     const result = await (await openBroker()).submission(id);
+    output(result, submissionHuman(result, options.logs ?? false));
+  });
+
+candidate
+  .command("abandon <id>")
+  .description("mark a pending submission abandoned, then safely clean up its owned worktree")
+  .requiredOption("--reason <reason>", "operator's reason for stopping this submission")
+  .action(async (id: string, options: { reason: string }) => {
+    const result = await (await openBroker()).abandonSubmission(id, options.reason);
     output(result, submissionHuman(result));
+  });
+
+candidate
+  .command("archive [ids...]")
+  .description("preview terminal submission archival; keeps Git artifact refs unless explicitly released")
+  .option("--older-than <days>", "minimum terminal age in days (default: 30, or 0 for explicit IDs)")
+  .option("--apply", "apply the previewed selection instead of a dry run")
+  .option("--release-artifacts", "also release each exact broker-owned Git retention ref; does not run Git GC")
+  .action(async (ids: string[], options: { olderThan?: string; apply?: boolean; releaseArtifacts?: boolean }) => {
+    const result = await (await openBroker()).archiveSubmissions({
+      ...(ids.length ? { ids } : {}),
+      ...(options.olderThan !== undefined ? { olderThanDays: Number(options.olderThan) } : {}),
+      dryRun: !(options.apply ?? false),
+      releaseArtifacts: options.releaseArtifacts ?? false,
+    });
+    output(result, [
+      `${result.dryRun ? "Would archive" : "Archived"} ${result.submissions.length} candidate submission(s).`,
+      `Artifacts: ${result.releaseArtifacts ? "release exact broker refs" : "retain broker refs"}.`,
+      ...result.submissions,
+      ...(result.retainedPending.length ? [`Pending/unfinished cleanup retained: ${result.retainedPending.join(", ")}`] : []),
+      ...(result.dryRun ? ["No records or artifact refs changed. Pass --apply to archive."] : []),
+    ].join("\n"));
+  });
+
+candidate
+  .command("attest <id>")
+  .description("sign detached validation evidence with the protected policy's trusted signing identity")
+  .option("--output <file>", "write a new envelope file (never overwrites an existing file); otherwise print JSON")
+  .action(async (id: string, options: { output?: string }) => {
+    const envelope = await (await openBroker()).attestSubmission(id);
+    if (options.output) {
+      const destination = path.resolve(options.output);
+      await writeFile(destination, `${JSON.stringify(envelope, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      output({ output: destination, purpose: "validation-evidence", mergeAuthorized: false }, `Wrote validation evidence: ${destination}\nThis does not authorize a merge.`);
+    } else output(envelope);
+  });
+
+candidate
+  .command("verify-attestation <file>")
+  .description("verify detached validation evidence offline against independently trusted identities; does not authorize a merge")
+  .requiredOption("--public-key <file>", "independently trusted Ed25519 public PEM file")
+  .requiredOption("--candidate <sha>", "expected exact candidate commit SHA")
+  .requiredOption("--tree <sha>", "expected exact Git tree SHA")
+  .requiredOption("--base <sha>", "expected protected-base commit SHA")
+  .requiredOption("--policy-digest <digest>", "expected protected policy SHA-256 digest")
+  .requiredOption("--authority-digest <digest>", "expected Gate authority SHA-256 digest")
+  .option("--config-blob <sha>", "expected protected configuration blob SHA")
+  .option("--evaluator <version>", "expected policy evaluator version")
+  .action(async (file: string, options: {
+    publicKey: string; candidate: string; tree: string; base: string; policyDigest: string;
+    authorityDigest: string; configBlob?: string; evaluator?: string;
+  }) => {
+    const serialized = await readBoundedFile(file, 2_097_152);
+    let envelope: unknown;
+    try { envelope = JSON.parse(serialized) as unknown; }
+    catch { throw new BrokerError("SUBMISSION_ATTESTATION_INVALID", "Attestation file is not valid JSON."); }
+    const result = verifySubmissionAttestation(envelope, {
+      publicKey: await readBoundedFile(options.publicKey, 16_384),
+      expected: {
+        candidateSha: options.candidate, treeSha: options.tree, baseSha: options.base,
+        policyDigest: options.policyDigest, authorityDigest: options.authorityDigest,
+        ...(options.configBlob ? { configBlobSha: options.configBlob } : {}),
+        ...(options.evaluator ? { evaluatorVersion: options.evaluator } : {}),
+      },
+    });
+    output(result, `Signature and expected identities verified. Validation outcome: ${result.outcome}.\nThis evidence does not authorize a merge.`);
+    if (!result.validationPassed) process.exitCode = 1;
   });
 
 const batch = program.command("batch").description("inspect and advance integration batches");
@@ -1176,8 +1289,10 @@ program
   .action(async () => {
     const result = await (await openBroker()).recoverAbandonedIntegrations();
     const submissions = result.submissionsRecovered ?? [];
+    const archived = result.submissionsArchived ?? [];
+    const abandonedCleaned = result.submissionsAbandonedCleaned ?? [];
     const submissionWarnings = result.submissionWarnings ?? [];
-    const recoveredAnything = result.batches.length > 0 || submissions.length > 0;
+    const recoveredAnything = result.batches.length > 0 || submissions.length > 0 || archived.length > 0 || abandonedCleaned.length > 0;
     output(
       result,
       recoveredAnything || result.cleanupWarnings.length > 0 || submissionWarnings.length > 0
@@ -1185,6 +1300,8 @@ program
             `Recovered ${result.batches.length} abandoned batch(es).`,
             `Requeued tasks: ${result.tasks.join(", ") || "none"}`,
             `Recovered candidate submissions: ${submissions.join(", ") || "none"}`,
+            `Archived candidate submissions: ${archived.join(", ") || "none"}`,
+            `Cleaned abandoned submissions: ${abandonedCleaned.join(", ") || "none"}`,
             ...(result.cleanupWarnings.length > 0
               ? result.cleanupWarnings.map((warning) => `Cleanup warning: ${warning}`)
               : []),
@@ -1289,6 +1406,8 @@ program
         (
           recovery.batches.length > 0 ||
           (recovery.submissionsRecovered?.length ?? 0) > 0 ||
+          (recovery.submissionsArchived?.length ?? 0) > 0 ||
+          (recovery.submissionsAbandonedCleaned?.length ?? 0) > 0 ||
           (recovery.submissionWarnings?.length ?? 0) > 0
         )
       ) {
@@ -1297,6 +1416,8 @@ program
           batches: recovery.batches,
           tasks: recovery.tasks,
           submissions: recovery.submissionsRecovered ?? [],
+          archivedSubmissions: recovery.submissionsArchived ?? [],
+          abandonedSubmissionsCleaned: recovery.submissionsAbandonedCleaned ?? [],
           submissionWarnings: recovery.submissionWarnings ?? [],
         });
       }

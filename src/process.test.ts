@@ -4,6 +4,25 @@ import path from "node:path";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { commandForArchitecture, resolveShell, runCommand } from "./process.js";
+import { fakeProcess } from "./test-support/fake-process.js";
+
+test("portable command fixtures preserve literal arguments and process I/O, then restore spawning", async (context) => {
+  const command = "merge-broker-test-command-that-does-not-exist";
+  await context.test("real Node subprocess", async (subcontext) => {
+    await fakeProcess(subcontext, command, `
+      console.log(JSON.stringify({ args, input }));
+      console.error("fixture error output");
+      process.exitCode = 7;
+    `);
+    const args = ["argument with spaces", 'literal "quotes"', "a&b", "100%"];
+    const result = await runCommand(command, args, { cwd: process.cwd(), input: "first\nsecond\n", allowFailure: true });
+    assert.deepEqual(JSON.parse(result.stdout), { args, input: "first\nsecond\n" });
+    assert.equal(result.exitCode, 7);
+    assert.match(result.stderr, /fixture error output/u);
+    assert.equal((await runCommand(process.execPath, ["-e", "console.log('unchanged')"], { cwd: process.cwd() })).stdout.trim(), "unchanged");
+  });
+  await assert.rejects(runCommand(command, [], { cwd: process.cwd() }), { code: "ENOENT" });
+});
 
 test("uses non-profile PowerShell with literal-safe placeholders on Windows", () => {
   const shell = resolveShell(undefined, "win32");

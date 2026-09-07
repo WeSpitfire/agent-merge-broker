@@ -8,6 +8,7 @@ import { configPath, loadConfig } from "./config.js";
 import { BrokerError } from "./errors.js";
 import { runCommand } from "./process.js";
 import { githubCliPublisher } from "./publisher.js";
+import { fakeProcess } from "./test-support/fake-process.js";
 import type { AuditRecorder } from "./store.js";
 import type { BrokerState } from "./types.js";
 
@@ -1044,7 +1045,6 @@ test("refuses to report success when a locally closed pull request is reopened",
 
 test(
   "runs validators in a fixed shell and keeps worker and signing credentials out of them",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     const repo = await createRepository();
     // Validators used to run under the operator's $SHELL as a login shell, so an unusual shell
@@ -1074,7 +1074,7 @@ test(
     config.validation.authoritative.push({
       name: "broker credentials are not visible to validators",
       command:
-        'test -z "$MERGE_BROKER_TOKEN" && test -z "$MERGE_BROKER_SIGNING_KEY" && test -z "$MERGE_BROKER_SIGNING_KEY_FILE"',
+        'node -e "process.exit([\'MERGE_BROKER_TOKEN\', \'MERGE_BROKER_SIGNING_KEY\', \'MERGE_BROKER_SIGNING_KEY_FILE\'].some((name) => Boolean(process.env[name])) ? 1 : 0)"',
       timeoutSeconds: 30,
     });
     await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -1095,7 +1095,6 @@ test(
 
 test(
   "refuses a successful validator that changes the candidate worktree",
-  { skip: process.platform === "win32" ? "POSIX shell fixture" : false },
   async (context) => {
     const repo = await createRepository();
     context.after(async () => {
@@ -1104,7 +1103,7 @@ test(
     const config = await loadConfig(repo);
     config.validation.authoritative.push({
       name: "must be observational",
-      command: "printf 'validator-only\\n' > src/mutated.ts",
+      command: "node --input-type=commonjs -e \"require('node:fs').writeFileSync('src/mutated.ts', 'validator-only')\"",
       timeoutSeconds: 30,
     });
     await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -1445,10 +1444,7 @@ test("refuses to cut a second batch while the first has not merged", async (cont
   assert.equal(forced.batch.status, "prepared");
 });
 
-test("a batch whose auto-merge fails is published, not lost", {
-  // Same reason as the publisher fixtures: the fake forge is a POSIX shell script.
-  skip: process.platform === "win32" ? "POSIX shell fixture" : false,
-}, async (context) => {
+test("a batch whose auto-merge fails is published, not lost", async (context) => {
   const repo = await createRepository();
   const remoteParent = await mkdtemp(path.join(tmpdir(), "merge-broker-remote-"));
   const remote = path.join(remoteParent, "origin.git");
@@ -1466,33 +1462,17 @@ test("a batch whose auto-merge fails is published, not lost", {
   const headFile = path.join(bin, "head");
   const baseFile = path.join(bin, "base");
   await writeFile(baseFile, `${await git(repo, "rev-parse", "origin/main")}\n`, "utf8");
-  await writeFile(
-    path.join(bin, "gh"),
-    [
-      "#!/bin/sh",
-      'case "$*" in',
-      '  *"pr list"*) echo "[]" ;;',
-      // Drain the body from stdin; exiting without reading it is an EPIPE for the writer.
-      '  *"pr create"*) cat >/dev/null; echo "https://forge.invalid/owner/repo/pull/7" ;;',
-      '  *"pr view"*)',
-      '    head=$(tr -d "\\n" < "$MERGE_BROKER_TEST_HEAD")',
-      '    base=$(tr -d "\\n" < "$MERGE_BROKER_TEST_BASE")',
-      '    printf \'{"state":"OPEN","headRefOid":"%s","baseRefOid":"%s","baseRefName":"main","mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","autoMergeRequest":null,"statusCheckRollup":[]}\\n\' "$head" "$base" ;;',
-      '  *) echo "the forge is unavailable" >&2; exit 1 ;;',
-      "esac",
-      "",
-    ].join("\n"),
-    { encoding: "utf8", mode: 0o755 },
-  );
-  const previousPath = process.env.PATH;
-  process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
-  process.env.MERGE_BROKER_TEST_HEAD = headFile;
-  process.env.MERGE_BROKER_TEST_BASE = baseFile;
+  await fakeProcess(context, "gh", `
+    if (command.startsWith("pr list")) console.log("[]");
+    else if (command.startsWith("pr create")) console.log("https://forge.invalid/owner/repo/pull/7");
+    else if (command.startsWith("pr view")) console.log(JSON.stringify({
+      state: "OPEN", headRefOid: readFileSync(${JSON.stringify(headFile)}, "utf8").trim(),
+      baseRefOid: readFileSync(${JSON.stringify(baseFile)}, "utf8").trim(), baseRefName: "main",
+      mergeStateStatus: "BLOCKED", mergeable: "MERGEABLE", autoMergeRequest: null, statusCheckRollup: [],
+    }));
+    else { console.error("the forge is unavailable"); process.exitCode = 1; }
+  `);
   context.after(async () => {
-    if (previousPath === undefined) delete process.env.PATH;
-    else process.env.PATH = previousPath;
-    delete process.env.MERGE_BROKER_TEST_HEAD;
-    delete process.env.MERGE_BROKER_TEST_BASE;
     await rm(bin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 

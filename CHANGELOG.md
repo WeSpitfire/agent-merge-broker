@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.14.0 — 2026-09-06
+
+### Added
+
+- Added Gate readiness checks through `doctor --gate`, captured validator output through
+  `candidate show --logs`, archived-submission inspection with `candidate list --all`, and
+  submission counts in metrics.
+- Added deliberate `candidate abandon --reason` and preview-first `candidate archive` operations.
+  Abandonment preserves the original evidence and retries cleanup without rerunning validators.
+  Archival retires terminal records from active state while preserving their audit history; refs
+  remain retained unless `--release-artifacts` explicitly releases the exact broker-owned ref.
+- Added detached Ed25519 DSSE attestations containing an in-toto Gate validation statement, plus
+  offline verification against an independently trusted public key and expected artifact, base,
+  policy, and authority. Signed validation evidence does not authorize publication or merging.
+- Added fingerprint-addressed, packaged schema snapshots and an identity manifest while preserving
+  legacy schema aliases. Added a runnable local Gate example with accepted and rejected candidates.
+- Added runtime validation of saved state with field-specific corruption diagnostics, portable
+  GitHub CLI test fixtures, and real subprocess termination/restart recovery tests.
+
+### Changed
+
+- Raised the minimum Node.js version to 22, from 20.12 in `0.13.0`. The reusable release matrix
+  tests Node.js 22, 24, and 26 on Linux, macOS, and Windows.
+- Publication now waits for all platform checks against one immutable commit, installs and exercises
+  the actual npm tarball, and publishes those tested bytes with npm trusted publishing/provenance.
+- Extracted pure candidate lifecycle and Git locator logic and Gate retention into focused internal
+  modules while preserving the public Coordinate API.
+- Shortened the README into Coordinate and Gate entry routes and aligned operations, security,
+  compatibility, release, and roadmap documentation with the implemented capability boundaries.
+
 ## 0.13.0 — 2026-09-04
 
 ### Added

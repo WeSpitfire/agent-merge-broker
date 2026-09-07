@@ -4,11 +4,15 @@
 
 Agent Merge Broker sits between code-producing workers and the repository's protected integration
 workflow. Coordinate-mode workers own implementation and focused commits; the broker owns ordering,
-batching, validation, and publication. Version `0.13.0` adds trusted local-ref intake as a
+batching, validation, and publication. Version `0.13.0` introduced trusted local-ref intake as a
 separate validation-only aggregate for work assembled elsewhere. GitHub or another forge remains the
 review, policy, and deployment boundary.
 
 The core depends on Git rather than a particular agent SDK. CLI JSON output and the exported Node API are the initial adapter surfaces.
+
+Version `0.14.0` extends Gate with diagnostics, abandonment, journaled retirement, detached signed
+validation evidence, and offline verification. These extensions do not give Gate publication or
+merge authority.
 
 ## Invariants
 
@@ -47,7 +51,13 @@ The core depends on Git rather than a particular agent SDK. CLI JSON output and 
     evaluator policy from the exact registered base commit, never from the candidate's or mutable
     checkout's choice of authority.
 17. `validated` on a submission is validation evidence only. It creates no Coordinate-mode task,
-    lease, receipt, batch, approval, provenance, publication, or merge authority.
+    lease, receipt, batch, approval, publication, or merge authority. An explicitly exported detached
+    validation statement preserves the same artifact SHA and still grants no merge authority.
+18. Gate abandonment is terminal before cleanup. Recovery cannot turn an abandoned record back into
+    executing validators. Archival preserves the complete record before removing it from active
+    state; exact-ref release requires a durable explicit retention decision.
+19. Detached evidence authenticates the exact commit/tree and protected policy. Verification uses an
+    independently selected public key and expected identities, never an envelope-supplied trust root.
 
 ## Portable and runtime state
 
@@ -98,12 +108,17 @@ Local-ref submissions are an additive collection in state version 1. A reader no
 file with no `submissions` member to `{}` and persists that collection on the next ordinary state
 transaction; a present non-object value is corruption, not an empty collection.
 
+Since `0.14.0`, `state-codec.ts` validates the known nested task, batch, candidate, lease, validation,
+submission, and durable-intent shapes before normal code sees saved state. It reports corruption
+with a field path, rejects unknown format versions, and preserves unknown additive fields. This
+structural check is separate from runtime Git, policy, and forge identity proofs.
+
 The state lock protects short state and audit mutations. The integration lock protects planning,
 worktree construction, validation, recovery of an abandoned `running` batch, and trusted local-ref
 adoption/recovery. Per-batch locks serialize publication, synchronization, approval, change
 requests, revision, refresh, completion, and closure for the same batch without blocking unrelated
 batch reconciliation. Status reads and heartbeats therefore do not hold the long integration lock.
-Gate setup, replacement, adoption, and submission recovery additionally hold the fixed common-dir
+Gate setup, replacement, adoption, attestation, abandonment, archival, and submission recovery additionally hold the fixed common-dir
 authority lock. This prevents `--replace` from changing the trust root during validation even when a
 new checkout configuration names a different state directory.
 
@@ -119,10 +134,20 @@ Active state is a working set, not a historical record. Because `state.json` is 
 
 Two records are deliberately not prunable. A completed task that a retained task still declares as a dependency stays, because `dependencyReady` cannot distinguish a pruned dependency from one that has never merged and would block the dependent forever. A batch stays while any of its tasks does, so a retained task never points at a batch that no longer exists.
 
-Submission records and `refs/merge-broker/adopted/<submission-id>` are also retained indefinitely in
-this first Gate slice. `prune` does not archive or delete them. Deleting only the state record or only
-the ref would break the durable identity/recovery relationship, so automated retirement needs its
-own journaled increment rather than an undocumented manual cleanup convention.
+Version `0.13.0` retained submission records and `refs/merge-broker/adopted/<submission-id>`
+indefinitely. In `0.14.0`, `SubmissionRetentionManager` owns their separate `candidate archive`
+operation; ordinary `prune` still applies to tasks and batches. Preview is the default. Applied
+retirement first journals `{ requestedAt, releaseArtifact }`, verifies the exact retained ref (or
+releases it if explicitly requested), writes an archived record and its derivative manifest, then
+removes the active record. A stop between phases leaves the intent for `recover` to replay.
+Changed or symbolic refs cannot be released. No Git objects are deleted and Git GC is never invoked.
+
+Only terminal submissions without pending worktree cleanup are eligible. Archival preserves refs
+by default, historical validation results remain inspectable, and metrics include archived records.
+An operator may first abandon an unrecoverable pending record; that terminal transition records its
+reason before cleanup, and subsequent recovery can only retry cleanup. Maintenance does not require
+the old validation authority to remain usable, but still serializes through the fixed authority and
+integration locks. Signing, in contrast, requires the original current authority and protected key.
 
 Audit reads are tolerant by design: they scan a bounded tail and skip records that fail to parse. A crash between writing and flushing leaves a truncated line, which is exactly the moment the audit trail matters most.
 
@@ -183,6 +208,8 @@ operation succeeded:
 | --- | --- | --- | --- |
 | Batch `running`; tasks `integrating` | Disposable worktree and local branch construction | A new process holds the integration lock, proving the old transaction cannot progress | `recover`; also run automatically by `serve` and `integrate` |
 | Submission `received` or `validating` | Create the exact broker-owned retention ref, construct a disposable worktree, and execute repository validators | Retained ref equals the recorded artifact SHA; Git reproduces the recorded base, commit chain, tree, paths, and policy identity; validators leave the candidate unchanged | `recover`; `serve` runs that recovery at startup |
+| Submission `abandoned` with worktree identity | Remove its disposable worktree | Saved physical worktree identity and registry ownership permit cleanup; validators never run | `recover` or repeat `candidate abandon` |
+| Submission `archiveIntent` | Optionally release the exact retained ref, persist archived record/manifest, and retire active state | The recorded retention decision and expected artifact still match; archive is durable before active removal | `recover` or repeat the matching `candidate archive --apply` |
 | Batch `prepared` with branch, head SHA, base, and target binding | Exact-SHA branch push and PR creation | Bound branch is at the recorded SHA; an existing PR for the unique head/base is found across all PR states | `batch publish` or `serve --publish` |
 | `autoMergePending` | Usually enable auto-merge with the expected-head guard, or perform the same guarded merge when the forge already reports `CLEAN`; it also marks an unauthorized or legacy queue as possibly live while the broker disables it | Forge reports whether the queue is enabled, disabled, or the exact PR is terminal | Reconcile with `batch sync`; complete or retry an authorized hand-off with `batch publish` or `serve --publish` |
 | Approval with `approvedAt` but no `confirmedAt` | None yet; this is the causal gap before merge authorization | A post-write observation sees the exact PR still `OPEN` at the candidate head, base branch, and base SHA | Run `batch sync` or repeat `batch approve` with the exact tuple; either performs the post-write observation |
@@ -214,7 +241,7 @@ description warning; PR text is never merge authorization.
 
 ## Trusted local-ref submission lifecycle
 
-This lifecycle ships in `0.13.0`. Gate intake is
+This lifecycle was introduced in `0.13.0`. Gate intake is
 intentionally not a special kind of `BatchRecord`. A `SubmissionRecord` owns its own
 source locator, immutable artifact commit/tree/ref, protected-base identity, policy identity,
 ordered commit chain, derived paths, validation results, and timestamps:
@@ -272,9 +299,33 @@ For one adoption the broker:
 A repository validation failure or validator mutation becomes `rejected`. A policy, Git, cache, or
 retention failure can become `failed` only while the final immutable identity/ref proof still holds;
 an irreproducible identity, wrong/symbolic ref, or unsafe worktree-cleanup failure leaves `validating`
-for recovery. The record never transitions into a task or batch. Approval, provenance,
-publication target binding, merge reconciliation, dependency release, and submission retirement are
-outside this first slice.
+for recovery. The record never transitions into a task or batch. Approval, publication target binding,
+merge reconciliation, and dependency release remain outside Gate. Version `0.14.0` abandonment, retirement,
+and detached evidence extend this aggregate without inventing Coordinate history.
+
+### Internal boundaries and detached evidence — 0.14.0
+
+`candidate-lifecycle.ts` contains pure exact-candidate evidence, approval, and transition decisions;
+`git-locators.ts` contains Git/forge locator normalization and comparison. Side-effecting transaction
+ordering stays in the broker and repository components. `state-codec.ts` owns saved-state structure,
+and `submission-retention.ts` owns local submission retirement. These are focused extractions, not
+a new storage backend or general workflow engine.
+
+`submission-attestation.ts` constructs an in-toto Statement/v1 from an eligible saved validation
+record and signs DSSE v1 pre-authentication bytes with the existing local Ed25519 identity. The
+broker wrapper holds Gate/integration locks, reproves saved artifact and protected policy identity,
+loads a private key matching that policy's public key, and audits the export. The file is detached:
+no new commit, approval, or Git ref is produced.
+
+The verifier has no repository, configuration, or network dependency. It requires independently
+trusted key and identity expectations, authenticates the exact payload bytes, validates the versioned
+predicate and evidence consistency, and then compares those identities. Signed failure is a verified
+claim of failure; `mergeAuthorized` remains false for every result. Packaged schema snapshots and
+their fingerprint manifest define immutable schema identities; see [Protocol](PROTOCOL.md).
+
+The test suite exercises real subprocess termination and restart in addition to injected failures.
+The release workflow shares a full OS/Node verification matrix and publishes the actual tarball that
+was installed and exercised, with its SHA-256 checked before publication.
 
 ## Task lifecycle
 

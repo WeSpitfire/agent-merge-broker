@@ -3,6 +3,7 @@ import type { AuditEvent } from "./types.js";
 
 const SECRET_KEY = /(?:token|secret|password|credential|private[_-]?key)/iu;
 const URL_KEY = /(?:url|uri)$/iu;
+const OPERATOR_TEXT_KEY = /^abandon[_-]?reason$/iu;
 
 export interface SupportBundle {
   version: 1;
@@ -26,6 +27,7 @@ export function sanitizeSupportData(
 ): unknown {
   if (SECRET_KEY.test(key)) return "<redacted-secret>";
   if (URL_KEY.test(key)) return value === undefined ? undefined : "<redacted-url>";
+  if (OPERATOR_TEXT_KEY.test(key)) return "<redacted-operator-text>";
   if (typeof value === "string") {
     let sanitized = replaceAllLiteral(value, options.repositoryRoot, "<repository>");
     sanitized = replaceAllLiteral(sanitized, options.homeDirectory ?? os.homedir(), "<home>");
@@ -37,8 +39,20 @@ export function sanitizeSupportData(
     return value.map((item) => sanitizeSupportData(item, options));
   }
   if (value && typeof value === "object") {
+    // An abandonment reason is unrestricted operator prose. Do not infer that it is safe merely
+    // because its words do not resemble a URL or a secret-bearing field name. Other audit reasons
+    // are machine diagnostics and retain their existing treatment.
+    const record = value as Record<string, unknown>;
+    const abandonment = record.event === "submission.abandoned";
     return Object.fromEntries(
-      Object.entries(value).map(([name, item]) => [name, sanitizeSupportData(item, options, name)]),
+      Object.entries(record).map(([name, item]) => {
+        const sanitizedInput = record.status === "abandoned" && record.errorCode === "SUBMISSION_ABANDONED" && name === "error"
+          ? "<redacted-operator-text>"
+          : abandonment && name === "details" && item && typeof item === "object"
+            ? { ...item, reason: "<redacted-operator-text>" }
+            : item;
+        return [name, sanitizeSupportData(sanitizedInput, options, name)];
+      }),
     );
   }
   return value;
@@ -64,6 +78,6 @@ export function createSupportBundle(options: {
     },
     diagnostics: sanitizeSupportData(options.diagnostics, redaction),
     recentEvents: sanitizeSupportData(options.recentEvents, redaction),
-    redaction: "Repository paths, home-directory paths, URLs, and secret-bearing fields were removed. Review before sharing.",
+    redaction: "Repository paths, home-directory paths, URLs, secret-bearing fields, and free-form abandonment reasons were removed. Review before sharing.",
   };
 }

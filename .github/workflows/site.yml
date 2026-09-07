@@ -37,12 +37,17 @@ jobs:
       - name: Install site dependencies
         working-directory: site
         run: npm ci
+      - uses: actions/configure-pages@v5
+        id: pages
       # sync-docs copies the canonical documentation from the repository root, so the site can
       # never drift from the files contributors actually edit.
       - name: Build
         working-directory: site
+        # Follow the configured Pages URL until the custom domain is activated in repository
+        # settings. A project site needs its repository prefix; an active custom domain does not.
+        env:
+          SITE_BASE: ${{ steps.pages.outputs.base_path }}/
         run: npm run build
-      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site/.vitepress/dist
