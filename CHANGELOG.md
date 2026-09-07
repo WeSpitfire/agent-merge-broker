@@ -1,6 +1,19 @@
 # Changelog
 
+## 0.14.1 — 2026-09-06
+
+### Fixed
+
+- Prefixed the tested release tarball path with `./` so npm treats it as a local package rather than
+  GitHub shorthand. Added a publish dry-run to the packaged smoke test to verify that path before
+  granting publication authority.
+- Updated release references to `0.14.1`. The immutable `v0.14.0` GitHub tag remains available, but
+  its npm publication failed before uploading a package. Version `0.14.1` is the first npm release
+  target for the features below; confirm completed publication in npm's version history.
+
 ## 0.14.0 — 2026-09-06
+
+This GitHub release was not published to npm; its publishing-path correction is in `0.14.1`.
 
 ### Added
 

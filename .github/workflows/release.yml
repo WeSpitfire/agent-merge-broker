@@ -78,4 +78,4 @@ jobs:
       - name: Publish the verified tarball
         env:
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
-        run: npm publish "release-package/agent-merge-broker-$RELEASE_VERSION.tgz" --provenance --access public
+        run: npm publish "./release-package/agent-merge-broker-$RELEASE_VERSION.tgz" --provenance --access public

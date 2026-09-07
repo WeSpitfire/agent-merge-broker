@@ -183,7 +183,7 @@
       <a :href="withBase('/docs/getting-started')">Getting started →</a>
     </div>
     <div class="mode">
-      <span class="stamp warn">v0.14.0 · validation evidence</span>
+      <span class="stamp warn">v0.14.1 · validation evidence</span>
       <h3>Gate</h3>
       <p>Pin and validate a trusted local Git ref, inspect its history, and export signed evidence. Approval, publication, and merge authority remain planned.</p>
       <a :href="withBase('/docs/roadmap')">Roadmap →</a>

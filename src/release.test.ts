@@ -96,7 +96,7 @@ test("npm publishes the tarball exercised by the matrix, with publishing authori
   assert.match(npm, /uses: actions\/download-artifact@/u);
   assert.match(npm, /name: npm-package-\$\{\{ needs\.resolve\.outputs\.sha \}\}/u);
   assert.match(npm, /node scripts\/verify-release-artifact\.mjs release-package "\$EXPECTED_SHA" "\$RELEASE_VERSION"/u);
-  assert.match(npm, /npm publish "release-package\/agent-merge-broker-\$RELEASE_VERSION\.tgz" --provenance --access public/u);
+  assert.match(npm, /npm publish "\.\/release-package\/agent-merge-broker-\$RELEASE_VERSION\.tgz" --provenance --access public/u);
   assert.match(npm, /id-token: write/u);
   assert.doesNotMatch(releaseWorkflow.slice(0, releaseWorkflow.indexOf("\njobs:\n")), /id-token: write/u);
   assert.ok(packageMetadata.scripts["test:package"]?.includes("scripts/packaged-smoke.mjs"));

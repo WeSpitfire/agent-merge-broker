@@ -137,6 +137,15 @@ try {
     assert.ok(!file.includes(".test.") && !file.startsWith("dist/test-support/"), `Test code must not ship: ${file}`);
   }
   const tarball = path.join(packDestination, packed.filename);
+  // A bare directory/file.tgz can be parsed as GitHub shorthand. Exercise publication's
+  // explicit local-file form without publishing, running lifecycle scripts, or requesting OIDC.
+  const publishPreview = JSON.parse(await runNpm([
+    "publish", `./${packed.filename}`, "--dry-run", "--ignore-scripts", "--json",
+    "--access=public", "--provenance=false", "--registry=https://registry.npmjs.org",
+  ], packDestination));
+  assert.equal(publishPreview.name, metadata.name);
+  assert.equal(publishPreview.version, metadata.version);
+  assert.equal(publishPreview.integrity, packed.integrity, "Publication must select the tested local tarball.");
   await writeFile(path.join(consumer, "package.json"), JSON.stringify({
     name: "merge-broker-installed-consumer",
     private: true,

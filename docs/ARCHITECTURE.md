@@ -10,7 +10,7 @@ review, policy, and deployment boundary.
 
 The core depends on Git rather than a particular agent SDK. CLI JSON output and the exported Node API are the initial adapter surfaces.
 
-Version `0.14.0` extends Gate with diagnostics, abandonment, journaled retirement, detached signed
+Version `0.14.1` extends Gate with diagnostics, abandonment, journaled retirement, detached signed
 validation evidence, and offline verification. These extensions do not give Gate publication or
 merge authority.
 
@@ -108,7 +108,7 @@ Local-ref submissions are an additive collection in state version 1. A reader no
 file with no `submissions` member to `{}` and persists that collection on the next ordinary state
 transaction; a present non-object value is corruption, not an empty collection.
 
-Since `0.14.0`, `state-codec.ts` validates the known nested task, batch, candidate, lease, validation,
+In `0.14.1`, `state-codec.ts` validates the known nested task, batch, candidate, lease, validation,
 submission, and durable-intent shapes before normal code sees saved state. It reports corruption
 with a field path, rejects unknown format versions, and preserves unknown additive fields. This
 structural check is separate from runtime Git, policy, and forge identity proofs.
@@ -135,7 +135,7 @@ Active state is a working set, not a historical record. Because `state.json` is 
 Two records are deliberately not prunable. A completed task that a retained task still declares as a dependency stays, because `dependencyReady` cannot distinguish a pruned dependency from one that has never merged and would block the dependent forever. A batch stays while any of its tasks does, so a retained task never points at a batch that no longer exists.
 
 Version `0.13.0` retained submission records and `refs/merge-broker/adopted/<submission-id>`
-indefinitely. In `0.14.0`, `SubmissionRetentionManager` owns their separate `candidate archive`
+indefinitely. In `0.14.1`, `SubmissionRetentionManager` owns their separate `candidate archive`
 operation; ordinary `prune` still applies to tasks and batches. Preview is the default. Applied
 retirement first journals `{ requestedAt, releaseArtifact }`, verifies the exact retained ref (or
 releases it if explicitly requested), writes an archived record and its derivative manifest, then
@@ -300,10 +300,10 @@ A repository validation failure or validator mutation becomes `rejected`. A poli
 retention failure can become `failed` only while the final immutable identity/ref proof still holds;
 an irreproducible identity, wrong/symbolic ref, or unsafe worktree-cleanup failure leaves `validating`
 for recovery. The record never transitions into a task or batch. Approval, publication target binding,
-merge reconciliation, and dependency release remain outside Gate. Version `0.14.0` abandonment, retirement,
+merge reconciliation, and dependency release remain outside Gate. Version `0.14.1` abandonment, retirement,
 and detached evidence extend this aggregate without inventing Coordinate history.
 
-### Internal boundaries and detached evidence — 0.14.0
+### Internal boundaries and detached evidence — 0.14.1
 
 `candidate-lifecycle.ts` contains pure exact-candidate evidence, approval, and transition decisions;
 `git-locators.ts` contains Git/forge locator normalization and comparison. Side-effecting transaction

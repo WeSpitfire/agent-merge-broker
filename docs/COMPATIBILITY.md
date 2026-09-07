@@ -8,8 +8,9 @@ The documentation site tracks the `main` branch and may be ahead of npm. Compare
 with the topmost entry in the
 [changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md); if that current
 entry is **Unreleased**, it is source-checkout behavior until the next release is published. This
-page describes version `0.14.0`, including Gate operations and detached attestations; npm's version
-history confirms published availability.
+page describes version `0.14.1`, including Gate operations and detached attestations; npm's version
+history confirms published availability. The `v0.14.0` GitHub tag exists, but that version was never
+published to npm; `0.14.1` is the corrected release target.
 
 ## Platform matrix
 
@@ -19,8 +20,8 @@ history confirms published availability.
 | macOS | `/bin/sh` | launchd agent | macOS, Node.js 22, 24, and 26 |
 | Linux | `/bin/sh` | systemd user service | Ubuntu, Node.js 22, 24, and 26 |
 
-Version `0.14.0` requires Node.js 22 or newer; `0.13.0` supported Node.js 20.12. The table describes
-the reusable nine-lane release matrix introduced in `0.14.0`, not a retroactive change to the checks
+Version `0.14.1` requires Node.js 22 or newer; `0.13.0` supported Node.js 20.12. The table describes
+the reusable nine-lane release matrix for `0.14.1`, not a retroactive change to the checks
 run for `0.13.0`. Every host requires Git 2.31 or newer. GitHub pull-request publication
 also requires an authenticated GitHub CLI (`gh`) for the same user that runs the broker. The
 trusted local-ref Gate intake specifically requires Git 2.46 or newer so
@@ -250,15 +251,15 @@ Adoption runs matching focused validators once over the union of paths touched b
 commits, then runs every authoritative validator. It records `validated`, `rejected`, or `failed`
 evidence in a separate `SubmissionRecord`. It does not create or enter a task, lease, receipt, batch,
 approval, Coordinate provenance, branch publication, pull request, merge queue, merge reconciliation, or
-dependency lifecycle. Neither MCP profile exposes adoption in `0.14.0`. Version `0.13.0` retained
-terminal submission records and their broker-owned refs indefinitely. In `0.14.0`,
+dependency lifecycle. Neither MCP profile exposes adoption in `0.14.1`. Version `0.13.0` retained
+terminal submission records and their broker-owned refs indefinitely. In `0.14.1`,
 `candidate archive` provides separate journaled retirement; `prune` still handles tasks and batches. If
 the final object/ref identity cannot be reproduced, the record remains `validating` for fail-closed
 operator recovery rather than claiming a terminal outcome. Recovery repairs missing or stale
 manifests for already-terminal records before it loads Gate authority, so an absent or corrupt
 registration cannot hide terminal state; pending validation still requires its original authority.
 
-### Gate operations and detached evidence — 0.14.0
+### Gate operations and detached evidence — 0.14.1
 
 - `doctor --gate` inspects local prerequisites and protected policy without fetching or running
   validators. `candidate show --logs` exposes bounded locally captured stdout/stderr, and metrics

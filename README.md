@@ -18,13 +18,17 @@ protection, or forge merge queue.
 
 ## Release status
 
-Version **0.14.0** includes the complete Coordinate workflow and trusted local-ref Gate validation,
+Version **0.14.1** includes the complete Coordinate workflow and trusted local-ref Gate validation,
 with Gate diagnostics, abandonment and archival, detached signed validation evidence, offline
 verification, stricter state diagnostics, and release safeguards. The documentation tracks source;
 check the [npm version history](https://www.npmjs.com/package/agent-merge-broker?activeTab=versions)
 for published availability.
 
-Version 0.14.0 requires **Node.js 22 or newer**; version 0.13.0 supported Node.js 20.12 or newer.
+The `v0.14.0` GitHub tag remains available, but its npm publication failed before uploading a package.
+Version 0.14.1 is the corrected npm release target for these features; the registry confirms when it
+is available.
+
+Version 0.14.1 requires **Node.js 22 or newer**; version 0.13.0 supported Node.js 20.12 or newer.
 Git 2.31+ is required for Coordinate; Gate requires Git 2.46+. Linux, macOS, and Windows are
 supported. GitHub CLI is required only for GitHub pull-request publication.
 
@@ -112,7 +116,7 @@ base. Gate derives its history and paths, materializes its raw Git bytes, and ru
 broker-authoritative validators. A `SubmissionRecord` reports `validated`, `rejected`, or `failed`
 without inventing tasks or leases. A rejected candidate exits nonzero.
 
-Version 0.14.0 adds these operational commands:
+Version 0.14.1 includes these operational commands:
 
 ```bash
 merge-broker doctor --gate
@@ -140,7 +144,7 @@ and `batch refresh` to observe the forge before proceeding. Gate archival preser
 and releasing a retained Git ref requires an explicit option.
 
 For protected-branch enforcement of Coordinate provenance, pin the composite action to the matching
-release tag: `WeSpitfire/agent-merge-broker/verify@v0.14.0`. Configuration examples are in
+release tag: `WeSpitfire/agent-merge-broker/verify@v0.14.1`. Configuration examples are in
 [Getting started](docs/GETTING_STARTED.md) and the [release guide](docs/RELEASING.md).
 
 Source verification includes the full test suite, both examples, and installation of the actual npm

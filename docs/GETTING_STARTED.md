@@ -5,7 +5,7 @@ path. Start locally, prove the Coordinate workflow with a small task, then enabl
 publication. A separate section covers validation-only intake for a trusted Git ref assembled
 outside that workflow.
 
-This guide describes version `0.14.0`, including Gate operations and detached attestations. The
+This guide describes version `0.14.1`, including Gate operations and detached attestations. The
 documentation tracks source; check npm's version history to confirm published availability.
 
 ## Before you begin
@@ -326,11 +326,11 @@ with status `validated`, `rejected`, or `failed`. Validator rejection and candid
 the durable diagnostic record and make the CLI exit nonzero. If the final object/ref identity cannot
 be reproduced, the record instead stays `validating` and recovery warns until the exact identity is
 restored. A validated record is evidence only: it is not a task, batch, approval candidate,
-published branch, pull request, or authorization to merge. Version `0.14.0` can separately
+published branch, pull request, or authorization to merge. Version `0.14.1` can separately
 export its validation evidence as a detached signed statement. Use Coordinate mode for the complete
 approval and publication lifecycle today.
 
-### Inspect and retire Gate records — 0.14.0
+### Inspect and retire Gate records — 0.14.1
 
 `doctor --gate` checks local Gate prerequisites and the registered protected policy without fetching
 or running validators. A failed readiness check exits nonzero. Inspect a result and its bounded,
@@ -374,7 +374,7 @@ Other refs may continue to retain the objects, and later Git maintenance control
 Choose retention before applying: the current archive command does not reopen archived records to
 release their refs later.
 
-### Export and verify Gate evidence — 0.14.0
+### Export and verify Gate evidence — 0.14.1
 
 Sign an eligible active result before archiving it:
 

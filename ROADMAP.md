@@ -6,13 +6,13 @@ This roadmap is organized by capability rather than promised release numbers or 
 
 ## Now — consolidate the recoverable transaction core
 
-Version `0.14.0` is the current baseline. It includes Coordinate mode: leases and commit receipts,
+Version `0.14.1` is the current baseline. It includes Coordinate mode: leases and commit receipts,
 deterministic batching, disposable-worktree validation, optional exact-candidate approval, signed
 provenance support, bound Git/GitHub publication, and recovery for interrupted publication,
 auto-merge, revocation, revision, and stale-base refresh. It also ships the trusted local-ref Gate
 validation increment below.
 
-Version `0.14.0` adds:
+Version `0.14.1` includes:
 
 - Gate readiness diagnostics, saved validator logs, terminal abandonment, journaled archival,
   explicit retained-ref release, and submission metrics;
@@ -23,7 +23,7 @@ Version `0.14.0` adds:
 - a mandatory Linux/macOS/Windows release matrix, portable forge fixtures, subprocess crash/restart
   tests, and installation/publication of the actual tested npm tarball.
 
-Version `0.14.0` requires Node.js 22; `0.13.0` supported Node.js 20.12. The documentation tracks
+Version `0.14.1` requires Node.js 22; `0.13.0` supported Node.js 20.12. The documentation tracks
 source; check npm's version history for published availability.
 
 This phase does not add a remote service or claim that arbitrary pull requests can already enter the
