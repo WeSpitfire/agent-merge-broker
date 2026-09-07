@@ -18,7 +18,7 @@ When a bundle cannot be attached, include the broker version, Node and Git versi
 system, publication mode, and exact stable error code manually. Never post lease tokens, private
 keys, credentials, or sensitive validator output.
 
-For Gate operations in `0.14.1` and newer, include `doctor --gate` readiness and the submission's stable
+For Gate operations in `0.14.2` and newer, include `doctor --gate` readiness and the submission's stable
 error code. `candidate show --logs` is useful locally but may contain sensitive output. If a record
 has been archived, `candidate show <id>` still resolves it and `candidate list --all` lists it.
 For `STATE_CORRUPT`, include the reported field path and format version; keep the original state

@@ -13,7 +13,7 @@ A worker needs only five capabilities:
 Finite operational CLI commands support `--json`: success writes one JSON value to stdout and exits
 zero, while usage and action errors write
 `{ "error": { "code": "...", "message": "...", "details": {} } }` to stderr and exit nonzero.
-The `details` field is omitted when no diagnostic details exist. In `0.14.1`,
+The `details` field is omitted when no diagnostic details exist. In `0.14.2`,
 `candidate verify-attestation` also returns a JSON result on stdout with exit code 1 when the
 signature verifies but the recorded validation was rejected or failed; check both `verified` and
 `validationPassed`. Continuous `serve --json` is
@@ -140,7 +140,7 @@ private manifest. If manifest writing then fails, the command reports
 `recover` regenerates terminal sidecars from authoritative state before consulting Gate authority,
 so a missing or corrupt authority registration does not hide an already-terminal result.
 
-### Gate inspection, abandonment, and archival — 0.14.1
+### Gate inspection, abandonment, and archival — 0.14.2
 
 `doctor --gate` returns local prerequisite and protected-policy readiness without fetching a remote
 or executing validators. `candidate show <id> --logs` exposes bounded captured validator output;
@@ -172,7 +172,7 @@ objects. Choose the release option before applying archival: the command does no
 records for a later ref release. Export needed attestations before archival; signing accepts active
 retained records only.
 
-### Detached Gate validation attestation — 0.14.1
+### Detached Gate validation attestation — 0.14.2
 
 ```bash
 merge-broker candidate attest <submission-id> --output candidate.dsse.json
@@ -215,7 +215,7 @@ results report `verified: true`, `validationPassed: false`, and exit code 1. Inv
 unsupported envelopes, and identity mismatches fail with normal error envelopes. Signatures do not
 prove producer identity, validator isolation, current branch protection, or merge authorization.
 
-### Schema identities — 0.14.1
+### Schema identities — 0.14.2
 
 [`identities.json`](../schemas/identities.json) maps each current root schema alias and its legacy
 `$id` to a packaged snapshot under `schemas/immutable/`. A snapshot's `$id` is
@@ -608,7 +608,7 @@ const authority = await broker.registerCandidateAuthority();
 const submission = await broker.adoptCandidate({ ref: "refs/heads/external-candidate" });
 const sameSubmission = await broker.submission(submission.id);
 
-// Gate operations in 0.14.1:
+// Gate operations in 0.14.2:
 const readiness = await broker.candidateReadiness();
 const envelope = await broker.attestSubmission(submission.id);
 const preview = await broker.archiveSubmissions({ ids: [submission.id] });
@@ -617,7 +617,7 @@ const history = await broker.submissions({ includeArchived: true });
 
 Programmatic callers share the same filesystem locks and state machine as CLI callers. The
 additive `state().submissions` collection is normalized to an empty object when reading a state file
-written before trusted local-ref intake. In `0.14.1`, saved-state reads validate known fields,
+written before trusted local-ref intake. In `0.14.2`, saved-state reads validate known fields,
 collections, lifecycle values, and numeric/timestamp types and report `STATE_CORRUPT` with a field
 path instead of continuing with malformed state. Unknown additive fields are preserved; an
 unsupported format version reports `STATE_VERSION`. This structural check does not replace the

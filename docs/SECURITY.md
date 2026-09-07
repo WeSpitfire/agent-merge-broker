@@ -155,7 +155,7 @@ prevent a trusted validator from changing other host resources.
 The submission record and retained ref share the same local trust boundary as the rest of broker
 state. Their policy digest detects accidental or replay inconsistency; it is not a remote signature
 or defense against an operator who can edit the Git common directory. Version `0.13.0` retained
-records and refs indefinitely; `0.14.1` journaled archival can retire records and explicitly
+records and refs indefinitely; `0.14.2` journaled archival can retire records and explicitly
 release their exact broker-owned refs. `validated` means every validator selected by the protected-base policy
 passed; an empty validator policy can therefore produce an empty successful result and is not a
 substitute for configuring a real gate. The status grants no approval,
@@ -167,7 +167,7 @@ later missing, it records `retentionCompromisedAt` before create-only repair. Th
 a stop after repair and permanently invalidates an otherwise-passing run; recovery cannot mistake
 the loss for an initial pin that never happened.
 
-### Gate operations and signed evidence — 0.14.1
+### Gate operations and signed evidence — 0.14.2
 
 `doctor --gate` inspects local readiness; it does not fetch or execute validators. Explicit
 `candidate show --logs` exposes the bounded output already captured by validation. Commands, logs,

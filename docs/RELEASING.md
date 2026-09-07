@@ -14,7 +14,7 @@ repository.
    `docs/SECURITY.md`.
 4. Keep integration signing keys and forge credentials out of worker environments.
 
-## Release verification — 0.14.1
+## Release verification — 0.14.2
 
 The release workflow resolves the release tag to one immutable commit, verifies it equals the
 release event's SHA, and checks `v<package version>` before
@@ -36,8 +36,8 @@ The workflow's identity-token permission supplies npm trusted publishing; no fal
 Use an explicitly local path such as `./release-package/agent-merge-broker-<version>.tgz` for
 `npm publish`; the bare relative path can be interpreted as GitHub shorthand. The packaged smoke
 test runs a publish dry-run against the tarball before the publishing job receives authority.
-The immutable `v0.14.0` GitHub tag remains available, but its npm publication failed at that path
-interpretation step; `0.14.1` is the corrected npm release target.
+The immutable `v0.14.0` and `v0.14.1` GitHub tags remain available, but neither reached npm. Their
+publishing-path and npm dry-run JSON compatibility fixes are in release target `0.14.2`.
 
 ## Release procedure
 
@@ -60,7 +60,7 @@ attestation for the expected source repository and commit. A tarball publication
 binding. A successful local check or pushed Git commit alone is not proof of npm publication.
 
 The composite action is documented with the same exact release tag, for example
-`WeSpitfire/agent-merge-broker/verify@v0.14.1`. Do not document a floating major tag unless that tag
+`WeSpitfire/agent-merge-broker/verify@v0.14.2`. Do not document a floating major tag unless that tag
 actually exists and is maintained deliberately.
 
 Do not reuse or move a published version tag. If a release is incorrect, deprecate it and publish a corrected patch version.

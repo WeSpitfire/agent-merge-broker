@@ -1,6 +1,16 @@
 # Changelog
 
+## 0.14.2 — 2026-09-06
+
+### Fixed
+
+- Accepted both npm 10's root-level publish dry-run JSON fields and npm 11/12's package-name wrapper
+  when checking the tested tarball. Versions `0.14.0` and `0.14.1` have immutable GitHub tags but were
+  not published to npm; `0.14.2` is the corrected release target pending registry confirmation.
+
 ## 0.14.1 — 2026-09-06
+
+This GitHub release was not published to npm; its dry-run JSON compatibility correction is in `0.14.2`.
 
 ### Fixed
 
