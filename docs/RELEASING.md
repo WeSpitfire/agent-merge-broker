@@ -4,6 +4,10 @@
 immutable exact-version Git tag and npm provenance; no long-lived npm token is stored in the
 repository.
 
+Version `0.15.0` adds the `agent-merge-broker-core` companion package and dual-package verification
+below. Core has a separate first-publication and trusted-publisher setup. The full package remains independently
+publishable; adding a second package must not interrupt its established publishing identity.
+
 ## Repository prerequisites
 
 1. Protect `main` and require CI, authoritative repository validation, and the provenance verifier
@@ -14,7 +18,7 @@ repository.
    `docs/SECURITY.md`.
 4. Keep integration signing keys and forge credentials out of worker environments.
 
-## Release verification — 0.14.2
+## Release verification — 0.15.0
 
 The release workflow resolves the release tag to one immutable commit, verifies it equals the
 release event's SHA, and checks `v<package version>` before
@@ -39,10 +43,54 @@ test runs a publish dry-run against the tarball before the publishing job receiv
 The immutable `v0.14.0` and `v0.14.1` GitHub tags remain available, but neither reached npm. Their
 publishing-path and npm dry-run JSON compatibility fixes are in release target `0.14.2`.
 
+### Lean packages — 0.15.0
+
+Every verification lane exercises the full and core tarballs in separate clean consumers. Full
+keeps the MCP compatibility checks; core checks the shared CLI/API without installing the MCP SDK.
+Packaging checks reject debug maps and long guides/examples in either tarball and enforce footprint
+budgets. This is one source implementation with two distributions, not a second broker codebase.
+
+The tested artifacts have separate destinations and integrity manifests:
+
+```bash
+npm run test:package -- --pack-destination release-package --core-pack-destination release-core-package
+```
+
+The Ubuntu/Node 24 lane uploads full and core artifacts for the same immutable source SHA. The
+existing full-package job publishes its verified artifact as before. A separate core publishing job
+uses the tested `npm-core-package-<source SHA>` artifact and the same tag/version, matrix gate,
+integrity verification, and npm provenance. It runs only when the repository variable
+`PUBLISH_CORE_PACKAGE` equals `true`.
+
+For a local core tarball, run `npm run pack:core -- --pack-destination <emptydirectory>` with an
+empty destination. This builds only the tarball, not a release-verified integrity manifest; use
+`test:package` above for publishable artifacts. `npm run build:debug` optionally generates local
+JavaScript/declaration maps for debugging. These maps are not included in either npm package.
+
+### First core publication
+
+Leave `PUBLISH_CORE_PACKAGE` unset until a maintainer completes bootstrap. npm trusted publishing
+requires an existing package, and trust is configured separately for each package:
+
+1. Confirm the `agent-merge-broker-core` name is available and approve the initial public release.
+2. Publish the verified core tarball from the approved release using an authenticated maintainer
+   session and npm's required authentication. Do not substitute unverified or rebuilt bytes.
+3. Configure the core package's trusted publisher for `WeSpitfire/agent-merge-broker`, workflow
+   `release.yml`, and permit direct publishing rather than staging-only access.
+4. Enable `PUBLISH_CORE_PACKAGE=true` for subsequent unpublished versions. Do not attempt to publish
+   the bootstrap version again.
+
+See npm's [trusted publishing guide](https://docs.npmjs.com/trusted-publishers/) and
+[trust configuration](https://docs.npmjs.com/cli/v11/commands/npm-trust/). Do not add a fallback
+`NPM_TOKEN` to the repository. Until bootstrap and publication complete, docs must keep core marked
+unpublished and must not promise registry installation commands for it.
+
 ## Release procedure
 
 1. Update `CHANGELOG.md` and remove the `Unreleased` marker for the target version.
-2. Update `package.json` with `npm version <major|minor|patch> --no-git-tag-version`.
+2. Update the root package version and lockfile together with
+   `npm version <major|minor|patch> --no-git-tag-version`. Core packaging derives the same version
+   from the root package; never release different source versions under one tag.
 3. Build and run `npm run verify`, `npm run example`, `npm run example:gate`,
    `npm run test:package`, and `node scripts/update-schema-snapshots.mjs --check`. Run production
    dependency audits for both the package and documentation site and build the site after syncing
@@ -54,13 +102,13 @@ Publishing the GitHub release invokes the complete matrix and publishes only aft
 succeed. Release documentation must not claim npm availability until that release actually
 completes; changing `package.json` locally does not make a version available on npm.
 
-After publication, verify the version and intended npm dist-tag, then inspect npm's provenance
+After publication, verify each published package's version and intended npm dist-tag, then inspect npm's provenance
 attestation for the expected source repository and commit. A tarball publication may omit advisory
 `gitHead` metadata; compare it if present, but use the signed provenance source SHA as the source
 binding. A successful local check or pushed Git commit alone is not proof of npm publication.
 
 The composite action is documented with the same exact release tag, for example
-`WeSpitfire/agent-merge-broker/verify@v0.14.2`. Do not document a floating major tag unless that tag
+`WeSpitfire/agent-merge-broker/verify@v0.15.0`. Do not document a floating major tag unless that tag
 actually exists and is maintained deliberately.
 
 Do not reuse or move a published version tag. If a release is incorrect, deprecate it and publish a corrected patch version.

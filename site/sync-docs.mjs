@@ -20,6 +20,8 @@ const EXTERNAL = [
 
 /** Docs that do have a page here, so cross-references stay inside the site. */
 const INTERNAL = [
+  [/\]\((?:docs\/)?GETTING_STARTED\.md#2-install-and-initialize\)/g, "](/docs/getting-started#_2-install-and-initialize)"],
+  [/\]\((?:docs\/)?GETTING_STARTED\.md(#[^)]+)\)/g, "](/docs/getting-started$1)"],
   [/\]\(docs\/GETTING_STARTED\.md\)/g, "](/docs/getting-started)"],
   [/\]\(docs\/ARCHITECTURE\.md\)/g, "](/docs/architecture)"],
   [/\]\(docs\/PROTOCOL\.md\)/g, "](/docs/protocol)"],

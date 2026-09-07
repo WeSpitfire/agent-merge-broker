@@ -6,24 +6,26 @@ This roadmap is organized by capability rather than promised release numbers or 
 
 ## Now — consolidate the recoverable transaction core
 
-Version `0.14.2` is the current baseline. It includes Coordinate mode: leases and commit receipts,
+Version `0.15.0` is the current baseline. It includes Coordinate mode: leases and commit receipts,
 deterministic batching, disposable-worktree validation, optional exact-candidate approval, signed
 provenance support, bound Git/GitHub publication, and recovery for interrupted publication,
 auto-merge, revocation, revision, and stale-base refresh. It also ships the trusted local-ref Gate
 validation increment below.
 
-Version `0.14.2` includes:
+Version `0.15.0` includes:
 
 - Gate readiness diagnostics, saved validator logs, terminal abandonment, journaled archival,
   explicit retained-ref release, and submission metrics;
 - detached Ed25519 DSSE validation statements and offline verification with independent key,
   artifact, base, policy, and authority expectations;
 - packaged immutable schema identities, strict saved-state diagnostics, focused lifecycle/Git
-  modules, and an accepted/rejected Gate example; and
+  modules, and an accepted/rejected Gate example;
 - a mandatory Linux/macOS/Windows release matrix, portable forge fixtures, subprocess crash/restart
-  tests, and installation/publication of the actual tested npm tarball.
+  tests, and installation/publication of the actual tested npm tarball; and
+- lean full/core packaging, install-once guidance, bounded storage reporting, and preview-first
+  lossless audit-log compaction. The companion core package has a separate npm publication.
 
-Version `0.14.2` requires Node.js 22; `0.13.0` supported Node.js 20.12. The documentation tracks
+Version `0.15.0` requires Node.js 22; `0.13.0` supported Node.js 20.12. The documentation tracks
 source; check npm's version history for published availability.
 
 This phase does not add a remote service or claim that arbitrary pull requests can already enter the

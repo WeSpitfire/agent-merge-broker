@@ -8,9 +8,33 @@ The documentation site tracks the `main` branch and may be ahead of npm. Compare
 with the topmost entry in the
 [changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md); if that current
 entry is **Unreleased**, it is source-checkout behavior until the next release is published. This
-page describes version `0.14.2`, including Gate operations and detached attestations; npm's version
-history confirms published availability. The `v0.14.0` and `v0.14.1` GitHub tags exist, but neither was
-published to npm; `0.14.2` is the corrected release target.
+page covers version `0.15.0`; npm's version history
+confirms published availability. The `v0.14.0` and `v0.14.1` GitHub tags exist, but neither was
+published to npm.
+
+## Installation footprint — 0.15.0
+
+The companion `agent-merge-broker-core` package shares the Coordinate/Gate CLI and core Node API
+without the MCP server, SDK dependency, or `createMcpServer` export. `agent-merge-broker` retains
+its existing MCP entry points and API. The packages share CLI aliases; choose one per installation.
+The core package is published separately; confirm its version in npm's version history.
+These packaging changes are introduced in `0.15.0`.
+
+Both tarballs retain runtime code, TypeScript definitions, schemas, templates, README, and license;
+debug maps are omitted, and long guides/examples remain in the source repository. A global
+installation keeps dependencies outside individual projects. Use a project-local dev dependency
+and lockfile when reproducible team/CI resolution is more important than sharing one installation.
+See [installation options](GETTING_STARTED.md#2-install-and-initialize).
+
+The new `storage show` command reports logical file sizes from metadata, not a total of allocated
+disk blocks or retained Git objects. `storage compact --older-than 30` previews lossless compression
+of closed audit rotations; `--apply` performs it. Scans and compaction passes are bounded. No active
+state, evidence, keys, worktrees, or refs are pruned, and no Git garbage collection runs. See
+[storage operations](GETTING_STARTED.md#inspect-and-compact-storage).
+
+Compacted rotations require the updated gzip-capable audit reader. Upgrade all readers before
+applying compaction; older released brokers, including `0.14.2`, cannot read that compressed history.
+Keep rotations uncompressed when those versions must continue reading them.
 
 ## Platform matrix
 
@@ -20,8 +44,8 @@ published to npm; `0.14.2` is the corrected release target.
 | macOS | `/bin/sh` | launchd agent | macOS, Node.js 22, 24, and 26 |
 | Linux | `/bin/sh` | systemd user service | Ubuntu, Node.js 22, 24, and 26 |
 
-Version `0.14.2` requires Node.js 22 or newer; `0.13.0` supported Node.js 20.12. The table describes
-the reusable nine-lane release matrix for `0.14.2`, not a retroactive change to the checks
+Version `0.15.0` requires Node.js 22 or newer; `0.13.0` supported Node.js 20.12. The table describes
+the reusable nine-lane release matrix for `0.15.0`, not a retroactive change to the checks
 run for `0.13.0`. Every host requires Git 2.31 or newer. GitHub pull-request publication
 also requires an authenticated GitHub CLI (`gh`) for the same user that runs the broker. The
 trusted local-ref Gate intake specifically requires Git 2.46 or newer so
@@ -62,8 +86,9 @@ that lacks access to the repository, Git credentials, or GitHub CLI authenticati
 
 The scheduled action records absolute paths to Node, the broker CLI, the repository, and its log.
 Commands invoked later by the broker—such as `git`, `gh`, and repository validators—must still be
-available to the scheduled user's environment. Windows MCP clients that do not resolve npm command
-shims automatically should configure `npx.cmd` instead of `npx`.
+available to the scheduled user's environment. MCP clients that cannot launch npm command shims
+can invoke `node` with the full package's absolute `dist/mcp-cli.js` path; see the
+[MCP setup recipe](GETTING_STARTED.md#connect-an-mcp-coding-agent).
 
 ## Project detection
 

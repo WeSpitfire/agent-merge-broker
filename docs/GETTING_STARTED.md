@@ -5,8 +5,9 @@ path. Start locally, prove the Coordinate workflow with a small task, then enabl
 publication. A separate section covers validation-only intake for a trusted Git ref assembled
 outside that workflow.
 
-This guide describes version `0.14.2`, including Gate operations and detached attestations. The
-documentation tracks source; check npm's version history to confirm published availability.
+This guide covers version `0.15.0`. The documentation tracks source; check npm's version history to
+confirm published availability. The companion core package is published separately; check its
+[npm version history](https://www.npmjs.com/package/agent-merge-broker-core?activeTab=versions) too.
 
 ## Before you begin
 
@@ -28,7 +29,7 @@ integration host, so review `.merge-broker/config.json` like a CI workflow.
 
 ## 1. Try the isolated demo
 
-The package contains a source-checkout demo. It creates a throwaway repository, so it never touches
+The source repository contains a demo. It creates a throwaway repository, so it never touches
 your current project or needs forge credentials:
 
 ```bash
@@ -49,15 +50,61 @@ remove their temporary repositories unless `KEEP=1` is set.
 
 ## 2. Install and initialize
 
-From the repository you want to coordinate:
+Install once outside your projects, then initialize each repository that needs coordination:
 
 ```bash
-npm install --save-dev agent-merge-broker
-npx merge-broker init --base main --base-ref origin/main --remote origin
+npm install --global agent-merge-broker@0.15.0
+# From the repository you want to coordinate:
+merge-broker init --base main --base-ref origin/main --remote origin
 git add .merge-broker AGENTS.md
 git commit -m 'Configure Agent Merge Broker'
-npx merge-broker doctor
+merge-broker doctor
 ```
+
+The global install keeps the broker's dependencies out of each project's `node_modules` and
+manifest; it still uses space in npm's global installation. Use the same reviewed version across
+your team. For global-install permission errors, use npm's documented
+[user-owned installation options](https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally/).
+
+For occasional commands without a global install, request the package and executable explicitly:
+
+```bash
+npm exec --yes --package=agent-merge-broker@0.15.0 -- merge-broker doctor
+```
+
+[npm exec](https://docs.npmjs.com/cli/v11/commands/npm-exec/) uses npm's cache when the requested
+package is not installed locally; it does not add a dependency to your manifest. Cached copies
+still use disk space, and an exact top-level version does not replace a dependency lockfile.
+Avoid an unqualified `npx merge-broker` in an unconfigured project: the executable name is not
+the npm package name.
+
+For a repository-owned version and reproducible CI dependencies, install locally instead and commit
+both the manifest and lockfile:
+
+```bash
+npm install --save-dev --save-exact agent-merge-broker@0.15.0
+npm exec --no -- merge-broker doctor
+```
+
+Run `npm ci` in CI. The remaining examples assume the global `merge-broker` command; with a local
+installation, invoke it through a package script or prefix commands with `npm exec --no --`.
+Use a stable global or project-local installation for background services, whose launchers record
+the installed CLI's absolute path; do not anchor a service to an evictable npm-exec cache entry.
+
+### Choose the package — 0.15.0
+
+Version `0.15.0` adds `agent-merge-broker-core`: the Coordinate/Gate CLI and core Node API without
+the MCP server, SDK dependency, or `createMcpServer` export. The existing `agent-merge-broker`
+package keeps MCP support and its current API. Both share the `merge-broker`/`amb` commands, so
+choose one package per global or local installation, not both. Confirm the desired core version
+in npm's version history before installing it; the full package remains an independent option.
+
+Both tarballs keep runtime code, TypeScript declarations, schemas, initialization
+templates, README, and license. Debug maps are omitted; use a source-checkout build for debugging.
+Long guides/examples stay in the source repository instead of every installed copy. This changes
+distribution size, not broker validation or recovery.
+
+### What initialization adds
 
 Initialization writes:
 
@@ -150,7 +197,7 @@ reusing them inside one transaction.
 Run the configured checks against current work before submitting anything:
 
 ```bash
-npx merge-broker validate
+merge-broker validate
 ```
 
 ## 4. Choose publication deliberately
@@ -201,7 +248,7 @@ exact-candidate approval.
 Claim the smallest accurate scope before editing:
 
 ```bash
-npx merge-broker task claim TASK-123 \
+merge-broker task claim TASK-123 \
   --holder codex/customer-search \
   --path 'src/customers/**' \
   --path 'test/customers/**'
@@ -210,14 +257,14 @@ npx merge-broker task claim TASK-123 \
 The broker stores the lease token in its private runtime token vault. Heartbeat long work:
 
 ```bash
-npx merge-broker task heartbeat TASK-123
+merge-broker task heartbeat TASK-123
 ```
 
 Commit the focused change, then nominate the commits made after the assigned base:
 
 ```bash
 git commit -am 'Add customer search'
-npx merge-broker task candidate TASK-123 --since-base
+merge-broker task candidate TASK-123 --since-base
 ```
 
 The worker stops there. It does not push, rebase, merge, or open a pull request. Nominating again
@@ -228,21 +275,21 @@ before integration replaces that task's unread receipt.
 Inspect the deterministic next batch and perform a disposable dry run:
 
 ```bash
-npx merge-broker plan
-npx merge-broker integrate --dry-run
+merge-broker plan
+merge-broker integrate --dry-run
 ```
 
 Retain the validated branch locally:
 
 ```bash
-npx merge-broker integrate
+merge-broker integrate
 ```
 
 Or publish according to the checked-in policy:
 
 ```bash
-npx merge-broker integrate --publish
-npx merge-broker batch sync <batch-id>
+merge-broker integrate --publish
+merge-broker batch sync <batch-id>
 ```
 
 Only one prepared or published batch is allowed by default. This keeps each candidate born from the
@@ -266,11 +313,11 @@ First, from a reviewed checkout of the protected target, commit `.merge-broker/c
 register that target outside the worktree:
 
 ```bash
-npx merge-broker candidate authority setup
-npx merge-broker candidate authority show
-npx merge-broker candidate adopt --ref refs/heads/external-candidate
-npx merge-broker candidate list
-npx merge-broker candidate show <submission-id>
+merge-broker candidate authority setup
+merge-broker candidate authority show
+merge-broker candidate adopt --ref refs/heads/external-candidate
+merge-broker candidate list
+merge-broker candidate show <submission-id>
 ```
 
 The setup record lives at `<git-common-dir>/merge-broker-gate-authority.json`. It contains a digest,
@@ -337,8 +384,8 @@ or running validators. A failed readiness check exits nonzero. Inspect a result 
 locally captured validator output with:
 
 ```bash
-npx merge-broker doctor --gate
-npx merge-broker candidate show <submission-id> --logs
+merge-broker doctor --gate
+merge-broker candidate show <submission-id> --logs
 ```
 
 Logs may contain repository data or accidental secrets; review them before sharing. `metrics`
@@ -346,7 +393,7 @@ includes submission counts, including archived records. To deliberately stop an 
 submission, record an operator reason:
 
 ```bash
-npx merge-broker candidate abandon <submission-id> --reason 'Superseded by a corrected candidate'
+merge-broker candidate abandon <submission-id> --reason 'Superseded by a corrected candidate'
 ```
 
 Abandonment becomes durable before disposable-worktree cleanup. It preserves the artifact identity,
@@ -357,11 +404,11 @@ grant permission to delete an unfamiliar worktree.
 Preview retirement before applying it:
 
 ```bash
-npx merge-broker candidate archive <submission-id>
-npx merge-broker candidate archive <submission-id> --apply
-npx merge-broker candidate archive --older-than 30
-npx merge-broker candidate list --all
-npx merge-broker candidate show <archived-submission-id>
+merge-broker candidate archive <submission-id>
+merge-broker candidate archive <submission-id> --apply
+merge-broker candidate archive --older-than 30
+merge-broker candidate list --all
+merge-broker candidate show <archived-submission-id>
 ```
 
 The default is a dry run. Without IDs, records must be at least 30 days old unless `--older-than`
@@ -379,7 +426,7 @@ release their refs later.
 Sign an eligible active result before archiving it:
 
 ```bash
-npx merge-broker candidate attest <submission-id> --output candidate.dsse.json
+merge-broker candidate attest <submission-id> --output candidate.dsse.json
 ```
 
 The output file must not exist. Without `--output`, the envelope is printed as JSON. The broker
@@ -412,7 +459,7 @@ claim, not a right to publish or merge. Never derive all trust inputs from the u
 For a maintained integration host, install the per-user background service:
 
 ```bash
-npx merge-broker install-service
+merge-broker install-service
 ```
 
 The service uses launchd on macOS, a systemd user unit on Linux, and a per-user Windows Scheduled
@@ -428,13 +475,13 @@ state and a log event rather than allowing a second PR or a later batch to pass 
 The Windows task uses the installing user's interactive token. It starts immediately and at that
 user's logon, but it is not a boot-time machine service and will not run before the user logs on.
 Node and the broker CLI are recorded by absolute path; Git, GitHub CLI, and validator commands must
-remain available to that user's environment. Run `npx merge-broker doctor` as the service user after
+remain available to that user's environment. Run `merge-broker doctor` as the service user after
 installing or moving the repository.
 
 You can also run one cycle from CI or a scheduler:
 
 ```bash
-npx merge-broker serve --once --publish
+merge-broker serve --once --publish
 ```
 
 ## Common recipes
@@ -447,20 +494,23 @@ not the command's current directory.
 
 ### Connect an MCP coding agent
 
-Configure `merge-broker-mcp` as a stdio server rooted at the repository:
+MCP requires the full `agent-merge-broker` package, not the companion core package. With the global
+installation above, configure `merge-broker-mcp` as a stdio server rooted at the repository:
 
 ```json
 {
   "mcpServers": {
     "merge-broker": {
-      "command": "npx",
-      "args": ["--no-install", "merge-broker-mcp", "-C", "/absolute/repository/path", "--profile", "worker"]
+      "command": "merge-broker-mcp",
+      "args": ["-C", "/absolute/repository/path", "--profile", "worker"]
     }
   }
 }
 ```
 
-Use `npx.cmd` on Windows when the MCP host does not resolve npm command shims. Worker tools can
+Ensure the MCP host can find the global executable. If it cannot launch npm's command shims,
+configure `node` with the installed package's absolute `dist/mcp-cli.js` path as its first argument
+(use `npm root --global` to locate global packages). Worker tools can
 inspect status, claim, heartbeat, extend, validate, nominate, release, reopen, and revise their own
 leased work. Lease tokens remain in the local vault and are not returned in MCP messages.
 
@@ -491,24 +541,24 @@ focused checks fast; leave `validation.authoritative` empty because required CI 
 Start by inspecting the recorded state and locks:
 
 ```bash
-npx merge-broker doctor
-npx merge-broker status
+merge-broker doctor
+merge-broker status
 ```
 
 Use the recovery command that owns the interrupted transition:
 
 | Observed condition | Resume command | Result |
 | --- | --- | --- |
-| Batch left `running`; tasks left `integrating` | `npx merge-broker recover` | After acquiring the integration lock, replay-safely removes broker-owned artifacts, marks the abandoned batch failed, and requeues tasks without spending an attempt; changed or checked-out refs are retained with a warning |
-| Candidate revision stopped around its branch update | `npx merge-broker recover` | Finalizes an exact new head, rolls back an exact old head, or retains an unexpected third head for inspection |
-| Gate submission left `received` or `validating` | `npx merge-broker recover` | Re-pins the recorded immutable artifact if needed, rechecks its base, tree, history, paths, and protected-base policy identity, then reruns validation to a terminal record or reports a warning |
-| Gate abandonment left a disposable worktree | `npx merge-broker recover` | Retries cleanup under the saved physical identity without rerunning validators or releasing the retained ref |
-| Gate record has an archive intent | `npx merge-broker recover` | Completes the recorded archive and optional exact-ref release, preserving the historical record |
-| Batch is `prepared`, or push/PR creation failed | `npx merge-broker batch publish <id>` or `serve --publish` | Pushes the recorded SHA and rediscovers an existing PR across all PR states before creating one |
-| `autoMergePending` or an auto-merge warning is visible | `npx merge-broker batch sync <id>`, then `batch publish <id>` if an authorized enable still needs retrying; `serve --publish` automates both | Reconciles the possibly live queue before safely completing or retrying the exact-head hand-off |
-| Change request or automatic approval revocation was interrupted | `npx merge-broker batch sync <id>` | Finishes disabling any possibly live queue before finalizing local revocation |
-| Base moved, or refresh was interrupted after disabling/closing the PR | `npx merge-broker batch refresh <id> --publish` or `serve --publish` | Distinguishes the broker's marked close from reviewer rejection, then re-cuts and revalidates on the recorded target |
-| PR was closed by a reviewer | `npx merge-broker batch sync <id>` | Closes the batch and marks its tasks failed; reclaim and correct them, or use `task retry` only after deciding the unchanged receipts are safe |
+| Batch left `running`; tasks left `integrating` | `merge-broker recover` | After acquiring the integration lock, replay-safely removes broker-owned artifacts, marks the abandoned batch failed, and requeues tasks without spending an attempt; changed or checked-out refs are retained with a warning |
+| Candidate revision stopped around its branch update | `merge-broker recover` | Finalizes an exact new head, rolls back an exact old head, or retains an unexpected third head for inspection |
+| Gate submission left `received` or `validating` | `merge-broker recover` | Re-pins the recorded immutable artifact if needed, rechecks its base, tree, history, paths, and protected-base policy identity, then reruns validation to a terminal record or reports a warning |
+| Gate abandonment left a disposable worktree | `merge-broker recover` | Retries cleanup under the saved physical identity without rerunning validators or releasing the retained ref |
+| Gate record has an archive intent | `merge-broker recover` | Completes the recorded archive and optional exact-ref release, preserving the historical record |
+| Batch is `prepared`, or push/PR creation failed | `merge-broker batch publish <id>` or `serve --publish` | Pushes the recorded SHA and rediscovers an existing PR across all PR states before creating one |
+| `autoMergePending` or an auto-merge warning is visible | `merge-broker batch sync <id>`, then `batch publish <id>` if an authorized enable still needs retrying; `serve --publish` automates both | Reconciles the possibly live queue before safely completing or retrying the exact-head hand-off |
+| Change request or automatic approval revocation was interrupted | `merge-broker batch sync <id>` | Finishes disabling any possibly live queue before finalizing local revocation |
+| Base moved, or refresh was interrupted after disabling/closing the PR | `merge-broker batch refresh <id> --publish` or `serve --publish` | Distinguishes the broker's marked close from reviewer rejection, then re-cuts and revalidates on the recorded target |
+| PR was closed by a reviewer | `merge-broker batch sync <id>` | Closes the batch and marks its tasks failed; reclaim and correct them, or use `task retry` only after deciding the unchanged receipts are safe |
 
 `recover` is deliberately limited to interrupted local integration, candidate-revision branch
 movement, retained local-ref validation, and Gate abandonment/archival operations.
@@ -547,10 +597,10 @@ the newly selected mode, `batch publish <id>` can publish the unchanged validate
 ### Diagnose a task that will not move
 
 ```bash
-npx merge-broker status
-npx merge-broker plan
-npx merge-broker events --limit 50
-npx merge-broker doctor
+merge-broker status
+merge-broker plan
+merge-broker events --limit 50
+merge-broker doctor
 ```
 
 Look for unmet dependencies, overlapping scopes, an outstanding prepared/published batch, pending
@@ -560,12 +610,43 @@ remote target, an unreachable base, or missing forge authentication.
 To attach diagnostics to a support request:
 
 ```bash
-npx merge-broker doctor --support-bundle > merge-broker-support.json
+merge-broker doctor --support-bundle > merge-broker-support.json
 ```
 
 The bundle includes platform information, doctor output, and the latest 50 audit events. Repository
 and home paths, URLs, and secret-bearing fields are redacted, but validator output and project
 metadata can still be sensitive. Review the file before sharing it.
+
+### Inspect and compact storage
+
+Version `0.15.0` adds these commands:
+
+```bash
+merge-broker storage show
+merge-broker storage compact --older-than 30          # preview only
+merge-broker storage compact --older-than 30 --apply  # lossless compression
+```
+
+`storage show` reads filesystem metadata, not token, key, evidence, or worktree file contents. It
+groups logical file sizes for broker-managed runtime and provenance storage. Totals are not allocated
+disk blocks, Git object-database size, or globally installed npm dependencies. Symlinks are not
+followed, scans are bounded, and skipped entries make totals partial. Paths can still be sensitive;
+review a report before sharing it.
+
+`storage compact` defaults to a 30-day minimum modification age and only considers closed rotated
+audit `.jsonl` segments. Without `--apply`, it reports eligibility without compressing files.
+Applying it writes a verified gzip copy before removing the original and skips segments where
+compression would not save space. Work is bounded per pass; review skipped entries before repeating.
+`events` reads compressed rotations as well as ordinary audit segments.
+
+Upgrade every broker that reads this shared audit history before applying compaction. Older
+released versions, including `0.14.2`, only read uncompressed `.jsonl` rotations. Leave originals
+uncompressed if continued access from those versions is required.
+
+This is lossless compression, not age-based evidence deletion. It does not remove active audit logs,
+state, receipts, candidate records, signing keys, worktrees, provenance, or retained Git refs, and it
+does not run Git garbage collection. Existing Gate archival and its explicit ref-retention choice
+remain separate. Back up important evidence and private keys independently.
 
 ## Production checklist
 

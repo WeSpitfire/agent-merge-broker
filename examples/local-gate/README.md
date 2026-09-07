@@ -1,6 +1,6 @@
 # Trusted local Gate example
 
-This example exercises the Gate features in version 0.14.2. Use Node.js 22+ and Git 2.46+:
+This example exercises the Gate features in version 0.15.0. Use Node.js 22+ and Git 2.46+:
 
 ```bash
 npm install

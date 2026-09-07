@@ -90,6 +90,30 @@ async function candidateCommit(repo: string, branch = "candidate/local-ref"): Pr
   return sha;
 }
 
+test("storage CLI reports usage and requires apply before audit compaction", async (context) => {
+  const repo = await repository(context);
+  const broker = await MergeBroker.open(repo);
+  const auditPath = path.join(broker.store.archiveDirectory, "audit-2020-01-01T00-00-00-000Z.jsonl");
+  const evidence = `${JSON.stringify({ sequence: 100, at: "2020-01-01T00:00:00Z", event: "fixture.audit", details: { text: "preserved ".repeat(500) } })}\n`;
+  await writeFile(auditPath, evidence);
+  const invoke = async (...args: string[]) => {
+    const result = await runCommand(process.execPath, commandArguments(repo, "storage", ...args), { cwd: PROJECT_ROOT });
+    return JSON.parse(result.stdout) as Record<string, unknown>;
+  };
+  const before = await invoke("show");
+  assert.ok(Number(before.logicalBytes) >= Buffer.byteLength(evidence));
+  const preview = await invoke("compact", "--older-than", "0");
+  assert.equal(preview.applied, false);
+  assert.equal(preview.eligibleFiles, 1);
+  assert.equal(await readFile(auditPath, "utf8"), evidence);
+  const applied = await invoke("compact", "--older-than", "0", "--apply");
+  assert.equal(applied.compressedFiles, 1);
+  assert.ok(Number(applied.savedBytes) > 0);
+  const after = await invoke("show");
+  assert.ok(Number(after.logicalBytes) < Number(before.logicalBytes));
+  assert.ok((await broker.store.readAudit()).some((event) => event.event === "fixture.audit"));
+});
+
 async function serveOnce(repo: string, preload?: string): Promise<CommandResult> {
   const args = [...(preload ? ["--import", pathToFileURL(preload).href] : []), ...cliArguments(repo)];
   const result = await runCommand(process.execPath, args, {

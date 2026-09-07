@@ -18,22 +18,24 @@ protection, or forge merge queue.
 
 ## Release status
 
-Version **0.14.2** includes the complete Coordinate workflow and trusted local-ref Gate validation,
+Version **0.15.0** includes the complete Coordinate workflow and trusted local-ref Gate validation,
 with Gate diagnostics, abandonment and archival, detached signed validation evidence, offline
-verification, stricter state diagnostics, and release safeguards. The documentation tracks source;
+verification, stricter state diagnostics, leaner packaging, storage maintenance, and release safeguards.
+The documentation tracks source;
 check the [npm version history](https://www.npmjs.com/package/agent-merge-broker?activeTab=versions)
 for published availability.
 
 The `v0.14.0` and `v0.14.1` GitHub tags remain available, but neither version was published to npm.
-Version 0.14.2 is the corrected npm release target for these features; the registry confirms when it
-is available.
+The companion core package is published separately; confirm its version in
+[npm's core package history](https://www.npmjs.com/package/agent-merge-broker-core?activeTab=versions).
 
-Version 0.14.2 requires **Node.js 22 or newer**; version 0.13.0 supported Node.js 20.12 or newer.
+Version 0.15.0 requires **Node.js 22 or newer**; version 0.13.0 supported Node.js 20.12 or newer.
 Git 2.31+ is required for Coordinate; Gate requires Git 2.46+. Linux, macOS, and Windows are
 supported. GitHub CLI is required only for GitHub pull-request publication.
 
-See [Compatibility](docs/COMPATIBILITY.md), [Changelog](CHANGELOG.md), and
-[Roadmap](ROADMAP.md) for the exact boundaries. Gate approval, publication, and merge authorization
+See [Compatibility](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/COMPATIBILITY.md),
+[Changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md), and
+[Roadmap](https://github.com/WeSpitfire/agent-merge-broker/blob/main/ROADMAP.md) for the exact boundaries. Gate approval, publication, and merge authorization
 remain planned.
 
 ## Try both routes locally
@@ -53,15 +55,30 @@ The Coordinate example combines four commits from two workers and rejects an ove
 The Gate example validates one candidate, rejects another, signs the accepted result, verifies it
 offline, and previews archival.
 
-## Install and review repository policy
+## Install once, use across projects
+
+Keep the tool outside your project's dependencies with a version-pinned global installation:
 
 ```bash
-npm install --save-dev agent-merge-broker
-npx merge-broker init --base main --base-ref origin/main --remote origin
+npm install --global agent-merge-broker@0.15.0
+# From the repository you want to coordinate:
+merge-broker init --base main --base-ref origin/main --remote origin
 git add .merge-broker AGENTS.md
 git commit -m 'Configure Agent Merge Broker'
-npx merge-broker doctor
+merge-broker doctor
 ```
+
+This does not add the broker to your project's `package.json` or `node_modules`. Prefer a
+project-local, lockfile-pinned dev dependency when a team or CI needs to reproduce the entire
+dependency tree. For pinned execution through npm's cache, or local installation instructions, see
+[Getting started](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/GETTING_STARTED.md#2-install-and-initialize).
+
+`agent-merge-broker-core` offers the same Coordinate/Gate CLI and core Node API
+without the MCP server or SDK dependency. Keep `agent-merge-broker` for MCP support and existing
+imports. Choose one package per installation because they share CLI aliases, and confirm the
+desired version is published for that package. Version 0.15.0 tarballs omit debug maps and long guides/examples while keeping
+runtime code, TypeScript definitions, schemas, templates, README, and license. Full source and
+guides remain on GitHub.
 
 Initialization detects validation commands the repository already declares. Review
 `.merge-broker/config.json` before using it: configuration is executable policy, and validators run
@@ -76,18 +93,18 @@ protected-branch provenance verification load their applicable policy from the e
 In each worker's linked worktree:
 
 ```bash
-npx merge-broker task claim SEARCH-1 --holder worker/search --path 'src/search/**'
+merge-broker task claim SEARCH-1 --holder worker/search --path 'src/search/**'
 # Edit and commit the change.
-npx merge-broker task candidate SEARCH-1 --since-base
+merge-broker task candidate SEARCH-1 --since-base
 ```
 
 The integration owner then runs:
 
 ```bash
-npx merge-broker plan
-npx merge-broker integrate --dry-run
-npx merge-broker integrate
-npx merge-broker status
+merge-broker plan
+merge-broker integrate --dry-run
+merge-broker integrate
+merge-broker status
 ```
 
 Expiring leases reduce predictable collisions; commit receipts identify immutable work. The broker
@@ -97,8 +114,8 @@ branch, or GitHub pull request. Optional approval binds evidence and permission 
 candidate, base, and policy revision. Durable intents allow interrupted publication and merge
 decisions to be reconciled.
 
-Use [Getting started](docs/GETTING_STARTED.md) for validation, publication, approval, service, and
-recovery recipes. The [worker protocol](docs/PROTOCOL.md) documents CLI/JSON, Node, and permission-
+Use [Getting started](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/GETTING_STARTED.md) for validation, publication, approval, service, and
+recovery recipes. The [worker protocol](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/PROTOCOL.md) documents CLI/JSON, Node, and permission-
 separated stdio MCP integration.
 
 ## Route 2: validate a trusted existing branch
@@ -106,9 +123,9 @@ separated stdio MCP integration.
 From a reviewed checkout whose protected base contains the committed broker policy:
 
 ```bash
-npx merge-broker candidate authority setup
-npx merge-broker candidate adopt --ref refs/heads/producer/candidate
-npx merge-broker candidate show <submission-id>
+merge-broker candidate authority setup
+merge-broker candidate adopt --ref refs/heads/producer/candidate
+merge-broker candidate show <submission-id>
 ```
 
 The candidate must already exist locally and be a nonempty linear descendant of the registered
@@ -116,7 +133,7 @@ base. Gate derives its history and paths, materializes its raw Git bytes, and ru
 broker-authoritative validators. A `SubmissionRecord` reports `validated`, `rejected`, or `failed`
 without inventing tasks or leases. A rejected candidate exits nonzero.
 
-Version 0.14.2 includes these operational commands:
+Version 0.15.0 includes these operational commands:
 
 ```bash
 merge-broker doctor --gate
@@ -130,11 +147,11 @@ merge-broker candidate list --all
 Detached attestations use Ed25519 DSSE and a versioned in-toto validation statement. Offline
 verification requires an independently trusted key and expected commit, tree, base, policy digest,
 and authority digest. A valid signature can describe a rejection; validation evidence never grants
-merge authorization. [Protocol](docs/PROTOCOL.md) includes the full verifier command, abandonment,
-retention options, and immutable [schema identities](schemas/identities.json).
+merge authorization. [Protocol](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/PROTOCOL.md) includes the full verifier command, abandonment,
+retention options, and immutable [schema identities](https://github.com/WeSpitfire/agent-merge-broker/blob/main/schemas/identities.json).
 
 Gate accepts trusted local code. A disposable worktree is not an execution sandbox. Read the
-[security model](docs/SECURITY.md) before choosing the broker host and credentials.
+[security model](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/SECURITY.md) before choosing the broker host and credentials.
 
 ## Operate and contribute
 
@@ -143,14 +160,22 @@ replays local interrupted operations. Coordinate publication uses `batch publish
 and `batch refresh` to observe the forge before proceeding. Gate archival preserves audit records,
 and releasing a retained Git ref requires an explicit option.
 
+`storage show` reports broker-managed file sizes without reading file contents.
+`storage compact --older-than 30` previews lossless compression of closed audit-log rotations;
+add `--apply` to perform it. It does not prune evidence, recovery state, keys, worktrees, or Git refs.
+Upgrade all audit readers first: versions before 0.15.0 cannot read compressed rotations.
+See the [storage recipe](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/GETTING_STARTED.md#inspect-and-compact-storage).
+
 For protected-branch enforcement of Coordinate provenance, pin the composite action to the matching
-release tag: `WeSpitfire/agent-merge-broker/verify@v0.14.2`. Configuration examples are in
-[Getting started](docs/GETTING_STARTED.md) and the [release guide](docs/RELEASING.md).
+release tag: `WeSpitfire/agent-merge-broker/verify@v0.15.0`. Configuration examples are in
+[Getting started](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/GETTING_STARTED.md) and the [release guide](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/RELEASING.md).
 
 Source verification includes the full test suite, both examples, and installation of the actual npm
 tarball. Publication waits for the same immutable commit to pass Linux, macOS, and Windows checks
 and publishes the tested tarball through npm trusted publishing.
 
-See [Architecture](docs/ARCHITECTURE.md), [Vision](VISION.md), [Contributing](CONTRIBUTING.md), and
-[Support](SUPPORT.md). The project is licensed under [Apache-2.0](LICENSE). Pre-1.0 persisted formats
+See [Architecture](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/ARCHITECTURE.md),
+[Vision](https://github.com/WeSpitfire/agent-merge-broker/blob/main/VISION.md),
+[Contributing](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CONTRIBUTING.md), and
+[Support](https://github.com/WeSpitfire/agent-merge-broker/blob/main/SUPPORT.md). The project is licensed under [Apache-2.0](LICENSE). Pre-1.0 persisted formats
 are versioned, but compatibility changes may still require a documented migration.

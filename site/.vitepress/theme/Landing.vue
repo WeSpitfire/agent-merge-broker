@@ -32,7 +32,7 @@
       </div>
       <div class="cmd">
         <span class="sigil">$</span>
-        <span class="txt" id="install">npm install --save-dev agent-merge-broker</span>
+        <span class="txt" id="install">npm install --global agent-merge-broker@{{ project.version }}</span>
         <button class="copy" data-copy="install">Copy</button>
       </div>
     </div>

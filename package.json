@@ -1,6 +1,6 @@
 {
   "name": "agent-merge-broker",
-  "version": "0.14.2",
+  "version": "0.15.0",
   "description": "Crash-recoverable repository transactions, validation, provenance, and exact-candidate approval for agents and humans.",
   "type": "module",
   "bin": {
@@ -20,21 +20,16 @@
     "dist",
     "!dist/**/*.test.*",
     "!dist/test-support/**",
+    "!dist/**/*.map",
     "schemas",
     "templates",
-    "examples",
-    "docs",
     "README.md",
-    "VISION.md",
-    "ROADMAP.md",
-    "CHANGELOG.md",
-    "SUPPORT.md",
-    "CONTRIBUTING.md",
-    "CODE_OF_CONDUCT.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:debug": "tsc -p tsconfig.json --sourceMap --declarationMap",
+    "pack:core": "npm run build && node scripts/pack-core.mjs",
     "dev": "tsx src/cli.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --test-reporter=spec dist/*.test.js",

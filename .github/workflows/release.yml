@@ -79,3 +79,40 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
         run: npm publish "./release-package/agent-merge-broker-$RELEASE_VERSION.tgz" --provenance --access public
+
+  # Bootstrap the new package and configure its own npm trusted publisher before enabling this
+  # repository variable. The existing full-package release does not depend on this opt-in job.
+  npm-core:
+    if: vars.PUBLISH_CORE_PACKAGE == 'true'
+    needs: [resolve, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm install -g npm@12.0.2
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-core-package-${{ needs.resolve.outputs.sha }}
+          path: release-core-package
+      - name: Verify publication checkout and core package
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          package_version=$(node -p "require('./package.json').version")
+          test "$RELEASE_VERSION" = "$package_version"
+          node scripts/verify-release-artifact.mjs release-core-package "$EXPECTED_SHA" "$RELEASE_VERSION" agent-merge-broker-core
+      - name: Publish the verified core tarball
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: npm publish "./release-core-package/agent-merge-broker-core-$RELEASE_VERSION.tgz" --provenance --access public

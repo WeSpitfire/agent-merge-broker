@@ -1,12 +1,34 @@
 # Changelog
 
+## 0.15.0 — 2026-09-06
+
+### Added
+
+- Added an `agent-merge-broker-core` companion package for the Coordinate/Gate CLI and core Node
+  API without the MCP server or SDK dependency. The existing full package preserves its MCP and
+  Node API compatibility. The core package has a separate publication and publisher setup.
+- Added metadata-only `storage show` reporting and preview-first `storage compact --older-than`
+  for lossless gzip compression of closed audit rotations. Applying compaction requires `--apply`;
+  active state, evidence, signing keys, worktrees, and retained Git refs are not pruned.
+  Upgrade all audit readers first: older released brokers cannot read gzip rotations.
+
+### Changed
+
+- Made version-pinned, install-once onboarding the default, with explicit npm-cache execution and
+  project-local lockfile options. Projects need not add the broker as a dependency to use its CLI.
+- Trimmed published tarballs to runtime code, TypeScript definitions, schemas, templates, README,
+  and license. Debug maps are omitted; long guides/examples remain in the source repository.
+  README links resolve online even when guides are not included in the installed package.
+- Added dual-tarball consumer checks and package footprint budgets. Core publication has a separate
+  verified artifact and opt-in trusted-publishing job; initial npm package bootstrap is deliberate.
+
 ## 0.14.2 — 2026-09-06
 
 ### Fixed
 
 - Accepted both npm 10's root-level publish dry-run JSON fields and npm 11/12's package-name wrapper
   when checking the tested tarball. Versions `0.14.0` and `0.14.1` have immutable GitHub tags but were
-  not published to npm; `0.14.2` is the corrected release target pending registry confirmation.
+  not published to npm; `0.14.2` is the corrected release published to npm.
 
 ## 0.14.1 — 2026-09-06
 

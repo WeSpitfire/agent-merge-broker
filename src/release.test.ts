@@ -61,7 +61,7 @@ test("CI and releases reuse a full OS and maintained-Node verification matrix", 
   assert.match(verificationWorkflow, /npm run verify/u);
   assert.match(verificationWorkflow, /node scripts\/update-schema-snapshots\.mjs --check/u);
   assert.match(verificationWorkflow, /npm run example:gate/u);
-  assert.match(verificationWorkflow, /npm run test:package -- --pack-destination release-package/u);
+  assert.match(verificationWorkflow, /npm run test:package -- --pack-destination release-package --core-pack-destination release-core-package/u);
   assert.doesNotMatch(verificationWorkflow, /npm pack --dry-run|npm publish|id-token: write/u);
   assert.equal(packageMetadata.engines.node, ">=22");
 });
@@ -89,7 +89,7 @@ test("publication requires verification of the release event's immutable commit,
   assert.doesNotMatch(releaseWorkflow, /workflow_run:|head_branch: main|gh run list/u);
 });
 
-test("npm publishes the tarball exercised by the matrix, with publishing authority confined to its job", () => {
+test("npm publishes the tarball exercised by the matrix, with publishing authority confined to publishing jobs", () => {
   const npm = workflowJob(releaseWorkflow, "npm");
   assert.match(verificationWorkflow, /uses: actions\/upload-artifact@/u);
   assert.match(verificationWorkflow, /name: npm-package-\$\{\{ inputs\.revision \}\}/u);
@@ -97,10 +97,32 @@ test("npm publishes the tarball exercised by the matrix, with publishing authori
   assert.match(npm, /name: npm-package-\$\{\{ needs\.resolve\.outputs\.sha \}\}/u);
   assert.match(npm, /node scripts\/verify-release-artifact\.mjs release-package "\$EXPECTED_SHA" "\$RELEASE_VERSION"/u);
   assert.match(npm, /npm publish "\.\/release-package\/agent-merge-broker-\$RELEASE_VERSION\.tgz" --provenance --access public/u);
+  assert.match(npm, /npm install -g npm@12\.0\.2/u);
   assert.match(npm, /id-token: write/u);
   assert.doesNotMatch(releaseWorkflow.slice(0, releaseWorkflow.indexOf("\njobs:\n")), /id-token: write/u);
   assert.ok(packageMetadata.scripts["test:package"]?.includes("scripts/packaged-smoke.mjs"));
   assert.ok(packageMetadata.files.includes("!dist/test-support/**"));
+});
+
+test("core publication is opt-in and independent of the existing full-package publisher", () => {
+  const npm = workflowJob(releaseWorkflow, "npm");
+  const core = workflowJob(releaseWorkflow, "npm-core");
+  assert.doesNotMatch(npm, /PUBLISH_CORE_PACKAGE|needs:.*npm-core/u);
+  assert.match(core, /if: vars\.PUBLISH_CORE_PACKAGE == 'true'/u);
+  assert.match(core, /needs: \[resolve, verify\]/u);
+  assert.match(core, /ref: \$\{\{ needs\.resolve\.outputs\.sha \}\}/u);
+  assert.match(core, /test "\$\(git rev-parse HEAD\)" = "\$EXPECTED_SHA"/u);
+  assert.match(core, /test "\$RELEASE_VERSION" = "\$package_version"/u);
+  assert.match(core, /npm install -g npm@12\.0\.2/u);
+  assert.match(core, /id-token: write/u);
+  assert.doesNotMatch(core, /if:.*always\(|npm pack|npm run build/u);
+  assert.doesNotMatch(releaseWorkflow, /\n\s+(?:NODE_AUTH_TOKEN|NPM_TOKEN):/u);
+  assert.match(verificationWorkflow, /name: npm-core-package-\$\{\{ inputs\.revision \}\}/u);
+  assert.match(verificationWorkflow, /release-core-package\/\*\.tgz\r?\n\s+release-core-package\/package-integrity\.json/u);
+  assert.match(core, /name: npm-core-package-\$\{\{ needs\.resolve\.outputs\.sha \}\}/u);
+  assert.match(core, /path: release-core-package/u);
+  assert.match(core, /node scripts\/verify-release-artifact\.mjs release-core-package "\$EXPECTED_SHA" "\$RELEASE_VERSION" agent-merge-broker-core/u);
+  assert.match(core, /npm publish "\.\/release-core-package\/agent-merge-broker-core-\$RELEASE_VERSION\.tgz" --provenance --access public/u);
 });
 
 test("release artifact verification rejects changed bytes and a different source commit", async (context) => {
@@ -132,4 +154,47 @@ test("release artifact verification rejects changed bytes and a different source
   const changed = await verify();
   assert.notEqual(changed.exitCode, 0);
   assert.match(changed.stderr, /differs from the bytes/u);
+});
+
+test("core artifact verification binds the allowed package identity and exact directory contents", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-core-release-artifact-"));
+  context.after(async () => { await rm(directory, { recursive: true, force: true }); });
+  const name = "agent-merge-broker-core";
+  const filename = `${name}-${packageMetadata.version}.tgz`;
+  const bytes = Buffer.from("fixture core package bytes");
+  const sha = "c".repeat(40);
+  const manifest = {
+    schemaVersion: 1,
+    name,
+    version: packageMetadata.version,
+    sourceRevision: sha,
+    filename,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+  const manifestPath = path.join(directory, "package-integrity.json");
+  await writeFile(path.join(directory, filename), bytes);
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const verifier = fileURLToPath(new URL("../scripts/verify-release-artifact.mjs", import.meta.url));
+  const verify = async (expectedName?: string) => await runCommand(process.execPath, [
+    verifier, directory, sha, packageMetadata.version, ...(expectedName ? [expectedName] : []),
+  ], { cwd: directory, allowFailure: true });
+
+  assert.equal((await verify(name)).exitCode, 0);
+  const fullDefault = await verify();
+  assert.notEqual(fullDefault.exitCode, 0);
+  assert.match(fullDefault.stderr, /different package/u);
+  const unknownPackage = await verify("unrelated-package");
+  assert.notEqual(unknownPackage.exitCode, 0);
+  assert.match(unknownPackage.stderr, /allowed release package/u);
+
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, name: "agent-merge-broker" }));
+  const wrongPackage = await verify(name);
+  assert.notEqual(wrongPackage.exitCode, 0);
+  assert.match(wrongPackage.stderr, /different package/u);
+  await writeFile(manifestPath, JSON.stringify(manifest));
+
+  await writeFile(path.join(directory, "unexpected.tgz"), "unverified package");
+  const extraFile = await verify(name);
+  assert.notEqual(extraFile.exitCode, 0);
+  assert.match(extraFile.stderr, /exactly one verified package/u);
 });

@@ -45,8 +45,8 @@ jobs:
       - run: node scripts/update-schema-snapshots.mjs --check
       - run: npm run example
       - run: npm run example:gate
-      - name: Install and exercise the actual npm tarball
-        run: npm run test:package -- --pack-destination release-package
+      - name: Install and exercise both actual npm tarballs
+        run: npm run test:package -- --pack-destination release-package --core-pack-destination release-core-package
       # Publication consumes these exact tested bytes, and can start only after every lane passes.
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
@@ -55,5 +55,14 @@ jobs:
           path: |
             release-package/*.tgz
             release-package/package-integrity.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        with:
+          name: npm-core-package-${{ inputs.revision }}
+          path: |
+            release-core-package/*.tgz
+            release-core-package/package-integrity.json
           if-no-files-found: error
           retention-days: 7

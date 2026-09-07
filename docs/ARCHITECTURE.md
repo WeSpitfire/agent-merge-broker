@@ -14,6 +14,11 @@ Version `0.14.2` extends Gate with diagnostics, abandonment, journaled retiremen
 validation evidence, and offline verification. These extensions do not give Gate publication or
 merge authority.
 
+**Packaging in 0.15.0:** `src/core.ts` defines the shared Node API; `src/index.ts` re-exports it
+and adds the full package's MCP adapter. `agent-merge-broker-core` packages the same broker and CLI
+implementation without MCP code/dependencies. The existing `agent-merge-broker` entry points remain
+compatible. This is a distribution boundary, not a fork of transaction or validation logic.
+
 ## Invariants
 
 1. A worker submits immutable commit IDs, never an uncommitted filesystem snapshot.
@@ -130,7 +135,13 @@ pending intent instead of advancing around it.
 
 ## Retention
 
-Active state is a working set, not a historical record. Because `state.json` is rewritten in full on every transaction, an unbounded history makes every heartbeat progressively more expensive. `prune` moves completed tasks and batches into `archive/`, and the audit stream rotates into the same directory once the active file grows large. Archived material is never deleted.
+Active state is a working set, not a historical record. Because `state.json` is rewritten in full on every transaction, an unbounded history makes every heartbeat progressively more expensive. `prune` moves completed tasks and batches into `archive/`, and the audit stream rotates into the same directory once the active file grows large. Archived evidence is preserved.
+
+**Storage maintenance in 0.15.0:** `storage.ts` supplies bounded metadata-only size reporting and
+preview-first compaction of closed audit rotations. Explicit application replaces an original
+rotation only after writing a smaller, verified gzip copy; it does not prune historical evidence,
+active state, keys, worktrees, or retained refs. Audit readers support both formats. Upgrade all
+readers before compaction because versions before 0.15.0 cannot read gzip rotations.
 
 Two records are deliberately not prunable. A completed task that a retained task still declares as a dependency stays, because `dependencyReady` cannot distinguish a pruned dependency from one that has never merged and would block the dependent forever. A batch stays while any of its tasks does, so a retained task never points at a batch that no longer exists.
 

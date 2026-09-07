@@ -513,6 +513,48 @@ Repository adapters should distinguish `baseRef`, the Git revision used to build
 
 Published or prepared work is not treated as merged. This prevents a child from being integrated against a base that does not contain its parent.
 
+## Storage inspection and compaction — 0.15.0
+
+Version `0.15.0` adds these CLI/Node APIs; they are not registered as MCP tools:
+
+```bash
+merge-broker --json storage show
+merge-broker --json storage compact --older-than 30
+merge-broker --json storage compact --older-than 30 --apply
+```
+
+`storage show` returns `StorageReport`: `runtimeDirectory`, optional `provenanceDirectory`,
+`logicalBytes`, `files`, `categories: [{ category, logicalBytes, files }]`,
+`skipped: [{ path, reason }]`, and `complete`. It inspects metadata under the configured runtime
+and provenance directories, never stored file contents. Categories distinguish state, audit,
+archives, worktrees, credentials, receipts, manifests, service logs, provenance, and other files.
+Totals exclude general repository files, npm installations, Git objects, and filesystem allocation
+overhead. Scans do not follow symlinks and are bounded to 100,000 entries and depth 64; changed,
+unreadable, redirected, or unsupported entries can produce a successful but partial report.
+Check `complete` and `skipped`, not just exit status. Paths may be sensitive.
+
+`storage compact` returns `StorageCompactionResult`: `applied`, `olderThanDays`, `eligibleFiles`,
+`eligibleBytes`, `compressedFiles`, `savedBytes`, `entries`, and `skipped`. Each entry has `path`,
+`bytes`, and `status` (`eligible`, `compressed`, `unchanged`, or `skipped`), with optional
+`compressedBytes` and `reason`; skipped diagnostics contain `path` and `reason`. Preview is the
+default, with a 30-day minimum modification age. Preview counts eligible original bytes, not
+estimated savings, and does not initialize state or create locks. `applied: true` means apply mode
+was requested, not that every segment changed.
+
+Only closed timestamp-named audit `.jsonl` rotations qualify. Apply mode holds the state lock to
+serialize with audit rotation, round-trip verifies smaller gzip bytes, writes the copy, then removes the redundant
+original. Active logs, records, receipts, keys, worktrees, provenance, and refs remain untouched.
+Segments over 64 MiB, links, existing gzip copies, and non-saving compression are preserved;
+each pass processes at most 100 eligible segments or 256 MiB of original bytes. Review skip reasons
+before another pass. Upgrade every reader first: versions before 0.15.0 cannot read gzip history.
+
+Both package APIs export `inspectStorage(store, { repositoryRoot, provenanceDirectory? })` and
+`compactAuditStorage(store, { olderThanDays?, apply? })`, plus their result/option types. `store`
+is a `StateStore`; compaction has the same preview default as the CLI. Invalid age returns
+`INVALID_ARGUMENT`. `UNSAFE_PATH`, `STORAGE_CHANGED`, or `STORAGE_VERIFICATION_FAILED` requires
+inspection, not an automatic destructive retry. Preserve both copies if an interruption left them;
+earlier segments in the same pass may already have completed.
+
 ## Stable error categories
 
 Adapters should branch on `BrokerError.code` (or a returned terminal `SubmissionRecord.errorCode`),
@@ -553,6 +595,9 @@ not message text. These are the currently emitted categories and the normal resp
   adapter must not initialize over it. `unlock` and `doctor` include the fixed-root `gate-authority`
   lock; force-release it only after independently proving no setup, adoption, or recovery process can
   still progress.
+- Storage maintenance (0.15.0) — `INVALID_ARGUMENT`, `STORAGE_CHANGED`, and
+  `STORAGE_VERIFICATION_FAILED`, with `UNSAFE_PATH` for redirected paths. Correct invalid age or
+  inspect changed files and any preserved gzip/original pair before retrying.
 - Signing and proof — `SIGNING_KEY_REQUIRED`, `SIGNING_KEY_MISMATCH`, `SIGNING_KEY_EXISTS`, and
   `PROVENANCE_INVALID`. Restore or deliberately rotate the configured identity; never downgrade a
   required signature automatically.

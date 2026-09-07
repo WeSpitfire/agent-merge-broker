@@ -3,15 +3,17 @@ import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
-const [directory, expectedRevision, expectedVersion, ...extra] = process.argv.slice(2);
+const [directory, expectedRevision, expectedVersion, expectedName = "agent-merge-broker", ...extra] = process.argv.slice(2);
 assert.ok(directory && expectedVersion && extra.length === 0,
-  "Usage: node scripts/verify-release-artifact.mjs directory commit-sha version");
+  "Usage: node scripts/verify-release-artifact.mjs directory commit-sha version [agent-merge-broker|agent-merge-broker-core]");
 assert.match(expectedRevision ?? "", /^[0-9a-f]{40}$/u, "Expected a full immutable commit SHA.");
-const filename = `agent-merge-broker-${expectedVersion}.tgz`;
+assert.ok(["agent-merge-broker", "agent-merge-broker-core"].includes(expectedName),
+  "Expected package must be an allowed release package.");
+const filename = `${expectedName}-${expectedVersion}.tgz`;
 assert.equal(path.basename(filename), filename, "Version must not contain a path.");
 const manifest = JSON.parse(await readFile(path.join(directory, "package-integrity.json"), "utf8"));
 assert.equal(manifest.schemaVersion, 1);
-assert.equal(manifest.name, "agent-merge-broker");
+assert.equal(manifest.name, expectedName, "Artifact belongs to a different package.");
 assert.equal(manifest.version, expectedVersion, "Artifact belongs to a different package version.");
 assert.equal(manifest.sourceRevision, expectedRevision, "Artifact was verified against a different commit.");
 assert.equal(manifest.filename, filename);

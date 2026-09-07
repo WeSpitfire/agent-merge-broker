@@ -2,6 +2,9 @@ import path from "node:path";
 import { hostname } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
+import { Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 import {
   access,
   appendFile,
@@ -18,6 +21,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
+import { MAX_COMPACT_AUDIT_BYTES } from "./storage.js";
 import { decodeSubmissionRecord } from "./state-codec.js";
 import { decodeBrokerState } from "./state-codec.js";
 import {
@@ -246,6 +250,11 @@ export class StateStore {
 
   async withIntegrationLock<T>(operation: () => Promise<T>): Promise<T> {
     return await this.withLock("integration", operation);
+  }
+
+  /** Serializes audit compaction with state writes and audit rotation, without rewriting state. */
+  async withStorageLock<T>(operation: () => Promise<T>): Promise<T> {
+    return await this.withLock("state", operation);
   }
 
   /**
@@ -496,19 +505,55 @@ export class StateStore {
   }
 
   private async readAuditFile(target: string, limit: number): Promise<AuditEvent[]> {
-    if (!(await exists(target))) return [];
-    const handle = await open(target, "r");
+    const status = await lstat(target).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!status) return [];
+    if (status.isSymbolicLink() || !status.isFile()) {
+      throw new BrokerError("UNSAFE_PATH", "Audit files must be regular files, not symlinks or junctions.");
+    }
+    const handle = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!handle) return [];
     let text: string;
     let partialStart: boolean;
     try {
-      const { size } = await handle.stat();
-      const start = Math.max(0, size - AUDIT_TAIL_BYTES);
-      partialStart = start > 0;
-      const length = size - start;
-      if (length === 0) return [];
-      const buffer = Buffer.alloc(length);
-      await handle.read(buffer, 0, length, start);
-      text = buffer.toString("utf8");
+      if (target.endsWith(".gz")) {
+        if ((await handle.stat()).size > MAX_COMPACT_AUDIT_BYTES) {
+          throw new BrokerError("AUDIT_ARCHIVE_TOO_LARGE", "Compressed audit segment exceeds its read limit.");
+        }
+        let tail = Buffer.alloc(0);
+        let total = 0;
+        await pipeline(
+          handle.createReadStream({ autoClose: false }),
+          createGunzip(),
+          new Writable({
+            write(chunk: Buffer, _encoding, callback) {
+              total += chunk.length;
+              if (total > MAX_COMPACT_AUDIT_BYTES) {
+                callback(new BrokerError("AUDIT_ARCHIVE_TOO_LARGE", "Compressed audit segment exceeds its read limit."));
+                return;
+              }
+              tail = Buffer.concat([tail, chunk]).subarray(-AUDIT_TAIL_BYTES);
+              callback();
+            },
+          }),
+        );
+        partialStart = total > AUDIT_TAIL_BYTES;
+        text = tail.toString("utf8");
+      } else {
+        const { size } = await handle.stat();
+        const start = Math.max(0, size - AUDIT_TAIL_BYTES);
+        partialStart = start > 0;
+        const length = size - start;
+        if (length === 0) return [];
+        const buffer = Buffer.alloc(length);
+        await handle.read(buffer, 0, length, start);
+        text = buffer.toString("utf8");
+      }
     } finally {
       await handle.close();
     }
@@ -534,13 +579,18 @@ export class StateStore {
     const active = await this.readAuditFile(this.auditFile, limit);
     if (active.length >= limit) return active.slice(-limit);
     const archived = await readdir(this.archiveDirectory).catch(() => [] as string[]);
-    const segments = archived
-      .filter((file) => file.startsWith("audit-") && file.endsWith(".jsonl"))
-      .sort()
-      .reverse();
+    // An interrupted compaction can leave both files. Prefer the original and read each segment
+    // once; a partial compressed copy must never replace a still-readable original audit trail.
+    const segments = [...new Set(archived
+      .filter((file) => file.startsWith("audit-") && /\.jsonl(?:\.gz)?$/u.test(file))
+      .map((file) => file.replace(/\.gz$/u, "")))]
+      .sort().reverse();
     const older: AuditEvent[] = [];
     for (const segment of segments) {
-      older.unshift(...await this.readAuditFile(path.join(this.archiveDirectory, segment), limit - active.length));
+      const original = path.join(this.archiveDirectory, segment);
+      let events = await this.readAuditFile(original, limit - active.length);
+      if (!(await exists(original))) events = await this.readAuditFile(`${original}.gz`, limit - active.length);
+      older.unshift(...events);
       if (older.length + active.length >= limit) break;
     }
     return [...older, ...active]

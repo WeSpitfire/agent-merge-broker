@@ -6,20 +6,21 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+import { assertPackageFootprint, CORE_PACKAGE_NAME, stageCorePackage } from "./package-layout.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const metadata = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+const fullMetadata = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8"));
 const npm = process.env.npm_execpath;
 assert.ok(npm && path.isAbsolute(npm), "Run this smoke test with npm run test:package.");
-const args = process.argv.slice(2);
-assert.ok(args.length === 0 || (args.length === 2 && args[0] === "--pack-destination"),
-  "Usage: npm run test:package -- [--pack-destination directory]");
+const { values: options } = parseArgs({ options: {
+  "pack-destination": { type: "string" },
+  "core-pack-destination": { type: "string" },
+} });
 const scratch = await mkdtemp(path.join(tmpdir(), "merge-broker-package-"));
-const consumer = path.join(scratch, "consumer with spaces");
-const packDestination = args[1] ? path.resolve(args[1]) : path.join(scratch, "package");
 
-async function run(executable, commandArgs, cwd = consumer) {
+async function run(executable, commandArgs, cwd) {
   return await new Promise((resolve, reject) => {
     const child = spawn(executable, commandArgs, {
       cwd,
@@ -42,12 +43,7 @@ async function run(executable, commandArgs, cwd = consumer) {
   });
 }
 
-async function runNpm(commandArgs, cwd = consumer) {
-  // npm.cmd cannot be spawned directly on Windows without a shell. Use npm's actual JS entrypoint.
-  return await run(process.execPath, [npm, ...commandArgs], cwd);
-}
-
-async function mcpSmoke(installedRoot, fixture) {
+async function mcpSmoke(installedRoot, fixture, consumer, version) {
   const child = spawn(process.execPath, [path.join(installedRoot, "dist/mcp-cli.js"), "-C", fixture], {
     cwd: consumer,
     stdio: "pipe",
@@ -102,7 +98,7 @@ async function mcpSmoke(installedRoot, fixture) {
       capabilities: {},
       clientInfo: { name: "installed-package-smoke", version: "1" },
     });
-    assert.equal(initialized.result?.serverInfo?.version, metadata.version);
+    assert.equal(initialized.result?.serverInfo?.version, version);
     assert.ok(initialized.result?.capabilities?.tools, "Installed MCP server must advertise tools.");
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
     const listed = await request(2, "tools/list");
@@ -117,19 +113,25 @@ async function mcpSmoke(installedRoot, fixture) {
   }
 }
 
-try {
+async function verifyPackage(source, metadata, packDestination, consumer) {
+  const core = metadata.name === CORE_PACKAGE_NAME;
+  const aliases = core ? ["amb", "merge-broker"] : ["amb", "merge-broker", "merge-broker-mcp"];
+  // npm.cmd cannot be spawned directly on Windows without a shell. Use npm's actual JS entrypoint.
+  const runNpm = async (commandArgs, cwd = consumer) => await run(process.execPath, [npm, ...commandArgs], cwd);
   await mkdir(consumer);
   await mkdir(packDestination, { recursive: true });
   assert.deepEqual(await readdir(packDestination), [], "Pack destination must be empty; existing artifacts are never overwritten.");
-  const [packed] = JSON.parse(await runNpm(["pack", "--json", "--ignore-scripts", "--pack-destination", packDestination], root));
+  const [packed] = JSON.parse(await runNpm(["pack", "--json", "--ignore-scripts", "--pack-destination", packDestination], source));
   assert.equal(packed.name, metadata.name);
   assert.equal(packed.version, metadata.version);
+  console.log(assertPackageFootprint(packed));
   const files = new Set(packed.files.map((file) => file.path));
   for (const required of [
-    "dist/index.js", "dist/index.d.ts", "dist/cli.js", "dist/mcp-cli.js",
+    "dist/core.js", "dist/core.d.ts", "dist/cli.js",
+    ...(!core ? ["dist/index.js", "dist/index.d.ts", "dist/mcp-cli.js"] : []),
     "schemas/config.schema.json", "schemas/submission.schema.json", "schemas/identities.json",
     "schemas/submission-attestation-envelope.schema.json", "schemas/submission-attestation-statement.schema.json",
-    "templates/AGENTS.snippet.md", "examples/local-gate/run.mjs", "examples/local-gate/README.md",
+    "templates/AGENTS.snippet.md", "README.md", "LICENSE",
   ]) {
     assert.ok(files.has(required), `Missing packaged asset: ${required}`);
   }
@@ -169,21 +171,29 @@ try {
   const installedRoot = path.join(consumer, "node_modules", metadata.name);
   const installed = JSON.parse(await readFile(path.join(installedRoot, "package.json"), "utf8"));
   assert.equal(installed.version, metadata.version);
-  for (const alias of ["amb", "merge-broker", "merge-broker-mcp"]) {
+  for (const alias of aliases) {
     await access(path.join(consumer, "node_modules/.bin", `${alias}${process.platform === "win32" ? ".cmd" : ""}`));
     assert.equal((await runNpm(["run", "--silent", `smoke:${alias}`])).trim(), metadata.version);
   }
+  if (core) {
+    assert.deepEqual(Object.keys(installed.dependencies).sort(), ["commander", "picomatch", "zod"]);
+    await assert.rejects(access(path.join(consumer, "node_modules/@modelcontextprotocol/server")));
+    await assert.rejects(access(path.join(consumer, "node_modules/@modelcontextprotocol/core")));
+    assert.equal(installed.bin["merge-broker-mcp"], undefined);
+  }
   await writeFile(path.join(consumer, "consumer.mjs"), [
     'import assert from "node:assert/strict";',
-    'import { MergeBroker, defaultConfig, createMcpServer, verifySubmissionAttestation, schemaFingerprint } from "agent-merge-broker";',
-    'assert.equal(typeof MergeBroker.open, "function");',
-    'assert.equal(defaultConfig().baseBranch, "main");',
-    'assert.equal(typeof createMcpServer, "function");',
-    'assert.equal(typeof verifySubmissionAttestation, "function");',
-    'assert.equal(typeof schemaFingerprint, "function");',
+    `import * as broker from ${JSON.stringify(metadata.name)};`,
+    'assert.equal(typeof broker.MergeBroker.open, "function");',
+    'assert.equal(broker.defaultConfig().baseBranch, "main");',
+    `assert.equal(typeof broker.createMcpServer, ${JSON.stringify(core ? "undefined" : "function")});`,
+    'assert.equal(typeof broker.verifySubmissionAttestation, "function");',
+    'assert.equal(typeof broker.schemaFingerprint, "function");',
+    'assert.equal(typeof broker.inspectStorage, "function");',
+    'assert.equal(typeof broker.compactAuditStorage, "function");',
     "",
   ].join("\n"));
-  await run(process.execPath, ["consumer.mjs"]);
+  await run(process.execPath, ["consumer.mjs"], consumer);
 
   const fixture = path.join(consumer, "fixture");
   await mkdir(fixture);
@@ -198,14 +208,15 @@ try {
   assert.equal(config.baseBranch, "main");
   assert.match(await readFile(path.join(fixture, ".merge-broker/agent-instructions.md"), "utf8"), /Merge Broker/u);
   assert.match(await readFile(path.join(fixture, "AGENTS.md"), "utf8"), /agent-merge-broker:start/u);
-  await mcpSmoke(installedRoot, fixture);
+  if (!core) await mcpSmoke(installedRoot, fixture, consumer, metadata.version);
 
   await runNpm(["install", "--include=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
   await writeFile(path.join(consumer, "consumer.ts"), [
-    'import { MergeBroker, defaultConfig, createMcpServer, verifySubmissionAttestation, schemaFingerprint, type BrokerConfig, type SubmissionRecord } from "agent-merge-broker";',
+    `import { MergeBroker, defaultConfig, ${core ? "" : "createMcpServer, "}verifySubmissionAttestation, schemaFingerprint, inspectStorage, compactAuditStorage, type BrokerConfig, type SubmissionRecord, type StorageReport } from ${JSON.stringify(metadata.name)};`,
     "const config: BrokerConfig = defaultConfig();",
     "const submission: SubmissionRecord | undefined = undefined;",
-    "void [config, submission, MergeBroker.open, createMcpServer, verifySubmissionAttestation, schemaFingerprint];",
+    "const storage: StorageReport | undefined = undefined;",
+    `void [config, submission, storage, MergeBroker.open, ${core ? "" : "createMcpServer, "}verifySubmissionAttestation, schemaFingerprint, inspectStorage, compactAuditStorage];`,
     "",
   ].join("\n"));
   await writeFile(path.join(consumer, "tsconfig.json"), JSON.stringify({
@@ -222,9 +233,20 @@ try {
     filename: packed.filename,
     sha256: createHash("sha256").update(await readFile(tarball)).digest("hex"),
   }, null, 2)}\n`);
-  await run(process.execPath, [path.join(root, "scripts/verify-release-artifact.mjs"), packDestination, sourceRevision, metadata.version], root);
+  await run(process.execPath, [path.join(root, "scripts/verify-release-artifact.mjs"), packDestination, sourceRevision, metadata.version, metadata.name], root);
   console.log(`Installed package smoke passed: ${metadata.name}@${metadata.version} (${process.platform}, Node ${process.versions.node}).`);
-  if (args[1]) console.log(`Verified tarball: ${tarball}`);
+  console.log(`Verified tarball: ${tarball}`);
+}
+
+try {
+  const coreSource = path.join(scratch, "core source");
+  const coreMetadata = await stageCorePackage(root, coreSource);
+  await verifyPackage(root, fullMetadata,
+    path.resolve(options["pack-destination"] ?? path.join(scratch, "full package")),
+    path.join(scratch, "full consumer with spaces"));
+  await verifyPackage(coreSource, coreMetadata,
+    path.resolve(options["core-pack-destination"] ?? path.join(scratch, "core package")),
+    path.join(scratch, "core consumer with spaces"));
 } finally {
   await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
