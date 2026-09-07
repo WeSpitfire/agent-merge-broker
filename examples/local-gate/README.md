@@ -10,7 +10,8 @@ npm run example:gate
 
 It creates a temporary repository and local bare remote, commits a reviewed validator and public
 signing key on `main`, and registers that local base with refresh disabled. One producer branch
-passes; another fails with validator exit code 7. It then exports an Ed25519 DSSE attestation,
+passes; another fails with a nonzero validator status (`7`, or `1` through Windows PowerShell).
+It then exports an Ed25519 DSSE attestation,
 verifies it outside the repository using the independently selected public key and expected
 identities, and previews archival of both records. Signing leaves the candidate commit unchanged;
 the result always reports `mergeAuthorized: false`.

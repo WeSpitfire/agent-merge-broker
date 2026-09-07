@@ -87,8 +87,13 @@ try {
   assert.notEqual(rejectedCommand.status, 0, "A rejected candidate must exit unsuccessfully.");
   const rejected = JSON.parse(rejectedCommand.stdout);
   assert.equal(rejected.status, "rejected");
-  assert.equal(rejected.validations[0].exitCode, 7);
-  process.stdout.write(`Accepted: ${accepted.id}\nRejected: ${rejected.id} (validator exit 7)\n`);
+  const rejection = rejected.validations.find((result) => result.name === "candidate contract");
+  assert.ok(rejection, "The protected candidate validator must have run.");
+  // PowerShell can report 1 for a native command's nonzero exit. Check the rejection's cause,
+  // not whether the host shell preserves the exact numeric status returned by verify.mjs.
+  assert.notEqual(rejection.exitCode, 0);
+  assert.match(rejection.stdout, /Candidate rejected: expected accepted\./u);
+  process.stdout.write(`Accepted: ${accepted.id}\nRejected: ${rejected.id} (validator exit ${rejection.exitCode})\n`);
 
   say("Signing the accepted result and verifying its detached evidence offline.");
   const envelopePath = path.join(demo, "candidate.dsse.json");

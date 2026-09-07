@@ -47,6 +47,11 @@ Placeholder values are quoted as PowerShell literals, validator timeouts termina
 processes with `taskkill`, and repository-relative configuration rejects drive-qualified, UNC, and
 escaping paths before execution.
 
+Recorded validator `exitCode` is the configured shell's process status, not necessarily the native
+program's exact status. Windows PowerShell `-Command` can report a native nonzero status such as `7`
+as `1`; any nonzero status means validation failed. See Microsoft's
+[PowerShell exit-code semantics](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1#-command).
+
 `merge-broker install-service` creates a least-privilege Scheduled Task bound to the installing
 user's SID. It starts immediately and at that user's logon, restarts after failure, and writes to
 the broker log reported by the installer. It uses the user's interactive token: it is not a
