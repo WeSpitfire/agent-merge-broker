@@ -1244,6 +1244,7 @@ program
           options.provenanceDirectory ?? policy.provenanceDirectory ?? ".merge-broker/attestations",
         ...(policy.publicKey ? { publicKey: policy.publicKey } : {}),
         requireSignature: policy.requireSignature ?? false,
+        ...(policy.validationAuthority ? { validationAuthority: policy.validationAuthority } : {}),
       });
       output(
         result,

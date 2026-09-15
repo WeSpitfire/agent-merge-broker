@@ -20,6 +20,11 @@ export interface VerifyProvenanceOptions {
   /** Public key read from protected-base policy, never from the pull request. */
   publicKey?: string;
   requireSignature?: boolean;
+  /**
+   * Protected-base validation authority. `broker` requires the manifest to record at least one
+   * authoritative validation; `required-ci` delegates that decision to required forge checks.
+   */
+  validationAuthority?: ValidationAuthority;
 }
 
 export interface ProvenanceVerification {
@@ -55,31 +60,57 @@ export async function policyFromBase(
   requireSignature?: boolean;
   validationAuthority?: ValidationAuthority;
 }> {
-  const shown = await repo.git(["show", `${baseSha}:.merge-broker/config.json`], repo.root, true);
-  if (shown.exitCode !== 0) return {};
-  try {
-    const config = JSON.parse(shown.stdout) as Partial<BrokerConfig>;
-    return {
-      ...(typeof config.baseBranch === "string" ? { baseBranch: config.baseBranch } : {}),
-      ...(typeof config.integration?.branchPrefix === "string"
-        ? { branchPrefix: config.integration.branchPrefix }
-        : {}),
-      ...(typeof config.integration?.provenance?.directory === "string"
-        ? { provenanceDirectory: config.integration.provenance.directory }
-        : {}),
-      ...(typeof config.integration?.provenance?.publicKey === "string"
-        ? { publicKey: config.integration.provenance.publicKey }
-        : {}),
-      ...(typeof config.integration?.provenance?.requireSignature === "boolean"
-        ? { requireSignature: config.integration.provenance.requireSignature }
-        : {}),
-      ...(config.validation?.authority === "broker" || config.validation?.authority === "required-ci"
-        ? { validationAuthority: config.validation.authority }
-        : {}),
-    };
-  } catch {
-    return {};
+  const configPath = ".merge-broker/config.json";
+  const listed = await repo.git(["ls-tree", "-z", "--end-of-options", baseSha, "--", configPath], repo.root, true);
+  if (listed.exitCode !== 0) {
+    throw invalid(`Could not read protected-base commit ${baseSha}.`, { stderr: listed.stderr });
   }
+  // A base without broker policy has nothing to enforce. Any other failure must not be mistaken for
+  // that: treating an unreadable or malformed policy as absent would silently drop its signature
+  // and validation requirements.
+  if (listed.stdout === "") return {};
+  const shown = await repo.git(["show", `${baseSha}:${configPath}`], repo.root, true);
+  if (shown.exitCode !== 0) {
+    throw invalid(`Could not read ${configPath} from protected base ${baseSha}.`, { stderr: shown.stderr });
+  }
+  let config: Partial<BrokerConfig>;
+  try {
+    config = JSON.parse(shown.stdout) as Partial<BrokerConfig>;
+  } catch (error) {
+    throw invalid(`Protected-base ${configPath} is not valid JSON.`, {
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw invalid(`Protected-base ${configPath} must be a JSON object.`);
+  }
+  const optionalString = (value: unknown, field: string): string | undefined => {
+    if (value === undefined) return undefined;
+    if (typeof value !== "string") throw invalid(`Protected-base policy field ${field} must be a string.`);
+    return value;
+  };
+  const provenance = config.integration?.provenance;
+  const requireSignature = provenance?.requireSignature;
+  if (requireSignature !== undefined && typeof requireSignature !== "boolean") {
+    throw invalid("Protected-base policy field integration.provenance.requireSignature must be a boolean.");
+  }
+  // Matches loadConfig: policies written before authority was explicit ran broker validators.
+  const validationAuthority = config.validation?.authority ?? "broker";
+  if (validationAuthority !== "broker" && validationAuthority !== "required-ci") {
+    throw invalid("Protected-base policy field validation.authority must be broker or required-ci.");
+  }
+  const baseBranch = optionalString(config.baseBranch, "baseBranch");
+  const branchPrefix = optionalString(config.integration?.branchPrefix, "integration.branchPrefix");
+  const provenanceDirectory = optionalString(provenance?.directory, "integration.provenance.directory");
+  const publicKey = optionalString(provenance?.publicKey, "integration.provenance.publicKey");
+  return {
+    ...(baseBranch !== undefined ? { baseBranch } : {}),
+    ...(branchPrefix !== undefined ? { branchPrefix } : {}),
+    ...(provenanceDirectory !== undefined ? { provenanceDirectory } : {}),
+    ...(publicKey !== undefined ? { publicKey } : {}),
+    ...(requireSignature !== undefined ? { requireSignature } : {}),
+    validationAuthority,
+  };
 }
 
 export function batchIdFromBranch(branch: string, prefix: string): string {
@@ -216,6 +247,7 @@ export async function verifyProvenance(options: VerifyProvenanceOptions): Promis
     provenanceDirectory = ".merge-broker/attestations",
     publicKey,
     requireSignature = false,
+    validationAuthority,
   } = options;
 
   const batchId = batchIdFromBranch(branch, branchPrefix);
@@ -301,13 +333,9 @@ export async function verifyProvenance(options: VerifyProvenanceOptions): Promis
   // Compared against the base the manifest records, not the current tip: a later unrelated commit on
   // the base branch would otherwise look like an unaccounted change.
   const claimedPaths = [...new Set(manifest.tasks.flatMap((task) => task.actualPaths ?? []))].sort();
-  const integratedPaths = [
-    ...new Set(
-      (await repo.git(["diff", "--name-only", `${manifest.baseSha}..${parentSha}`])).stdout
-        .split("\n")
-        .filter(Boolean),
-    ),
-  ].sort();
+  // Use the same raw, rename-free, NUL-delimited listing the broker recorded. Porcelain name output
+  // follows ambient diff.renames and core.quotePath settings on the verifying runner.
+  const integratedPaths = await repo.changedFilesBetween(manifest.baseSha, parentSha);
   if (JSON.stringify(claimedPaths) !== JSON.stringify(integratedPaths)) {
     throw invalid("Manifest paths do not match the integrated diff.", {
       claimed: claimedPaths,
@@ -334,6 +362,11 @@ export async function verifyProvenance(options: VerifyProvenanceOptions): Promis
 
   if (!Array.isArray(manifest.validations) || manifest.validations.some((item) => item.exitCode !== 0)) {
     throw invalid("Manifest records a failed validation.");
+  }
+  if (validationAuthority === "broker" && !manifest.validations.some((item) => item.scope === "authoritative")) {
+    throw invalid(
+      "Protected-base policy makes the broker the validation authority, but this batch recorded no authoritative validation. Configure validation.authoritative on the base and re-cut the batch, or use required-ci authority.",
+    );
   }
 
   return {

@@ -135,11 +135,43 @@ export function createMcpServer(options: {
   cwd?: string;
   profile?: McpProfile;
   version?: string;
+  /**
+   * Stable worker identity for this server. Defaults to MERGE_BROKER_AGENT. When set, a restarted
+   * worker server may resume leases held under exactly this identity.
+   */
+  agent?: string;
 } = {}): McpServer {
   const cwd = options.cwd ?? process.cwd();
   const profile = options.profile ?? "worker";
   assertMcpProfile(profile);
   const open = async (): Promise<MergeBroker> => await MergeBroker.open(cwd);
+  const agentIdentity = options.agent ?? (process.env.MERGE_BROKER_AGENT || undefined);
+  // Every worker server in a repository shares one token vault keyed by task ID. Without this
+  // binding, any worker could heartbeat, extend, release, or nominate commits under another
+  // worker's lease simply by naming its task.
+  const ownedTasks = new Set<string>();
+  const holderFor = (requested: string | undefined): string => {
+    if (profile === "worker" && agentIdentity && requested !== undefined && requested !== agentIdentity) {
+      throw new BrokerError(
+        "INVALID_ARGUMENTS",
+        `This worker MCP server acts as ${agentIdentity}; it cannot claim a lease for ${requested}.`,
+      );
+    }
+    return requested ?? agentIdentity ?? defaultHolder();
+  };
+  const leaseToken = async (broker: MergeBroker, taskId: string): Promise<string> => {
+    if (profile === "worker" && !ownedTasks.has(taskId)) {
+      const holder = (await broker.task(taskId)).lease?.holder;
+      if (!agentIdentity || holder !== agentIdentity) {
+        throw new BrokerError(
+          "LEASE_NOT_OWNED",
+          `This worker MCP server does not hold the lease for ${taskId}. Claim or reopen it through this server, or set MERGE_BROKER_AGENT so a restarted server can resume leases held under that identity.`,
+          { taskId, ...(holder ? { holder } : {}) },
+        );
+      }
+    }
+    return await storedToken(broker, taskId);
+  };
   const server = new McpServer(
     { name: `agent-merge-broker-${profile}`, version: options.version ?? "0.0.0" },
     { capabilities: { tools: {} } },
@@ -190,7 +222,7 @@ export function createMcpServer(options: {
       const broker = await open();
       const claimed = await broker.claimTask({
         id: input.taskId,
-        holder: input.holder ?? defaultHolder(),
+        holder: holderFor(input.holder),
         expectedPaths: input.paths,
         ...(input.title ? { title: input.title } : {}),
         ...(input.agent ? { agent: input.agent } : {}),
@@ -200,6 +232,7 @@ export function createMcpServer(options: {
         worktree: input.worktree ?? cwd,
         storeToken: true,
       });
+      ownedTasks.add(input.taskId);
       return { task: publicTask(claimed.task), tokenStored: true };
     }),
   );
@@ -213,7 +246,7 @@ export function createMcpServer(options: {
     },
     wrapped(async ({ taskId }) => {
       const broker = await open();
-      return await broker.heartbeat(taskId, await storedToken(broker, taskId));
+      return await broker.heartbeat(taskId, await leaseToken(broker, taskId));
     }),
   );
 
@@ -226,7 +259,7 @@ export function createMcpServer(options: {
     },
     wrapped(async ({ taskId, paths }) => {
       const broker = await open();
-      return await broker.extendTask(taskId, paths, await storedToken(broker, taskId));
+      return await broker.extendTask(taskId, paths, await leaseToken(broker, taskId));
     }),
   );
 
@@ -272,7 +305,7 @@ export function createMcpServer(options: {
       const result = await broker.submitTask(
         taskId,
         commits?.length ? commits : ["HEAD"],
-        await storedToken(broker, taskId),
+        await leaseToken(broker, taskId),
         { sinceBase: sinceBase ?? false },
       );
       return { ...result, mergeAuthorized: false };
@@ -288,7 +321,7 @@ export function createMcpServer(options: {
     },
     wrapped(async ({ taskId }) => {
       const broker = await open();
-      return await broker.releaseTask(taskId, await storedToken(broker, taskId));
+      return await broker.releaseTask(taskId, await leaseToken(broker, taskId));
     }),
   );
 
@@ -307,12 +340,13 @@ export function createMcpServer(options: {
     },
     wrapped(async (input) => {
       const reopened = await (await open()).reopenTaskForRevision(input.taskId, {
-        holder: input.holder ?? defaultHolder(),
+        holder: holderFor(input.holder),
         ...(input.paths ? { expectedPaths: input.paths } : {}),
         worktree: input.worktree ?? cwd,
         ...(input.reason ? { reason: input.reason } : {}),
         storeToken: true,
       });
+      ownedTasks.add(input.taskId);
       return { task: publicTask(reopened.task), batch: reopened.batch, tokenStored: true };
     }),
   );
@@ -332,7 +366,7 @@ export function createMcpServer(options: {
       return await broker.reviseTask(
         taskId,
         commits?.length ? commits : ["HEAD"],
-        await storedToken(broker, taskId),
+        await leaseToken(broker, taskId),
         { sinceBase: sinceBase ?? false },
       );
     }),

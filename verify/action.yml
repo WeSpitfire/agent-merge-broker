@@ -46,9 +46,21 @@ inputs:
 runs:
   using: composite
   steps:
+    # agent-merge-broker requires Node.js 22+. Only install Node when the runner's default is older, so
+    # a caller's own setup-node selection is not replaced for later steps.
+    - name: Check Node.js version
+      id: node
+      shell: bash
+      run: |
+        major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+        if [ "${major}" -ge 22 ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; else echo "ready=false" >> "$GITHUB_OUTPUT"; fi
+    - name: Set up Node.js 22
+      if: steps.node.outputs.ready != 'true'
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 22
     - name: Verify Merge Broker provenance
       shell: bash
-      working-directory: ${{ inputs.working-directory }}
       env:
         AMB_VERSION: ${{ inputs.version }}
         AMB_BRANCH: ${{ inputs.branch }}
@@ -57,13 +69,17 @@ runs:
         AMB_BASE_BRANCH: ${{ inputs.base-branch }}
         AMB_BRANCH_PREFIX: ${{ inputs.branch-prefix }}
         AMB_PROVENANCE_DIRECTORY: ${{ inputs.provenance-directory }}
+        AMB_WORKING_DIRECTORY: ${{ inputs.working-directory }}
       run: |
         set -euo pipefail
         if [ -z "${AMB_BRANCH}" ] || [ -z "${AMB_HEAD}" ] || [ -z "${AMB_BASE}" ]; then
           echo "::error::branch, head, and base are required. On non-pull_request events, pass them explicitly."
           exit 1
         fi
-        args=(verify-provenance --branch "${AMB_BRANCH}" --head "${AMB_HEAD}" --base "${AMB_BASE}")
+        repository="$(cd -- "${GITHUB_WORKSPACE}" && cd -- "${AMB_WORKING_DIRECTORY}" && pwd -P)"
+        # Git Bash on Windows reports /d/a/... paths; Node needs the native form.
+        if command -v cygpath >/dev/null 2>&1; then repository="$(cygpath -w "${repository}")"; fi
+        args=(-C "${repository}" verify-provenance --branch "${AMB_BRANCH}" --head "${AMB_HEAD}" --base "${AMB_BASE}")
         if [ -n "${AMB_BASE_BRANCH}" ]; then
           args+=(--base-branch "${AMB_BASE_BRANCH}")
         fi
@@ -73,4 +89,10 @@ runs:
         if [ -n "${AMB_PROVENANCE_DIRECTORY}" ]; then
           args+=(--provenance-directory "${AMB_PROVENANCE_DIRECTORY}")
         fi
-        npx --yes "agent-merge-broker@${AMB_VERSION}" "${args[@]}"
+        # Resolve and run the verifier from an empty directory outside the checkout. Run inside the
+        # pull request tree, npx would honor its committed .npmrc and prefer a committed
+        # node_modules/agent-merge-broker, letting the change under review choose its own verifier.
+        runner="$(mktemp -d "${RUNNER_TEMP:-/tmp}/merge-broker-verify.XXXXXX")"
+        cd -- "${runner}"
+        # The package's executables are merge-broker, amb, and merge-broker-mcp, so name one.
+        npx --yes --package "agent-merge-broker@${AMB_VERSION}" -- merge-broker "${args[@]}"

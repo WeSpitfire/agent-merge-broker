@@ -3,7 +3,12 @@ import test from "node:test";
 import path from "node:path";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { commandForArchitecture, resolveShell, runCommand } from "./process.js";
+import {
+  commandForArchitecture,
+  resolveShell,
+  runCommand,
+  withoutCurrentDirectoryExecutableSearch,
+} from "./process.js";
 import { fakeProcess } from "./test-support/fake-process.js";
 
 test("portable command fixtures preserve literal arguments and process I/O, then restore spawning", async (context) => {
@@ -29,6 +34,30 @@ test("uses non-profile PowerShell with literal-safe placeholders on Windows", ()
   assert.equal(shell.executable, "powershell.exe");
   assert.deepEqual(shell.args, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
   assert.equal(shell.quote("src/O'Brien & Co/file.ts"), "'src/O''Brien & Co/file.ts'");
+});
+
+test("doubles typographic PowerShell single quotes so committed paths stay literal", () => {
+  const shell = resolveShell(undefined, "win32");
+  for (const quote of ["\u2018", "\u2019", "\u201A", "\u201B"]) {
+    assert.equal(shell.quote(`a${quote};calc;${quote}.ts`), `'a${quote}${quote};calc;${quote}${quote}.ts'`);
+  }
+});
+
+test("disables Windows current-directory executable search only while spawning", () => {
+  const name = "NoDefaultCurrentDirectoryInExePath";
+  const unset: NodeJS.ProcessEnv = {};
+  assert.equal(withoutCurrentDirectoryExecutableSearch(() => unset[name], "win32", unset), "1");
+  assert.equal(Object.prototype.hasOwnProperty.call(unset, name), false);
+
+  const preset: NodeJS.ProcessEnv = { [name]: "operator" };
+  assert.throws(() => withoutCurrentDirectoryExecutableSearch(() => {
+    assert.equal(preset[name], "1");
+    throw new Error("spawn failed");
+  }, "win32", preset), /spawn failed/u);
+  assert.equal(preset[name], "operator");
+
+  const posix: NodeJS.ProcessEnv = {};
+  assert.equal(withoutCurrentDirectoryExecutableSearch(() => posix[name], "linux", posix), undefined);
 });
 
 test("recognizes configured PowerShell and cmd interpreters", () => {
@@ -77,14 +106,15 @@ test("bounds command output while retaining the beginning and end", async () => 
 
 test(
   "kills validator descendants when the command times out",
-  { skip: process.platform === "win32" ? "POSIX process-group behavior" : false },
   async (context) => {
     const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-process-"));
     context.after(async () => {
       await rm(directory, { recursive: true, force: true });
     });
     const marker = path.join(directory, "descendant-survived");
-    const childScript = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'late'), 400)`;
+    // Windows starts taskkill as a separate process, so give its tree walk a wider margin.
+    const lateMs = process.platform === "win32" ? 3_000 : 400;
+    const childScript = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'late'), ${lateMs})`;
     const parentScript = [
       "const { spawn } = require('node:child_process')",
       `spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: 'ignore' })`,
@@ -97,7 +127,7 @@ test(
       killProcessTree: true,
     });
     assert.match(result.stderr, /Timed out after 75ms/u);
-    await new Promise<void>((resolve) => setTimeout(resolve, 600));
+    await new Promise<void>((resolve) => setTimeout(resolve, lateMs + 200));
     await assert.rejects(access(marker));
   },
 );

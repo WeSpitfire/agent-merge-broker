@@ -4,6 +4,7 @@ import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { MergeBroker } from "./broker.js";
+import { configPath, loadConfig } from "./config.js";
 import { GitRepository } from "./git.js";
 import { BrokerError } from "./errors.js";
 import { runCommand } from "./process.js";
@@ -21,8 +22,15 @@ interface Fixture {
   base: string;
 }
 
+interface FixtureOptions {
+  /** Commit the worker's change on the current branch. Defaults to adding src/feature.ts. */
+  change?: (repo: string) => Promise<void>;
+  /** Commit an authoritative validator to protected-base policy. Defaults to true. */
+  authoritative?: boolean;
+}
+
 /** A repository holding one real integration branch, as a pull request would present it. */
-async function integrated(context: TestContext): Promise<Fixture> {
+async function integrated(context: TestContext, options: FixtureOptions = {}): Promise<Fixture> {
   const repo = await mkdtemp(path.join(tmpdir(), "merge-broker-verify-"));
   context.after(async () => {
     await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -34,16 +42,25 @@ async function integrated(context: TestContext): Promise<Fixture> {
   await git(repo, "add", "README.md");
   await git(repo, "commit", "-m", "initial");
   await MergeBroker.initialize(repo);
+  if (options.authoritative ?? true) {
+    const config = await loadConfig(repo);
+    config.validation.authoritative.push({ name: "suite", command: "node --version" });
+    await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  }
   await git(repo, "add", ".merge-broker");
   await git(repo, "commit", "-m", "add broker policy");
 
   const broker = await MergeBroker.open(repo);
-  const claim = await broker.claimTask({ id: "FEATURE", holder: "agent", expectedPaths: ["src/**"] });
+  const claim = await broker.claimTask({ id: "FEATURE", holder: "agent", expectedPaths: ["**"] });
   await git(repo, "switch", "-c", "agent/feature", "main");
-  await mkdir(path.join(repo, "src"), { recursive: true });
-  await writeFile(path.join(repo, "src", "feature.ts"), "export const feature = 1;\n", "utf8");
-  await git(repo, "add", "src/feature.ts");
-  await git(repo, "commit", "-m", "add feature");
+  if (options.change) {
+    await options.change(repo);
+  } else {
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src", "feature.ts"), "export const feature = 1;\n", "utf8");
+    await git(repo, "add", "src/feature.ts");
+    await git(repo, "commit", "-m", "add feature");
+  }
   const commit = await git(repo, "rev-parse", "HEAD");
   await git(repo, "switch", "main");
   await broker.submitTask("FEATURE", [commit], claim.token);
@@ -70,6 +87,7 @@ async function verify(fixture: Fixture, overrides: Partial<Fixture> = {}): Promi
     baseBranch: "main",
     ...(policy.publicKey ? { publicKey: policy.publicKey } : {}),
     requireSignature: policy.requireSignature ?? false,
+    ...(policy.validationAuthority ? { validationAuthority: policy.validationAuthority } : {}),
   });
 }
 
@@ -268,4 +286,61 @@ test("rejects a batch assembled on history the base branch does not contain", as
     verify(fixture, { base: unrelatedBase }),
     rejected(/Re-integrate the batch|does not trust a public key/u),
   );
+});
+
+test("accepts renamed and non-ASCII paths regardless of the runner's diff settings", async (context) => {
+  const fixture = await integrated(context, {
+    change: async (repo) => {
+      await mkdir(path.join(repo, "docs"), { recursive: true });
+      await git(repo, "mv", "README.md", "docs/README.md");
+      await writeFile(path.join(repo, "caf\u00e9.txt"), "espresso\n", "utf8");
+      await git(repo, "add", "caf\u00e9.txt");
+      await git(repo, "commit", "-m", "rename and add a non-ASCII path");
+    },
+  });
+  // Porcelain diff output would collapse the rename and quote the non-ASCII name.
+  await git(fixture.repo, "config", "diff.renames", "true");
+  await git(fixture.repo, "config", "core.quotePath", "true");
+  const result = await verify(fixture) as { authenticated: boolean };
+  assert.equal(result.authenticated, true);
+});
+
+test("rejects an authenticated batch that recorded no authoritative validation", async (context) => {
+  const fixture = await integrated(context, { authoritative: false });
+  await assert.rejects(verify(fixture), rejected(/recorded no authoritative validation/u));
+
+  // Required-CI authority deliberately delegates that decision to protected forge checks.
+  const configFile = path.join(fixture.repo, ".merge-broker", "config.json");
+  const config = JSON.parse(await readFile(configFile, "utf8")) as { validation: { authority: string } };
+  config.validation.authority = "required-ci";
+  await writeFile(configFile, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await git(fixture.repo, "add", ".merge-broker/config.json");
+  await git(fixture.repo, "commit", "-m", "delegate validation to required CI");
+  const result = await verify(fixture, { base: await git(fixture.repo, "rev-parse", "main") }) as {
+    authenticated: boolean;
+  };
+  assert.equal(result.authenticated, true);
+});
+
+test("fails closed when protected-base policy exists but cannot be interpreted", async (context) => {
+  const fixture = await integrated(context);
+  const configFile = path.join(fixture.repo, ".merge-broker", "config.json");
+  await writeFile(configFile, "{ not json\n", "utf8");
+  await git(fixture.repo, "add", ".merge-broker/config.json");
+  await git(fixture.repo, "commit", "-m", "corrupt policy");
+  const corruptBase = await git(fixture.repo, "rev-parse", "main");
+  await assert.rejects(policyFromBase(fixture.repository, corruptBase), rejected(/not valid JSON/u));
+
+  await writeFile(configFile, `${JSON.stringify({ integration: { provenance: { requireSignature: "true" } } })}\n`, "utf8");
+  await git(fixture.repo, "add", ".merge-broker/config.json");
+  await git(fixture.repo, "commit", "-m", "mistyped policy");
+  await assert.rejects(
+    policyFromBase(fixture.repository, await git(fixture.repo, "rev-parse", "main")),
+    rejected(/requireSignature must be a boolean/u),
+  );
+
+  // A base with no broker policy at all still has nothing to enforce.
+  await git(fixture.repo, "rm", "-q", "-r", ".merge-broker");
+  await git(fixture.repo, "commit", "-m", "remove broker policy");
+  assert.deepEqual(await policyFromBase(fixture.repository, await git(fixture.repo, "rev-parse", "main")), {});
 });

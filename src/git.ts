@@ -28,7 +28,7 @@ import {
 } from "./git-locators.js";
 export { remoteUrlFingerprint, isHostQualifiedForgeRepository } from "./git-locators.js";
 import { BrokerError } from "./errors.js";
-import { runCommand, type CommandResult } from "./process.js";
+import { runCommand, withoutCurrentDirectoryExecutableSearch, type CommandResult } from "./process.js";
 import type { SubmissionWorktreeIdentity } from "./types.js";
 
 export interface WorktreeInfo {
@@ -313,6 +313,14 @@ export class GitRepository {
   }
 
   async git(args: string[], cwd = this.root, allowFailure = false): Promise<CommandResult> {
+    if (path.resolve(cwd) !== path.resolve(this.root)) {
+      // A relative core.hooksPath -- written by install-hooks, husky, and similar tools -- resolves
+      // against the worktree Git runs in. In an integration or worker worktree that directory is
+      // submitted content, and even read-mostly commands such as status can fire index hooks.
+      return await this.withIsolatedHooks(async (hooksDirectory) =>
+        await runCommand("git", ["-c", `core.hooksPath=${hooksDirectory}`, ...args], { cwd, allowFailure })
+      );
+    }
     return await runCommand("git", args, { cwd, allowFailure });
   }
 
@@ -654,13 +662,16 @@ export class GitRepository {
     maxOutputBytes: number,
   ): Promise<Buffer> {
     return await new Promise<Buffer>((resolve, reject) => {
-      const child = spawn("git", [...GATE_GIT_CONFIG_ARGUMENTS, ...args], {
-        cwd,
-        env: localGateGitEnvironment(),
-        shell: false,
-        stdio: "pipe",
-        windowsHide: true,
-      });
+      const env = localGateGitEnvironment();
+      const child = withoutCurrentDirectoryExecutableSearch(() =>
+        spawn("git", [...GATE_GIT_CONFIG_ARGUMENTS, ...args], {
+          cwd,
+          env,
+          shell: false,
+          stdio: "pipe",
+          windowsHide: true,
+        }),
+      );
       const chunks: Buffer[] = [];
       const errors: Buffer[] = [];
       let outputBytes = 0;
@@ -3069,10 +3080,28 @@ export class GitRepository {
   ): Promise<string> {
     const target = path.resolve(cwd, relativePath);
     const relative = path.relative(cwd, target);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
       throw new BrokerError("UNSAFE_PATH", `Generated file escapes the integration worktree: ${relativePath}`);
     }
-    await mkdir(path.dirname(target), { recursive: true });
+    // The containing directories come from submitted content. A committed symlink at any component
+    // would otherwise redirect the write outside the worktree before `git add` refuses the path.
+    let current = cwd;
+    const components = relative.split(path.sep);
+    for (const [index, component] of components.entries()) {
+      current = path.join(current, component);
+      const status = await lstat(current).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw error;
+      });
+      const isFinal = index === components.length - 1;
+      if (status?.isSymbolicLink() || (status && !isFinal && !status.isDirectory())) {
+        throw new BrokerError(
+          "UNSAFE_PATH",
+          `Generated file path passes through a link or non-directory in the integration worktree: ${relativePath}`,
+        );
+      }
+      if (!status && !isFinal) await mkdir(current);
+    }
     await writeFile(target, contents, "utf8");
     await this.git(["add", "--", relativePath], cwd);
     await this.brokerCommitGit(["commit", "-m", message], cwd);

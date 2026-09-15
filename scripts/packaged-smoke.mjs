@@ -139,16 +139,28 @@ async function verifyPackage(source, metadata, packDestination, consumer) {
     assert.ok(!file.includes(".test.") && !file.startsWith("dist/test-support/"), `Test code must not ship: ${file}`);
   }
   const tarball = path.join(packDestination, packed.filename);
-  // A bare directory/file.tgz can be parsed as GitHub shorthand. Exercise publication's
-  // explicit local-file form without publishing, running lifecycle scripts, or requesting OIDC.
-  const publishOutput = JSON.parse(await runNpm([
-    "publish", `./${packed.filename}`, "--dry-run", "--ignore-scripts", "--json",
-    "--access=public", "--provenance=false", "--registry=https://registry.npmjs.org",
-  ], packDestination));
-  const publishPreview = publishOutput[metadata.name] ?? publishOutput;
-  assert.equal(publishPreview.name, metadata.name);
-  assert.equal(publishPreview.version, metadata.version);
-  assert.equal(publishPreview.integrity, packed.integrity, "Publication must select the tested local tarball.");
+  const registry = "https://registry.npmjs.org";
+  // npm 11+ refuses a publish dry-run for a version the registry already holds, so every CI run
+  // after a release would fail here with nothing wrong. An unpublished version -- the only kind a
+  // release can publish -- still gets the full preview, and a real publish of an existing version
+  // still fails loudly in the release job.
+  const alreadyPublished = await runNpm(
+    ["view", `${metadata.name}@${metadata.version}`, "version", "--json", `--registry=${registry}`],
+  ).then((output) => output.trim() !== "" && JSON.parse(output) === metadata.version, () => false);
+  if (alreadyPublished) {
+    console.log(`${metadata.name}@${metadata.version} is already on npm; skipping the publication dry-run.`);
+  } else {
+    // A bare directory/file.tgz can be parsed as GitHub shorthand. Exercise publication's
+    // explicit local-file form without publishing, running lifecycle scripts, or requesting OIDC.
+    const publishOutput = JSON.parse(await runNpm([
+      "publish", `./${packed.filename}`, "--dry-run", "--ignore-scripts", "--json",
+      "--access=public", "--provenance=false", `--registry=${registry}`,
+    ], packDestination));
+    const publishPreview = publishOutput[metadata.name] ?? publishOutput;
+    assert.equal(publishPreview.name, metadata.name);
+    assert.equal(publishPreview.version, metadata.version);
+    assert.equal(publishPreview.integrity, packed.integrity, "Publication must select the tested local tarball.");
+  }
   await writeFile(path.join(consumer, "package.json"), JSON.stringify({
     name: "merge-broker-installed-consumer",
     private: true,

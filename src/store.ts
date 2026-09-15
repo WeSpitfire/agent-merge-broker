@@ -7,8 +7,8 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import {
   access,
-  appendFile,
   chmod,
+  link,
   lstat,
   mkdir,
   open,
@@ -21,7 +21,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
-import { MAX_COMPACT_AUDIT_BYTES } from "./storage.js";
+import { MAX_COMPACT_AUDIT_BYTES, syncDirectory } from "./storage.js";
 import { decodeSubmissionRecord } from "./state-codec.js";
 import { decodeBrokerState } from "./state-codec.js";
 import {
@@ -61,6 +61,72 @@ export interface LockStatus {
 const delay = async (milliseconds: number): Promise<void> => {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 };
+
+/** Retry the transient sharing violations Windows reports while antivirus or a reader holds a handle. */
+async function renameWithRetry(source: string, target: string): Promise<void> {
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const retryable = process.platform === "win32" && (code === "EPERM" || code === "EBUSY" || code === "EACCES");
+      if (!retryable || Date.now() - startedAt >= WINDOWS_LOCK_RENAME_RETRY_MS) throw error;
+      await delay(10 + Math.floor(Math.random() * 40));
+    }
+  }
+}
+
+/**
+ * Sync a directory entry where the filesystem supports it. File contents are always synced first;
+ * some network and FUSE filesystems reject directory handles, which must not make state unwritable.
+ */
+async function syncParentDirectory(directory: string): Promise<void> {
+  try {
+    await syncDirectory(directory);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR" && code !== "EPERM" && code !== "EACCES") {
+      throw error;
+    }
+  }
+}
+
+/** Write a private temporary file whose bytes are on stable storage before it is linked into place. */
+async function writeSyncedTemporary(target: string, contents: string): Promise<string> {
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  const handle = await open(temporary, "wx", 0o600);
+  try {
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  await handle.close();
+  await chmod(temporary, 0o600).catch(() => undefined);
+  return temporary;
+}
+
+/**
+ * Replace a file so a crash or power loss leaves either the complete old bytes or the complete new
+ * bytes. Recovery intents are recorded before external side effects, so rename alone is not enough:
+ * without syncing the data and the directory entry, a journaled rename can reach disk before its
+ * contents and leave an empty file.
+ */
+async function replaceFileDurably(target: string, contents: string): Promise<void> {
+  const temporary = await writeSyncedTemporary(target, contents);
+  try {
+    await renameWithRetry(temporary, target);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  await chmod(target, 0o600).catch(() => undefined);
+  await syncParentDirectory(path.dirname(target));
+}
 
 async function exists(target: string): Promise<boolean> {
   try {
@@ -193,20 +259,33 @@ export class StateStore {
       }),
     );
     if (!(await exists(this.stateFile))) {
+      const initial = `${JSON.stringify({
+        version: STATE_VERSION,
+        sequence: 0,
+        tasks: {},
+        batches: {},
+        submissions: {},
+      } satisfies CurrentBrokerState, null, 2)}\n`;
+      // Link a complete, synced file into place. Creating the final name first and then writing it
+      // would expose an empty state file to concurrent readers, or leave one behind after a crash.
+      const temporary = await writeSyncedTemporary(this.stateFile, initial);
       try {
-        await writeFile(
-          this.stateFile,
-          `${JSON.stringify({
-            version: STATE_VERSION,
-            sequence: 0,
-            tasks: {},
-            batches: {},
-            submissions: {},
-          } satisfies CurrentBrokerState, null, 2)}\n`,
-          { encoding: "utf8", flag: "wx", mode: 0o600 },
-        );
+        await link(temporary, this.stateFile);
+        await syncParentDirectory(this.directory);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST") {
+          // Some network and FAT-family filesystems do not support hard links. Keep the create-only
+          // guarantee even though that fallback cannot hide the brief empty-file window.
+          if (code !== "ENOTSUP" && code !== "EPERM" && code !== "ENOSYS" && code !== "EXDEV") throw error;
+          try {
+            await writeFile(this.stateFile, initial, { encoding: "utf8", flag: "wx", mode: 0o600 });
+          } catch (fallbackError) {
+            if ((fallbackError as NodeJS.ErrnoException).code !== "EEXIST") throw fallbackError;
+          }
+        }
+      } finally {
+        await rm(temporary, { force: true });
       }
     }
     await chmod(this.stateFile, 0o600).catch(() => undefined);
@@ -238,11 +317,7 @@ export class StateStore {
       await this.atomicWrite(this.stateFile, state);
       if (events.length > 0) {
         await this.rotateAuditIfLarge();
-        await appendFile(this.auditFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-        await chmod(this.auditFile, 0o600).catch(() => undefined);
+        await this.appendAudit(events);
       }
       return result;
     });
@@ -327,11 +402,7 @@ export class StateStore {
     const brokerOwnedParent = !relativeToTokens.startsWith("..") && !path.isAbsolute(relativeToTokens);
     await mkdir(parent, { recursive: true, ...(brokerOwnedParent ? { mode: 0o700 } : {}) });
     if (brokerOwnedParent) await chmod(parent, 0o700).catch(() => undefined);
-    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporary, `${token}\n`, { encoding: "utf8", mode: 0o600 });
-    await chmod(temporary, 0o600).catch(() => undefined);
-    await rename(temporary, target);
-    await chmod(target, 0o600).catch(() => undefined);
+    await replaceFileDurably(target, `${token}\n`);
     return target;
   }
 
@@ -415,11 +486,7 @@ export class StateStore {
   private async writePrivateKey(target: string, privateKey: string): Promise<void> {
     await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     await chmod(path.dirname(target), 0o700).catch(() => undefined);
-    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporary, privateKey, { encoding: "utf8", mode: 0o600 });
-    await chmod(temporary, 0o600).catch(() => undefined);
-    await rename(temporary, target);
-    await chmod(target, 0o600).catch(() => undefined);
+    await replaceFileDurably(target, privateKey);
   }
 
   async writeBatchManifest(batchId: string, manifest: unknown): Promise<string> {
@@ -618,6 +685,28 @@ export class StateStore {
       }
     }
     return slices;
+  }
+
+  /**
+   * Append complete JSON lines and sync them. If an earlier writer stopped mid-line, terminate that
+   * fragment first: otherwise the next event would be glued onto it and dropped with it by readers.
+   */
+  private async appendAudit(events: AuditEvent[]): Promise<void> {
+    const handle = await open(this.auditFile, "a+", 0o600);
+    try {
+      const { size } = await handle.stat();
+      let prefix = "";
+      if (size > 0) {
+        const last = Buffer.alloc(1);
+        await handle.read(last, 0, 1, size - 1);
+        if (last[0] !== 0x0a) prefix = "\n";
+      }
+      await handle.appendFile(`${prefix}${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await chmod(this.auditFile, 0o600).catch(() => undefined);
   }
 
   /**
@@ -892,10 +981,7 @@ export class StateStore {
 
   private async atomicWrite(target: string, value: unknown): Promise<void> {
     await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    await rename(temporary, target);
-    await chmod(target, 0o600).catch(() => undefined);
+    await replaceFileDurably(target, `${JSON.stringify(value, null, 2)}\n`);
   }
 }
 

@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- Fixed validator placeholder expansion: placeholders are now substituted in one pass, so a task ID
+  containing `{files}` can no longer receive the quoted file list and turn a committed path into
+  shell syntax. Local validation now rejects task IDs that claims would reject.
+- Broker Git commands inside integration and worker worktrees now run with an isolated empty hooks
+  directory. Previously, a relative `core.hooksPath` (as set by `install-hooks` or husky) let
+  hooks committed by a worker run during status checks, provenance staging, and squash, after
+  validation had passed. The provenance manifest is no longer written through a submitted symlink.
+- Worker-profile MCP servers now use a stored lease token only for tasks they claimed or reopened,
+  or for leases held under their explicit `MERGE_BROKER_AGENT` identity. Other workers receive
+  `LEASE_NOT_OWNED`.
+- `verify-provenance` now rejects a manifest with no authoritative validation when protected-base
+  policy uses `broker` authority, and fails closed when a base policy file exists but is unreadable,
+  invalid JSON, or has mistyped enforcement fields. Previously such a policy was treated as absent
+  and signature requirements were silently dropped.
+- The verify composite action now runs the `merge-broker` executable through
+  `npx --package` from an empty temporary directory. The previous invocation could not resolve an
+  executable, and running inside the checkout let a committed `.npmrc` or `node_modules` choose the
+  verifier. It installs Node.js 22 only when the runner's default is older.
+- On Windows, commands no longer search the working directory before `PATH`, so a committed
+  `git.exe` or `powershell.exe` in a candidate worktree is not executed. PowerShell quoting now
+  doubles typographic single quotes, and validator timeouts force-terminate the whole process tree.
+- `doctor` reports `signingKeyReachableByValidators` and warns when local validators run beside the
+  provenance signing key. The security model now states that same-user validators can read that key.
+
+### Fixed
+
+- `verify-provenance` compares changed paths with the same rename-free, NUL-delimited listing the
+  broker records, so renamed and non-ASCII paths no longer fail verification.
+- State, token, key, and manifest writes now sync file data and directory entries before replacing
+  the previous file, and first-use state creation links a complete file into place. An audit line
+  truncated by a crash no longer swallows the next event.
+- The packaged smoke test skips its npm publication dry-run when the version is already published,
+  so CI no longer fails on every run after a release.
+
+### Upgrade notes
+
+- Repositories that sign provenance under `broker` authority with no authoritative validators will
+  now fail `verify-provenance`. Add `validation.authoritative` commands on the protected base and
+  re-cut open batches, or deliberately select `required-ci` authority.
+- Give each MCP worker server a distinct `MERGE_BROKER_AGENT` if it must resume leases after a
+  restart.
+- Update workflows to the release containing the fixed verify action; `verify@v0.15.0` cannot run.
+
 ## 0.15.0 — 2026-09-06
 
 ### Added
