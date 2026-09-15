@@ -1,8 +1,10 @@
+import type { BrokerErrorCode } from "./error-codes.js";
+
 export class BrokerError extends Error {
-  readonly code: string;
+  readonly code: BrokerErrorCode;
   readonly details: Record<string, unknown> | undefined;
 
-  constructor(code: string, message: string, details?: Record<string, unknown>) {
+  constructor(code: BrokerErrorCode, message: string, details?: Record<string, unknown>) {
     super(message);
     this.name = "BrokerError";
     this.code = code;

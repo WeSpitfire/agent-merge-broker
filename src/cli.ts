@@ -6,6 +6,7 @@ import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Command, CommanderError, Option } from "commander";
 import { BrokerError, CommandError } from "./errors.js";
+import { CLI_EXIT_CODES, cliExitCodeForError } from "./error-codes.js";
 import {
   formatServeEvent,
   isErrorEvent,
@@ -15,9 +16,6 @@ import {
 } from "./serve-log.js";
 import { MergeBroker } from "./broker.js";
 import { GitRepository } from "./git.js";
-import { loadConfig } from "./config.js";
-import { StateStore } from "./store.js";
-import { compactAuditStorage, inspectStorage } from "./storage.js";
 import { prePushHook } from "./hooks.js";
 import { formatBrokerStatus } from "./status.js";
 import { createSupportBundle } from "./support.js";
@@ -121,7 +119,9 @@ async function findLeaseToken(
 ): Promise<string | undefined> {
   if (options.token) return options.token;
   if (options.tokenFile) {
-    const contents = (await readFile(path.resolve(options.tokenFile), "utf8")).trim();
+    const contents = (await readFile(path.resolve(options.tokenFile), "utf8").catch((error: unknown) => {
+      throw commandLineFileError(error, options.tokenFile!, "read");
+    })).trim();
     if (!contents) throw new BrokerError("LEASE_TOKEN", `No lease token in ${options.tokenFile}.`);
     return contents;
   }
@@ -301,13 +301,30 @@ function gateAuthorityHuman(registration: GateAuthorityRegistration): string {
   ].join("\n");
 }
 
+/**
+ * A path named on the command line is caller input. Report its filesystem failure as a usage error
+ * with a stable code rather than an unexpected internal error.
+ */
+function commandLineFileError(error: unknown, file: string, action: "read" | "create"): unknown {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (action === "create" && code === "EEXIST") {
+    return new BrokerError("OUTPUT_EXISTS", `Refusing to overwrite existing file: ${file}`, { file });
+  }
+  if (code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "EISDIR" || code === "ENOTDIR" || code === "EEXIST") {
+    return new BrokerError("INVALID_ARGUMENTS", `Cannot ${action} ${file}: ${code}`, { file, cause: code });
+  }
+  return error;
+}
+
 async function openBroker(): Promise<MergeBroker> {
   return await MergeBroker.open(globalOptions().cwd);
 }
 
 /** Offline verification accepts regular files only and bounds reads even if a file grows. */
 async function readBoundedFile(file: string, maximum: number): Promise<string> {
-  const handle = await open(path.resolve(file), "r");
+  const handle = await open(path.resolve(file), "r").catch((error: unknown) => {
+    throw commandLineFileError(error, file, "read");
+  });
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size > maximum) {
@@ -399,7 +416,8 @@ program
   .action(async (options: { supportBundle?: boolean; gate?: boolean }) => {
     const broker = await openBroker();
     const result = await broker.doctor({ gate: options.gate ?? false });
-    if (options.gate && result.operational === false) process.exitCode = 1;
+    // Readiness is a verdict: a host that is not operational answers "no" whether or not --gate is set.
+    if (result.operational === false) process.exitCode = CLI_EXIT_CODES.rejected;
     if (options.supportBundle) {
       output(createSupportBundle({
         brokerVersion: PACKAGE_VERSION,
@@ -814,7 +832,7 @@ program
       output(result, localValidationHuman(result));
       // A failing pre-flight must fail the command, or a worker script that runs it before
       // submitting would sail straight past the answer it asked for.
-      if (!result.ok) process.exitCode = 1;
+      if (!result.ok) process.exitCode = CLI_EXIT_CODES.rejected;
     },
   );
 
@@ -867,7 +885,7 @@ candidate
   .action(async (options: { ref: string }) => {
     const result = await (await openBroker()).adoptCandidate({ ref: options.ref });
     output(result, submissionHuman(result));
-    if (result.status !== "validated") process.exitCode = 1;
+    if (result.status !== "validated") process.exitCode = CLI_EXIT_CODES.rejected;
   });
 
 candidate
@@ -918,7 +936,10 @@ candidate
     const envelope = await (await openBroker()).attestSubmission(id);
     if (options.output) {
       const destination = path.resolve(options.output);
-      await writeFile(destination, `${JSON.stringify(envelope, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      await writeFile(destination, `${JSON.stringify(envelope, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 })
+        .catch((error: unknown) => {
+          throw commandLineFileError(error, destination, "create");
+        });
       output({ output: destination, purpose: "validation-evidence", mergeAuthorized: false }, `Wrote validation evidence: ${destination}\nThis does not authorize a merge.`);
     } else output(envelope);
   });
@@ -952,7 +973,7 @@ candidate
       },
     });
     output(result, `Signature and expected identities verified. Validation outcome: ${result.outcome}.\nThis evidence does not authorize a merge.`);
-    if (!result.validationPassed) process.exitCode = 1;
+    if (!result.validationPassed) process.exitCode = CLI_EXIT_CODES.rejected;
   });
 
 const batch = program.command("batch").description("inspect and advance integration batches");
@@ -1209,7 +1230,7 @@ program
         `Output: ${result.logFile}`,
       ].join("\n"),
     );
-    if (!result.loaded) process.exitCode = 1;
+    if (!result.loaded) process.exitCode = CLI_EXIT_CODES.failed;
   });
 
 program
@@ -1289,22 +1310,11 @@ program
 
 const storage = program.command("storage").description("inspect broker storage and compact closed audit logs without deleting evidence");
 
-// Inspection/preview must not initialize absent state or create keys and lock directories.
-async function storageContext() {
-  const repo = await GitRepository.discover(globalOptions().cwd);
-  const config = await loadConfig(repo.root);
-  const store = new StateStore(repo.commonGitDir, config.stateDirectory, config.leases.lockTimeoutSeconds);
-  return { repo, config, store };
-}
-
 storage.command("show")
   .description("report logical bytes and file counts; never read stored secrets or follow symlinks")
   .action(async () => {
-    const { repo, config, store } = await storageContext();
-    const report = await inspectStorage(store, {
-      repositoryRoot: repo.root,
-      ...(config.integration.provenance?.directory ? { provenanceDirectory: config.integration.provenance.directory } : {}),
-    });
+    // Inspection must not initialize absent state or create keys and lock directories.
+    const report = await MergeBroker.inspectStorage(globalOptions().cwd);
     output(report, [
       `Broker storage: ${report.logicalBytes.toLocaleString("en-US")} logical bytes in ${report.files} files${report.complete ? "" : " (partial)"}.`,
       ...report.categories.map((item) => `  ${item.category}: ${item.logicalBytes.toLocaleString("en-US")} bytes, ${item.files} files`),
@@ -1318,8 +1328,7 @@ storage.command("compact")
   .option("--older-than <days>", "minimum modification age of closed audit logs", "30")
   .option("--apply", "write verified gzip copies and remove only their redundant originals")
   .action(async (options: { olderThan: string; apply?: boolean }) => {
-    const { store } = await storageContext();
-    const result = await compactAuditStorage(store, {
+    const result = await MergeBroker.compactAuditStorage(globalOptions().cwd, {
       olderThanDays: Number(options.olderThan),
       apply: options.apply ?? false,
     });
@@ -1603,7 +1612,7 @@ program.parseAsync().catch((error: unknown) => {
         : error.message;
       console.error(JSON.stringify({ error: { code: "INVALID_ARGUMENTS", message } }, null, 2));
     }
-    process.exitCode = error.exitCode || 1;
+    process.exitCode = CLI_EXIT_CODES.usage;
     return;
   }
 
@@ -1612,7 +1621,7 @@ program.parseAsync().catch((error: unknown) => {
     const value =
       error instanceof BrokerError
         ? { error: { code: error.code, message: error.message, details: error.details } }
-        : { error: { code: "UNEXPECTED", message: error instanceof Error ? error.message : String(error) } };
+        : { error: { code: "INTERNAL_ERROR", message: error instanceof Error ? error.message : String(error) } };
     console.error(JSON.stringify(value, null, 2));
   } else if (error instanceof CommandError) {
     console.error(`${error.message}${error.stderr ? `\n${error.stderr.trim()}` : ""}`);
@@ -1622,5 +1631,5 @@ program.parseAsync().catch((error: unknown) => {
   } else {
     console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   }
-  process.exitCode = 1;
+  process.exitCode = error instanceof BrokerError ? cliExitCodeForError(error.code) : CLI_EXIT_CODES.internal;
 });

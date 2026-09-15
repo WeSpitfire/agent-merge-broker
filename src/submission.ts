@@ -2,6 +2,7 @@ import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { CONFIG_DIRECTORY, CONFIG_FILENAME, validateConfig } from "./config.js";
+import type { BrokerErrorCode } from "./error-codes.js";
 import { BrokerError, ValidationError } from "./errors.js";
 import { assertGateAuthorityMatchesProtectedConfig } from "./gate-authority.js";
 import { adoptedRef, GitRepository, remoteUrlFingerprint } from "./git.js";
@@ -48,7 +49,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function errorCode(error: unknown): string {
+function errorCode(error: unknown): BrokerErrorCode {
   return error instanceof BrokerError ? error.code : "SUBMISSION_FAILED";
 }
 

@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- The root Node API is curated to its supported surface. `MergeBroker`, configuration loading and
+  validation, the GitHub publisher and `ForgePublisher` types, provenance and attestation
+  verification, schema identities, `BrokerError`, the error-code registry, and record types remain;
+  internal modules such as `GitRepository`, `StateStore`, service and hook helpers, bootstrap
+  detection, the scheduler, support bundles, signing helpers, and zod schema objects are no longer
+  exported. `MergeBroker.repo`, `store`, and `publisher` are internal and absent from the published
+  types.
+- `inspectStorage(store, …)` and `compactAuditStorage(store, …)` are replaced by
+  `MergeBroker.inspectStorage(cwd?)` and `MergeBroker.compactAuditStorage(cwd?, options)`.
+- CLI exit statuses are now `0` success, `1` rejection, `2` invalid usage or input, `3` refused or
+  failed operation, and `4` internal error. Previously every failure exited `1`. `doctor` now exits
+  `1` whenever the host is not operational, not only with `--gate`.
+- `INVALID_ARGUMENT` is renamed `INVALID_ARGUMENTS`, and the CLI reports `INTERNAL_ERROR` instead of
+  `UNEXPECTED` for unexpected failures, matching MCP.
+
+### Added
+
+- `BROKER_ERROR_CODES` and `BROKER_ERROR_CATEGORIES` export every stable error code and its category.
+  Twelve previously emitted but undocumented codes are now documented, plus `OUTPUT_EXISTS` for an
+  attestation output path that already exists.
+- An interface stability and support policy in [Compatibility](docs/COMPATIBILITY.md).
+
+### Fixed
+
+- Files named on the command line that cannot be read or created report `INVALID_ARGUMENTS` or
+  `OUTPUT_EXISTS` instead of an internal error.
+
 ## 0.15.1 — 2026-09-15
 
 Security release. Upgrade from 0.15.0, whose verify action cannot run.

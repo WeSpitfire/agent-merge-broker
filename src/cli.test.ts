@@ -135,7 +135,7 @@ test("JSON mode envelopes command-line usage errors", async () => {
     cwd: PROJECT_ROOT,
     allowFailure: true,
   });
-  assert.equal(malformed.exitCode, 1);
+  assert.equal(malformed.exitCode, 2);
   assert.equal(malformed.stdout, "");
   const body = JSON.parse(malformed.stderr) as { error?: { code?: string; message?: string } };
   assert.equal(body.error?.code, "INVALID_ARGUMENTS");
@@ -145,10 +145,24 @@ test("JSON mode envelopes command-line usage errors", async () => {
     cwd: PROJECT_ROOT,
     allowFailure: true,
   });
-  assert.equal(missingCommand.exitCode, 1);
+  assert.equal(missingCommand.exitCode, 2);
   const missingBody = JSON.parse(missingCommand.stderr) as { error?: { code?: string; message?: string } };
   assert.equal(missingBody.error?.code, "INVALID_ARGUMENTS");
   assert.match(missingBody.error?.message ?? "", /command or subcommand is required/iu);
+
+  // A path named on the command line is caller input, not an internal failure.
+  const missing = path.join(PROJECT_ROOT, "no-such-evidence.json");
+  const missingFile = await runCommand(
+    process.execPath,
+    [
+      ...runtime, "--json", "candidate", "verify-attestation", missing, "--public-key", missing,
+      "--candidate", "a".repeat(40), "--tree", "b".repeat(40), "--base", "c".repeat(40),
+      "--policy-digest", "d".repeat(64), "--authority-digest", "e".repeat(64),
+    ],
+    { cwd: PROJECT_ROOT, allowFailure: true },
+  );
+  assert.equal(missingFile.exitCode, 2, missingFile.stderr);
+  assert.equal((JSON.parse(missingFile.stderr) as { error?: { code?: string } }).error?.code, "INVALID_ARGUMENTS");
 
   const help = await runCommand(process.execPath, [...runtime, "--json", "--help"], {
     cwd: PROJECT_ROOT,
@@ -162,7 +176,7 @@ test("JSON mode envelopes command-line usage errors", async () => {
     cwd: PROJECT_ROOT,
     allowFailure: true,
   });
-  assert.equal(missingRef.exitCode, 1);
+  assert.equal(missingRef.exitCode, 2);
   assert.equal(missingRef.stdout, "");
   const missingRefBody = JSON.parse(missingRef.stderr) as { error?: { code?: string; message?: string } };
   assert.equal(missingRefBody.error?.code, "INVALID_ARGUMENTS");
@@ -178,7 +192,7 @@ test("candidate adopt retains and validates a local ref without creating Coordin
     commandArguments(repo, "candidate", "adopt", "--ref", "candidate/local-ref"),
     { cwd: PROJECT_ROOT, allowFailure: true },
   );
-  assert.equal(unregistered.exitCode, 1);
+  assert.equal(unregistered.exitCode, 3);
   assert.equal(unregistered.stdout, "");
   const unregisteredBody = JSON.parse(unregistered.stderr) as { error?: { code?: string } };
   assert.equal(unregisteredBody.error?.code, "GATE_AUTHORITY_REQUIRED");
@@ -302,7 +316,7 @@ test("inspects and force-releases the config-independent Gate authority lock", a
     commandArguments(repo, "unlock", "gate-authority"),
     { cwd: PROJECT_ROOT, allowFailure: true },
   );
-  assert.equal(refused.exitCode, 1);
+  assert.equal(refused.exitCode, 3);
   assert.equal((JSON.parse(refused.stderr) as { error?: { code?: string } }).error?.code, "LOCK_HELD");
 
   const released = await runCommand(

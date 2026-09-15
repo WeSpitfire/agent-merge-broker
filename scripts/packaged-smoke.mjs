@@ -201,8 +201,12 @@ async function verifyPackage(source, metadata, packDestination, consumer) {
     `assert.equal(typeof broker.createMcpServer, ${JSON.stringify(core ? "undefined" : "function")});`,
     'assert.equal(typeof broker.verifySubmissionAttestation, "function");',
     'assert.equal(typeof broker.schemaFingerprint, "function");',
-    'assert.equal(typeof broker.inspectStorage, "function");',
-    'assert.equal(typeof broker.compactAuditStorage, "function");',
+    'assert.equal(typeof broker.MergeBroker.inspectStorage, "function");',
+    'assert.equal(typeof broker.MergeBroker.compactAuditStorage, "function");',
+    'assert.equal(typeof broker.BROKER_ERROR_CODES.INVALID_ARGUMENTS, "string");',
+    // Internal modules are not part of the installed package's API.
+    'assert.equal(broker.StateStore, undefined);',
+    'assert.equal(broker.GitRepository, undefined);',
     "",
   ].join("\n"));
   await run(process.execPath, ["consumer.mjs"], consumer);
@@ -224,11 +228,14 @@ async function verifyPackage(source, metadata, packDestination, consumer) {
 
   await runNpm(["install", "--include=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
   await writeFile(path.join(consumer, "consumer.ts"), [
-    `import { MergeBroker, defaultConfig, ${core ? "" : "createMcpServer, "}verifySubmissionAttestation, schemaFingerprint, inspectStorage, compactAuditStorage, type BrokerConfig, type SubmissionRecord, type StorageReport } from ${JSON.stringify(metadata.name)};`,
+    `import { MergeBroker, BrokerError, defaultConfig, ${core ? "" : "createMcpServer, "}verifyProvenance, verifySubmissionAttestation, schemaFingerprint, type BrokerConfig, type ForgePublisher, type SubmissionRecord, type StorageReport } from ${JSON.stringify(metadata.name)};`,
     "const config: BrokerConfig = defaultConfig();",
     "const submission: SubmissionRecord | undefined = undefined;",
     "const storage: StorageReport | undefined = undefined;",
-    `void [config, submission, storage, MergeBroker.open, ${core ? "" : "createMcpServer, "}verifySubmissionAttestation, schemaFingerprint, inspectStorage, compactAuditStorage];`,
+    "const publisher: ForgePublisher | undefined = undefined;",
+    "// @ts-expect-error Runtime state is an implementation detail, not part of the published types.",
+    "const internal = (undefined as unknown as MergeBroker).store;",
+    `void [config, submission, storage, publisher, internal, BrokerError, MergeBroker.open, MergeBroker.inspectStorage, MergeBroker.compactAuditStorage, ${core ? "" : "createMcpServer, "}verifyProvenance, verifySubmissionAttestation, schemaFingerprint];`,
     "",
   ].join("\n"));
   await writeFile(path.join(consumer, "tsconfig.json"), JSON.stringify({

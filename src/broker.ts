@@ -20,6 +20,13 @@ import { patternSetsMayOverlap, unexpectedPaths } from "./patterns.js";
 import { scheduleTasks } from "./scheduler.js";
 import { StateStore, type LockStatus } from "./store.js";
 import {
+  compactAuditStorage,
+  inspectStorage,
+  type StorageCompactionOptions,
+  type StorageCompactionResult,
+  type StorageReport,
+} from "./storage.js";
+import {
   createValidationCacheDirectory,
   removeValidationCacheDirectory,
   runValidators,
@@ -324,9 +331,12 @@ export interface RegisterCandidateAuthorityOptions {
 }
 
 export class MergeBroker {
+  /** @internal Git access is an implementation detail; use broker methods instead. */
   readonly repo: GitRepository;
   readonly config: BrokerConfig;
+  /** @internal Runtime state layout is not a supported interface; use broker methods instead. */
   readonly store: StateStore;
+  /** @internal Supply a publisher through `MergeBroker.open` options. */
   readonly publisher: ForgePublisher;
 
   private constructor(
@@ -350,6 +360,38 @@ export class MergeBroker {
     const store = new StateStore(repo.commonGitDir, config.stateDirectory, config.leases.lockTimeoutSeconds);
     await store.initialize();
     return new MergeBroker(repo, config, store, options.publisher ?? githubCliPublisher);
+  }
+
+  /**
+   * Report logical sizes of broker-managed files without reading their contents. Unlike `open`, this
+   * never initializes absent state or creates lock directories.
+   */
+  static async inspectStorage(cwd = process.cwd()): Promise<StorageReport> {
+    const { repo, config, store } = await MergeBroker.storageContext(cwd);
+    return await inspectStorage(store, {
+      repositoryRoot: repo.root,
+      ...(config.integration.provenance?.directory ? { provenanceDirectory: config.integration.provenance.directory } : {}),
+    });
+  }
+
+  /** Preview, or with `apply`, perform lossless gzip compaction of closed audit rotations. */
+  static async compactAuditStorage(
+    cwd = process.cwd(),
+    options: StorageCompactionOptions = {},
+  ): Promise<StorageCompactionResult> {
+    const { store } = await MergeBroker.storageContext(cwd);
+    return await compactAuditStorage(store, options);
+  }
+
+  private static async storageContext(cwd: string): Promise<{
+    repo: GitRepository;
+    config: BrokerConfig;
+    store: StateStore;
+  }> {
+    const repo = await GitRepository.discover(cwd);
+    const config = await loadConfig(repo.root);
+    const store = new StateStore(repo.commonGitDir, config.stateDirectory, config.leases.lockTimeoutSeconds);
+    return { repo, config, store };
   }
 
   static async initialize(

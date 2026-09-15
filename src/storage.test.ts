@@ -189,10 +189,10 @@ test("compaction retains files when compression saves no bytes and rejects inval
   assert.equal(await readFile(path.join(store.archiveDirectory, OLD_SEGMENT), "utf8"), "x");
   for (const olderThanDays of [-1, NaN, Infinity]) {
     await assert.rejects(compactAuditStorage(store, { olderThanDays }),
-      (error: unknown) => error instanceof BrokerError && error.code === "INVALID_ARGUMENT");
+      (error: unknown) => error instanceof BrokerError && error.code === "INVALID_ARGUMENTS");
   }
   await assert.rejects(compactAuditStorage(store, { apply: "true" as unknown as boolean }),
-    (error: unknown) => error instanceof BrokerError && error.code === "INVALID_ARGUMENT");
+    (error: unknown) => error instanceof BrokerError && error.code === "INVALID_ARGUMENTS");
 });
 
 test("compressed audit reads bound decompression and surface damaged gzip data", async (context) => {

@@ -12,6 +12,46 @@ page covers version `0.15.1`; npm's version history
 confirms published availability. The `v0.14.0` and `v0.14.1` GitHub tags exist, but neither was
 published to npm.
 
+## Interface stability and support
+
+From `1.0.0`, Agent Merge Broker follows [Semantic Versioning](https://semver.org/) for its stable
+interfaces. Before `1.0.0`, a minor release may still break them; every break is listed under
+**Breaking** in the changelog with its migration.
+
+**Stable interfaces:**
+
+- CLI commands and options, `--json` success documents, the JSON error envelope, and
+  [exit statuses](PROTOCOL.md#cli-exit-statuses);
+- error codes and categories, as registered in `BROKER_ERROR_CODES` and listed in
+  [Protocol](PROTOCOL.md#stable-error-categories);
+- the root exports of `agent-merge-broker` and `agent-merge-broker-core`, described in
+  [programmatic use](PROTOCOL.md#programmatic-use);
+- MCP profiles, tool names, and tool input schemas;
+- persisted repository formats and their `version` fields: configuration, broker state, submission
+  records, receipts, provenance manifests, attestation envelopes and predicates, and the immutable
+  schema snapshots in `schemas/identities.json`; and
+- inputs of the `verify` composite action.
+
+**Not stable:** human-readable CLI output and log text, `serve` progress messages, module paths below
+the package root, internal `MergeBroker` members, and the layout of runtime files under Git's common
+directory other than the documented formats. Consumers must ignore unknown JSON fields; new fields
+may be added in any minor release.
+
+**Change rules:** adding a command, option, JSON field, error code, MCP tool, or export is a minor
+change. Removing, renaming, or changing the meaning of a stable interface is a major change. A
+persisted format change increments that format's `version` field and ships an upgrade path; a
+release never silently reinterprets existing state. A security fix may tighten behavior that was
+unsafe, and the changelog says so.
+
+**Deprecation:** a stable interface is deprecated in a minor release with documentation and, where
+possible, a warning on stderr or in the JSON result. It is removed no earlier than the next major
+release.
+
+**Support window:** the latest `1.x` minor release receives fixes. After `2.0.0` ships, the final
+`1.x` minor receives security fixes for 12 months. Before `1.0.0`, only the latest release is
+supported. A Node.js major that has reached end of life may be dropped in a minor release, and the
+changelog announces it.
+
 ## Installation footprint — 0.15.0
 
 The companion `agent-merge-broker-core` package shares the Coordinate/Gate CLI and core Node API

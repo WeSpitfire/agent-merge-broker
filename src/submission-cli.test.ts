@@ -98,7 +98,8 @@ test("Gate CLI signs actual retained evidence and verifies it outside Git withou
   assert.equal(signed.exitCode, 0, signed.stderr);
   const original = await readFile(envelopePath, "utf8");
   const replaced = await cli(repo, ["candidate", "attest", record.id, "--output", envelopePath]);
-  assert.equal(replaced.exitCode, 1);
+  assert.equal(replaced.exitCode, 2);
+  assert.equal(JSON.parse(replaced.stderr).error.code, "OUTPUT_EXISTS");
   assert.equal(await readFile(envelopePath, "utf8"), original);
   const args = ["candidate", "verify-attestation", envelopePath, "--public-key", keyPath,
     "--candidate", record.artifact.sha, "--tree", record.artifact.treeSha, "--base", record.base.sha,

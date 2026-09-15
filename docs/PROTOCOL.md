@@ -12,7 +12,8 @@ A worker needs only five capabilities:
 
 Finite operational CLI commands support `--json`: success writes one JSON value to stdout and exits
 zero, while usage and action errors write
-`{ "error": { "code": "...", "message": "...", "details": {} } }` to stderr and exit nonzero.
+`{ "error": { "code": "...", "message": "...", "details": {} } }` to stderr and exit with a
+nonzero [CLI exit status](#cli-exit-statuses).
 The `details` field is omitted when no diagnostic details exist. In `0.14.2`,
 `candidate verify-attestation` also returns a JSON result on stdout with exit code 1 when the
 signature verifies but the recorded validation was rejected or failed; check both `verified` and
@@ -21,7 +22,7 @@ intentionally a newline-delimited stream of event objects until the process stop
 `serve --once --json` returns one summary document containing recovery, events, and operation
 results. `candidate adopt` has one deliberate terminal-result exception: when it returns a durable
 non-`validated` `SubmissionRecord` (`rejected` or `failed`), it writes that record to stdout but exits
-nonzero. An exception that prevents a terminal record from being returned uses the normal stderr
+with status 1. `doctor` likewise writes its report and exits 1 when the host is not operational. An exception that prevents a terminal record from being returned uses the normal stderr
 error envelope; because durable state may already exist, inspect `candidate list` and run `recover`
 before blindly retrying. `--help` and `--version` remain human-readable text. The error code is the
 machine-readable branching surface. Messages and details are diagnostic context and may become more
@@ -548,19 +549,32 @@ Segments over 64 MiB, links, existing gzip copies, and non-saving compression ar
 each pass processes at most 100 eligible segments or 256 MiB of original bytes. Review skip reasons
 before another pass. Upgrade every reader first: versions before 0.15.0 cannot read gzip history.
 
-Both package APIs export `inspectStorage(store, { repositoryRoot, provenanceDirectory? })` and
-`compactAuditStorage(store, { olderThanDays?, apply? })`, plus their result/option types. `store`
-is a `StateStore`; compaction has the same preview default as the CLI. Invalid age returns
-`INVALID_ARGUMENT`. `UNSAFE_PATH`, `STORAGE_CHANGED`, or `STORAGE_VERIFICATION_FAILED` requires
+Both package APIs provide `MergeBroker.inspectStorage(cwd?)` and
+`MergeBroker.compactAuditStorage(cwd?, { olderThanDays?, apply? })`, plus their result/option types.
+Neither opens or initializes broker state; compaction has the same preview default as the CLI. Invalid age returns
+`INVALID_ARGUMENTS`. `UNSAFE_PATH`, `STORAGE_CHANGED`, or `STORAGE_VERIFICATION_FAILED` requires
 inspection, not an automatic destructive retry. Preserve both copies if an interruption left them;
 earlier segments in the same pass may already have completed.
+
+## CLI exit statuses
+
+Every `merge-broker` command exits with one of these statuses. They are part of the stable CLI
+contract; use the JSON error code for detail.
+
+| Status | Meaning |
+| --- | --- |
+| `0` | The command succeeded. |
+| `1` | The command ran and its answer is a rejection: failed or mutated validation, a cherry-pick conflict, rejected provenance or attestation evidence, a candidate that was not `validated`, or a `doctor` report that is not operational. |
+| `2` | Invalid usage, input, lookup, or configuration — every code in the "Setup, input, and lookup" category and command-line parsing errors. Retrying unchanged will not help. |
+| `3` | The broker refused or could not complete the operation: lease, state, lock, Gate, storage, signing, Git, forge, service, and subprocess failures. |
+| `4` | `INTERNAL_ERROR`: an unexpected failure. Report it as a defect. |
 
 ## Stable error categories
 
 Adapters should branch on `BrokerError.code` (or a returned terminal `SubmissionRecord.errorCode`),
 not message text. These are the currently emitted categories and the normal response to each family:
 
-- Setup, input, and lookup — `NOT_INITIALIZED`, `INVALID_CONFIG`, `INVALID_ARGUMENTS`,
+- Setup, input, and lookup — `NOT_INITIALIZED`, `INVALID_CONFIG`, `INVALID_ARGUMENTS`, `OUTPUT_EXISTS`,
   `INVALID_INTERVAL`, `INVALID_LIMIT`, `INVALID_MCP_PROFILE`, `INVALID_AGENT_CONTRACT`,
   `INVALID_PULL_REQUEST_URL`, `INVALID_SIGNING_KEY`, `INVALID_TASK`, `PATHS_REQUIRED`, `UNSAFE_PATH`,
   `TASK_EXISTS`, `UNKNOWN_TASK`, `UNKNOWN_BATCH`, `UNKNOWN_COMMIT`, `UNKNOWN_DEPENDENCY`, and
@@ -585,22 +599,28 @@ not message text. These are the currently emitted categories and the normal resp
   `PIN_REF_FAILED`, `TEMPORARY_REF_CONFLICT`, `FETCH_REF_INVALID`,
   `TEMPORARY_REF_CLEANUP_FAILED`, `GIT_HOOK_ISOLATION_FAILED`, `WORKTREE_IDENTITY_UNAVAILABLE`,
   `GATE_AUTHORITY_REQUIRED`, `GATE_AUTHORITY_EXISTS`, `GATE_AUTHORITY_CORRUPT`,
-  `GATE_AUTHORITY_VERSION`, `GATE_AUTHORITY_MISMATCH`, and `GATE_AUTHORITY_CHANGED`. Register or
+  `GATE_AUTHORITY_VERSION`, `GATE_AUTHORITY_MISMATCH`, `GATE_AUTHORITY_CHANGED`,
+  `SUBMISSION_NOT_PENDING`, `SUBMISSION_NOT_TERMINAL`, `SUBMISSION_ARCHIVE_PENDING`,
+  `INVALID_SUBMISSION_ARCHIVE`, `SUBMISSION_REF_RELEASE_FAILED`, and `SUBMISSION_ABANDONED` (a
+  terminal `SubmissionRecord.errorCode` after `candidate abandon`, never thrown). Register or
   restore the reviewed authority and correct an input/policy
   precondition before adopting again. `GATE_AUTHORITY_EXISTS` requires deliberate `--replace`; never
   automate replacement. For a durable `received` or `validating` record, run `recover`; do not edit
   its identity or move its broker-owned ref. An authority-change warning requires restoring the
   original registration; the broker does not migrate a pending submission between authorities.
-- Locks and state — `LOCK_HELD`, `LOCK_TIMEOUT`, `STATE_CORRUPT`, and `STATE_VERSION`. A timeout may
+- Locks and state — `LOCK_HELD`, `LOCK_TIMEOUT`, `STATE_CORRUPT`, `STATE_VERSION`, and
+  `AUDIT_ARCHIVE_TOO_LARGE`. A timeout may
   be retried after the holder finishes. Corrupt or unsupported state requires operator recovery; an
   adapter must not initialize over it. `unlock` and `doctor` include the fixed-root `gate-authority`
   lock; force-release it only after independently proving no setup, adoption, or recovery process can
   still progress.
-- Storage maintenance (0.15.0) — `INVALID_ARGUMENT`, `STORAGE_CHANGED`, and
-  `STORAGE_VERIFICATION_FAILED`, with `UNSAFE_PATH` for redirected paths. Correct invalid age or
+- Storage maintenance — `STORAGE_CHANGED` and `STORAGE_VERIFICATION_FAILED`, with
+  `INVALID_ARGUMENTS` for an invalid age and `UNSAFE_PATH` for redirected paths. Correct invalid age or
   inspect changed files and any preserved gzip/original pair before retrying.
-- Signing and proof — `SIGNING_KEY_REQUIRED`, `SIGNING_KEY_MISMATCH`, `SIGNING_KEY_EXISTS`, and
-  `PROVENANCE_INVALID`. Restore or deliberately rotate the configured identity; never downgrade a
+- Signing and proof — `SIGNING_KEY_REQUIRED`, `SIGNING_KEY_MISMATCH`, `SIGNING_KEY_EXISTS`,
+  `PROVENANCE_INVALID`, `PROVENANCE_KEY_MISSING`, `SUBMISSION_NOT_ATTESTABLE`,
+  `SUBMISSION_ATTESTATION_INELIGIBLE`, `SUBMISSION_ATTESTATION_INVALID`,
+  `SUBMISSION_ATTESTATION_SIGNATURE_INVALID`, and `SUBMISSION_ATTESTATION_IDENTITY_MISMATCH`. Restore or deliberately rotate the configured identity; never downgrade a
   required signature automatically.
 - Target and publication — `REMOTE_URL_UNKNOWN`, `REMOTE_REPOSITORY_UNKNOWN`,
   `REMOTE_TARGET_CHANGED`, `FORGE_TARGET_MISMATCH`, `BATCH_TARGET_UNBOUND`, `BASE_REFRESH_FAILED`,
@@ -630,9 +650,9 @@ not message text. These are the currently emitted categories and the normal resp
   `INVALID_SERVICE_USER`, `SERVICE_CLI_PATH`, `SERVICE_FILE_CONFLICT`, `SERVICE_PUBLISH_DISABLED`,
   `SERVICE_USER_ID`, `UNSUPPORTED_PLATFORM`, and `COMMAND_FAILED`. Surface the diagnostic details to
   an operator.
-- Adapter wrapper fallbacks — the JSON CLI uses `UNEXPECTED` and MCP tools use `INTERNAL_ERROR` when
-  a non-`BrokerError` escapes. Treat either as an unknown internal failure, preserve diagnostics,
-  and fail closed.
+- Internal failure — `INTERNAL_ERROR`. The JSON CLI and MCP tools report it when a non-`BrokerError`
+  escapes. Treat it as an unknown internal failure, preserve diagnostics, fail closed, and report it
+  as a defect.
 
 Additional codes may be introduced. Adapters must display unknown errors and fail closed rather than
 treating them as success. Concurrency codes such as `TASK_CHANGED`, `BATCH_CHANGED`,
@@ -641,7 +661,23 @@ deciding whether the original action is still valid.
 
 ## Programmatic use
 
-The package exports `MergeBroker`, repository/configuration types, state types, and error classes:
+The root export is the supported Node API. Both packages provide:
+
+- `MergeBroker`, including the static `open`, `initialize`, `inspectStorage`, and
+  `compactAuditStorage` methods, and its input types;
+- `defaultConfig`, `loadConfig`, and `validateConfig`;
+- `githubCliPublisher` and the `ForgePublisher`, `PublicationResult`, and `PullRequestState` types;
+- `verifyProvenance`, `policyFromBase`, `batchIdFromBranch`, `verifyBatchProvenanceSignature`,
+  `provenanceKeyId`, and `provenancePath`;
+- `verifySubmissionAttestation` and the `SUBMISSION_ATTESTATION_PAYLOAD_TYPE` and
+  `SUBMISSION_ATTESTATION_PREDICATE_TYPE` constants;
+- `schemaFingerprint` and `schemaSnapshotIdentity`;
+- `BrokerError`, `BROKER_ERROR_CODES`, and `BROKER_ERROR_CATEGORIES`; and
+- the record, configuration, and result types used by those functions.
+
+The full `agent-merge-broker` package also exports `createMcpServer` and `mcpToolNames`. Module
+paths below the package root are not exported, and `MergeBroker` members marked internal are not
+part of the published types. See [interface stability](COMPATIBILITY.md#interface-stability-and-support).
 
 ```ts
 import { MergeBroker } from "agent-merge-broker";
