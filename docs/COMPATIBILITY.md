@@ -44,6 +44,20 @@ persisted format change increments that format's `version` field and ships an up
 release never silently reinterprets existing state. A security fix may tighten behavior that was
 unsafe, and the changelog says so.
 
+**Saved format rules:** every saved format records an integer `version`.
+
+- Adding an optional field does not change the version. Readers preserve unknown fields.
+- Removing or renaming a field, changing a field's type or meaning, adding a required field, or
+  adding a value to a closed set such as a status bumps the version. Older readers reject unknown
+  values rather than guess, so a new status is a format change.
+- Changing how a file is encoded, such as compressing it, is a format change too. The reader ships in
+  one release before any release writes the new encoding.
+- Every version bump ships a forward-only migration in `merge-broker migrate` from each version
+  still within the support window, publishes a new immutable schema snapshot, and keeps earlier
+  snapshots.
+- A release refuses files from a newer version instead of reinterpreting them. There is no downgrade
+  migration; `migrate --apply` keeps the original bytes so an operator can restore them.
+
 **Deprecation:** a stable interface is deprecated in a minor release with documentation and, where
 possible, a warning on stderr or in the JSON result. It is removed no earlier than the next major
 release.

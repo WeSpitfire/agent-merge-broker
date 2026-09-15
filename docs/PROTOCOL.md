@@ -265,6 +265,33 @@ lack the envelope.
 Batch manifests under `batches/`, lock owner files, token and key files, and disposable worktrees are
 implementation details. Use `batch show --json`, `status --json`, and `doctor --json` instead.
 
+### Upgrading saved formats
+
+```bash
+merge-broker --json migrate
+merge-broker --json migrate --apply
+```
+
+`migrate` inspects configuration, state, archived state slices, submission records and archives, the
+Gate authority registration, and receipts. It returns `MigrationReport`: `applied`, `pending`,
+`blocked`, `migrated`, `complete`, optional `backupDirectory`, and `findings`. Each finding has
+`format`, `path`, `version` (`null` when none is recorded), `status`, and optional `migration` and
+`reason`. Status is `current`, `upgradable` (a named migration applies), `unsupported` (written by a
+newer release), or `unreadable` (invalid JSON, not a regular file, a missing or unknown version, or
+a decoding failure).
+
+The preview reads files only: it never initializes state or takes locks, and it exits `1` when any
+file is upgradable, unsupported, or unreadable. `--apply` holds the state lock, rescans, copies each
+original file under `archive/migrations/<run>/` with its path relative to Git's common directory,
+rewrites it durably, and records a `formats.migrated` audit event. It refuses with
+`MIGRATION_BLOCKED`, exit status `3`, and writes nothing when any file is unsupported or unreadable.
+Committed configuration is reported but never rewritten.
+
+Stop every other broker process that uses the repository before applying: services, `serve` loops,
+MCP servers, and agents. A release that predates a format version cannot read files migrated to it.
+To go back to such a release, restore the originals from the backup directory while no broker
+process runs. `MergeBroker.migrate(cwd?, { apply? })` provides the same operation to Node callers.
+
 ## Claim
 
 ```bash
@@ -641,8 +668,8 @@ not message text. These are the currently emitted categories and the normal resp
   automate replacement. For a durable `received` or `validating` record, run `recover`; do not edit
   its identity or move its broker-owned ref. An authority-change warning requires restoring the
   original registration; the broker does not migrate a pending submission between authorities.
-- Locks and state — `LOCK_HELD`, `LOCK_TIMEOUT`, `STATE_CORRUPT`, `STATE_VERSION`, and
-  `AUDIT_ARCHIVE_TOO_LARGE`. A timeout may
+- Locks and state — `LOCK_HELD`, `LOCK_TIMEOUT`, `STATE_CORRUPT`, `STATE_VERSION`,
+  `AUDIT_ARCHIVE_TOO_LARGE`, and `MIGRATION_BLOCKED`. A timeout may
   be retried after the holder finishes. Corrupt or unsupported state requires operator recovery; an
   adapter must not initialize over it. `unlock` and `doctor` include the fixed-root `gate-authority`
   lock; force-release it only after independently proving no setup, adoption, or recovery process can
@@ -696,7 +723,7 @@ deciding whether the original action is still valid.
 
 The root export is the supported Node API. Both packages provide:
 
-- `MergeBroker`, including the static `open`, `initialize`, `inspectStorage`, and
+- `MergeBroker`, including the static `open`, `initialize`, `migrate`, `inspectStorage`, and
   `compactAuditStorage` methods, and its input types;
 - `defaultConfig`, `loadConfig`, and `validateConfig`;
 - `githubCliPublisher` and the `ForgePublisher`, `PublicationResult`, and `PullRequestState` types;

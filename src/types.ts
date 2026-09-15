@@ -573,6 +573,46 @@ export interface SubmissionArchiveResult {
   archivePaths: string[];
 }
 
+/** A saved format that `migrate` inspects. */
+export type SavedFormatName =
+  | "config"
+  | "state"
+  | "archived-state"
+  | "submission"
+  | "gate-authority"
+  | "receipt";
+
+export interface SavedFormatFinding {
+  format: SavedFormatName;
+  path: string;
+  /** The recorded format version; `null` when the file does not record one. */
+  version: number | null;
+  /**
+   * `current`: readable by this release with nothing to do. `upgradable`: a migration applies.
+   * `unsupported`: written by a newer release. `unreadable`: corrupt, not a regular file, or invalid.
+   */
+  status: "current" | "upgradable" | "unsupported" | "unreadable";
+  /** Stable migration identifier when `status` is `upgradable`. */
+  migration?: string;
+  reason?: string;
+}
+
+export interface MigrationReport {
+  /** True when apply was requested and every pending migration was written. */
+  applied: boolean;
+  findings: SavedFormatFinding[];
+  /** Findings that a migration upgrades, before apply. */
+  pending: number;
+  /** Findings that prevent apply: unsupported or unreadable files. */
+  blocked: number;
+  /** Migrations written by this call. */
+  migrated: number;
+  /** Where original bytes were copied before rewriting, when anything was migrated. */
+  backupDirectory?: string;
+  /** False when a scan limit was reached before every file was inspected. */
+  complete: boolean;
+}
+
 export interface PruneResult {
   tasks: string[];
   batches: string[];

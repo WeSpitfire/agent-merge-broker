@@ -1308,6 +1308,27 @@ program
     );
   });
 
+program
+  .command("migrate")
+  .description("report saved formats that need upgrading; --apply upgrades them after backing up originals")
+  .option("--apply", "rewrite upgradable files; refuses when any file is unsupported or unreadable")
+  .action(async (options: { apply?: boolean }) => {
+    const report = await MergeBroker.migrate(globalOptions().cwd, { apply: options.apply ?? false });
+    const attention = report.findings.filter((finding) => finding.status !== "current");
+    output(report, [
+      report.applied
+        ? `Migrated ${report.migrated} file${report.migrated === 1 ? "" : "s"}.${report.backupDirectory ? ` Originals: ${report.backupDirectory}` : ""}`
+        : report.pending === 0 && report.blocked === 0
+          ? "All saved formats are current for this release."
+          : `${report.pending} file${report.pending === 1 ? "" : "s"} can be upgraded; ${report.blocked} cannot be read by this release.${report.pending > 0 && report.blocked === 0 ? " Run migrate --apply after stopping other broker processes." : ""}`,
+      ...attention.map((finding) =>
+        `  ${finding.status}: ${finding.format} ${finding.path}${finding.reason ? ` — ${finding.reason}` : ""}`),
+      ...(report.complete ? [] : ["Scan limit reached; some files were not inspected."]),
+    ].join("\n"));
+    // A preview is a verdict on whether this repository is current for this release.
+    if (!report.applied && (report.pending > 0 || report.blocked > 0)) process.exitCode = CLI_EXIT_CODES.rejected;
+  });
+
 const storage = program.command("storage").description("inspect broker storage and compact closed audit logs without deleting evidence");
 
 storage.command("show")

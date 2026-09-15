@@ -19,6 +19,7 @@ import {
 import { patternSetsMayOverlap, unexpectedPaths } from "./patterns.js";
 import { scheduleTasks } from "./scheduler.js";
 import { StateStore, type LockStatus } from "./store.js";
+import { applySavedFormatMigrations, configFinding, inspectSavedFormats } from "./migrations.js";
 import {
   compactAuditStorage,
   inspectStorage,
@@ -87,6 +88,7 @@ import type {
   IntegrationOptions,
   IntegrationResult,
   LocalValidationResult,
+  MigrationReport,
   RefreshResult,
   RevisionResult,
   RecoveryResult,
@@ -382,6 +384,49 @@ export class MergeBroker {
   ): Promise<StorageCompactionResult> {
     const { store } = await MergeBroker.storageContext(cwd);
     return await compactAuditStorage(store, options);
+  }
+
+  /**
+   * Inspect every saved format and, with `apply`, upgrade files written by older releases after
+   * backing up their original bytes. Preview never initializes state or takes locks. Apply refuses
+   * with `MIGRATION_BLOCKED` when any file is unsupported or unreadable.
+   */
+  static async migrate(cwd = process.cwd(), options: { apply?: boolean } = {}): Promise<MigrationReport> {
+    if (options.apply !== undefined && typeof options.apply !== "boolean") {
+      throw new BrokerError("INVALID_ARGUMENTS", "Migration apply must be an explicit boolean.");
+    }
+    const repo = await GitRepository.discover(cwd);
+    let config: BrokerConfig;
+    try {
+      config = await loadConfig(repo.root);
+    } catch (error) {
+      if (!(error instanceof BrokerError) || error.code !== "INVALID_CONFIG") throw error;
+      const finding = await configFinding(repo.root, error);
+      if (options.apply) {
+        throw new BrokerError("MIGRATION_BLOCKED", "The repository configuration cannot be read by this release; nothing was migrated.", {
+          findings: [finding],
+        });
+      }
+      return { applied: false, findings: [finding], pending: 0, blocked: 1, migrated: 0, complete: true };
+    }
+    const store = new StateStore(repo.commonGitDir, config.stateDirectory, config.leases.lockTimeoutSeconds);
+    const locations = { repositoryRoot: repo.root, store };
+    if (!options.apply) return await inspectSavedFormats(locations);
+    const report = await applySavedFormatMigrations(locations);
+    if (report.migrated > 0) {
+      await store.transaction((_state, audit) => {
+        audit("formats.migrated", {
+          details: {
+            migrated: report.migrated,
+            backupDirectory: report.backupDirectory,
+            migrations: report.findings
+              .filter((finding) => finding.status === "upgradable")
+              .map((finding) => ({ format: finding.format, path: finding.path, migration: finding.migration })),
+          },
+        });
+      });
+    }
+    return report;
   }
 
   private static async storageContext(cwd: string): Promise<{
