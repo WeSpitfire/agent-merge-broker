@@ -16,6 +16,9 @@
 - CLI exit statuses are now `0` success, `1` rejection, `2` invalid usage or input, `3` refused or
   failed operation, and `4` internal error. Previously every failure exited `1`. `doctor` now exits
   `1` whenever the host is not operational, not only with `--gate`.
+- Operator MCP servers record evidence, approvals, and change requests under the actor they start
+  with (`--actor` or `MERGE_BROKER_ACTOR`). The tools' `actor` input is no longer required, a
+  different value is rejected, and without a configured actor the tools refuse with `ACTOR_REQUIRED`.
 - `INVALID_ARGUMENT` is renamed `INVALID_ARGUMENTS`, and the CLI reports `INTERNAL_ERROR` instead of
   `UNEXPECTED` for unexpected failures, matching MCP.
 
@@ -25,6 +28,11 @@
   Twelve previously emitted but undocumented codes are now documented, plus `OUTPUT_EXISTS` for an
   attestation output path that already exists.
 - An interface stability and support policy in [Compatibility](docs/COMPATIBILITY.md).
+- `merge-broker-mcp --agent` and `--actor` set the worker and operator identities.
+  `batch verify`, `batch approve`, and `batch request-changes` accept the actor from
+  `MERGE_BROKER_ACTOR`, refusing a conflicting `--actor`.
+- A table of principals, authorized operations, and recorded names for every transport in
+  [Security](docs/SECURITY.md).
 - `merge-broker migrate` and `MergeBroker.migrate()` report every saved format's version and status.
   `--apply` upgrades files written by older releases after backing up their original bytes, and
   refuses with the new `MIGRATION_BLOCKED` code when a file comes from a newer release or cannot be

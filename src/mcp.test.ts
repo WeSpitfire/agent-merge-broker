@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import {
   InMemoryTransport,
   LATEST_PROTOCOL_VERSION,
@@ -112,7 +112,7 @@ test("an unknown MCP profile fails closed", () => {
   );
 });
 
-test("a worker MCP server cannot use another worker's stored lease token", async (context) => {
+async function initializedRepository(context: TestContext): Promise<string> {
   const repo = await mkdtemp(path.join(tmpdir(), "merge-broker-mcp-"));
   context.after(async () => {
     await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -127,6 +127,11 @@ test("a worker MCP server cannot use another worker's stored lease token", async
   await git("add", "README.md");
   await git("commit", "-m", "initial");
   await MergeBroker.initialize(repo);
+  return repo;
+}
+
+test("a worker MCP server cannot use another worker's stored lease token", async (context) => {
+  const repo = await initializedRepository(context);
 
   const alice = await connect({ cwd: repo, profile: "worker", version: "test", agent: "alice" });
   const bob = await connect({ cwd: repo, profile: "worker", version: "test", agent: "bob" });
@@ -159,4 +164,33 @@ test("a worker MCP server cannot use another worker's stored lease token", async
   context.after(async () => await restarted.close());
   const resumed = await callTool(restarted.transport, "task_release", { taskId: "SHARED" });
   assert.equal(resumed.isError, false, JSON.stringify(resumed.body));
+});
+
+test("an operator MCP server records only the actor it was started with", async (context) => {
+  const repo = await initializedRepository(context);
+  const binding = { batchId: "BATCH-1", candidateSha: "a".repeat(40), baseSha: "b".repeat(40) };
+
+  const anonymous = await connect({ cwd: repo, profile: "operator", version: "test", actor: "" });
+  context.after(async () => await anonymous.close());
+  const refused = await callTool(anonymous.transport, "batch_approve", { ...binding, actor: "release-manager" });
+  assert.equal(refused.isError, true);
+  assert.equal(refused.body.code, "ACTOR_REQUIRED");
+
+  const operator = await connect({ cwd: repo, profile: "operator", version: "test", actor: "release-manager" });
+  context.after(async () => await operator.close());
+  for (const [tool, args] of [
+    ["batch_approve", binding],
+    ["batch_record_verification", { ...binding, name: "qa", status: "passed" }],
+    ["batch_request_changes", { ...binding, reason: "needs work" }],
+  ] as const) {
+    const impersonated = await callTool(operator.transport, tool, { ...args, actor: "someone-else" });
+    assert.equal(impersonated.isError, true, tool);
+    assert.equal(impersonated.body.code, "INVALID_ARGUMENTS", tool);
+  }
+  // With the bound actor (given or omitted), the request reaches approval policy, which is disabled here.
+  for (const args of [binding, { ...binding, actor: "release-manager" }]) {
+    const reached = await callTool(operator.transport, "batch_approve", args);
+    assert.equal(reached.isError, true);
+    assert.equal(reached.body.code, "APPROVAL_DISABLED");
+  }
 });

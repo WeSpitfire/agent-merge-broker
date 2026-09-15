@@ -538,7 +538,19 @@ the same OS user.
 A trusted integration controller can run a separate `--profile operator` server. It adds planning,
 integration, publication, synchronization, refresh, evidence, approval, retry/cancel, audit,
 metrics, and recovery tools. Do not give the operator profile to ordinary implementation agents;
-it has the same control-plane authority as the integration host.
+it has the same control-plane authority as the integration host. Evidence, approval, and change
+requests are recorded under the actor the server starts with, which tool calls cannot change:
+
+```json
+{
+  "mcpServers": {
+    "merge-broker-operator": {
+      "command": "merge-broker-mcp",
+      "args": ["-C", "/absolute/repository/path", "--profile", "operator", "--actor", "release-manager"]
+    }
+  }
+}
+```
 
 ### Require exact verification and approval
 

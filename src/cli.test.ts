@@ -164,6 +164,20 @@ test("JSON mode envelopes command-line usage errors", async () => {
   assert.equal(missingFile.exitCode, 2, missingFile.stderr);
   assert.equal((JSON.parse(missingFile.stderr) as { error?: { code?: string } }).error?.code, "INVALID_ARGUMENTS");
 
+  // The recorded actor is resolved before the broker opens, so its usage errors need no repository.
+  const { MERGE_BROKER_ACTOR: _inheritedActor, ...withoutActor } = process.env;
+  const approve = [...runtime, "--json", "batch", "approve", "BATCH-1", "--candidate", "a".repeat(40), "--base", "b".repeat(40)];
+  const noActor = await runCommand(process.execPath, approve, { cwd: PROJECT_ROOT, allowFailure: true, env: withoutActor });
+  assert.equal(noActor.exitCode, 2, noActor.stderr);
+  assert.equal((JSON.parse(noActor.stderr) as { error?: { code?: string } }).error?.code, "ACTOR_REQUIRED");
+  const conflicting = await runCommand(process.execPath, [...approve, "--actor", "someone-else"], {
+    cwd: PROJECT_ROOT,
+    allowFailure: true,
+    env: { ...withoutActor, MERGE_BROKER_ACTOR: "release-manager" },
+  });
+  assert.equal(conflicting.exitCode, 2, conflicting.stderr);
+  assert.equal((JSON.parse(conflicting.stderr) as { error?: { code?: string } }).error?.code, "INVALID_ARGUMENTS");
+
   const help = await runCommand(process.execPath, [...runtime, "--json", "--help"], {
     cwd: PROJECT_ROOT,
     allowFailure: true,

@@ -32,7 +32,9 @@ The package also supplies `merge-broker-mcp`, a stdio MCP adapter. Its default `
 registers only task/status/validation capabilities and keeps lease tokens in the local vault. The
 `operator` profile additionally registers planning, integration, publication, synchronization,
 verification, approval, audit, metrics, and recovery. Profiles are chosen when the server starts,
-not by tool input, so a worker cannot request promotion.
+not by tool input, so a worker cannot request promotion. Identities are fixed the same way: a worker's
+lease holder comes from `--agent` or `MERGE_BROKER_AGENT`, and an operator's recorded actor from
+`--actor` or `MERGE_BROKER_ACTOR`. See [principals and authority by transport](SECURITY.md#principals-and-authority-by-transport).
 
 ## Retain and validate a trusted local candidate
 
@@ -635,6 +637,7 @@ Adapters should branch on `BrokerError.code` (or a returned terminal `Submission
 not message text. These are the currently emitted categories and the normal response to each family:
 
 - Setup, input, and lookup — `NOT_INITIALIZED`, `INVALID_CONFIG`, `INVALID_ARGUMENTS`, `OUTPUT_EXISTS`,
+  `ACTOR_REQUIRED`,
   `INVALID_INTERVAL`, `INVALID_LIMIT`, `INVALID_MCP_PROFILE`, `INVALID_AGENT_CONTRACT`,
   `INVALID_PULL_REQUEST_URL`, `INVALID_SIGNING_KEY`, `INVALID_TASK`, `PATHS_REQUIRED`, `UNSAFE_PATH`,
   `TASK_EXISTS`, `UNKNOWN_TASK`, `UNKNOWN_BATCH`, `UNKNOWN_COMMIT`, `UNKNOWN_DEPENDENCY`, and

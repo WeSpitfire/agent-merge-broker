@@ -140,12 +140,35 @@ export function createMcpServer(options: {
    * worker server may resume leases held under exactly this identity.
    */
   agent?: string;
+  /**
+   * Operator identity recorded on verification evidence, approvals, and change requests. Defaults to
+   * MERGE_BROKER_ACTOR. It is fixed when the server starts; tool input cannot choose another actor.
+   */
+  actor?: string;
 } = {}): McpServer {
   const cwd = options.cwd ?? process.cwd();
   const profile = options.profile ?? "worker";
   assertMcpProfile(profile);
   const open = async (): Promise<MergeBroker> => await MergeBroker.open(cwd);
   const agentIdentity = options.agent ?? (process.env.MERGE_BROKER_AGENT || undefined);
+  const operatorActor = options.actor ?? (process.env.MERGE_BROKER_ACTOR || undefined);
+  // Approval policy authorizes actor names. Accepting a name from tool input would let any client of
+  // this server claim to be any authorized approver, so the name comes only from launch configuration.
+  const boundActor = (requested: string | undefined): string => {
+    if (!operatorActor) {
+      throw new BrokerError(
+        "ACTOR_REQUIRED",
+        "This operator MCP server has no actor. Start it with --actor or MERGE_BROKER_ACTOR to record evidence, approvals, or change requests.",
+      );
+    }
+    if (requested !== undefined && requested !== operatorActor) {
+      throw new BrokerError(
+        "INVALID_ARGUMENTS",
+        `This operator MCP server acts as ${operatorActor}; tool input cannot choose actor ${requested}.`,
+      );
+    }
+    return operatorActor;
+  };
   // Every worker server in a repository shares one token vault keyed by task ID. Without this
   // binding, any worker could heartbeat, extend, release, or nominate commits under another
   // worker's lease simply by naming its task.
@@ -457,12 +480,13 @@ export function createMcpServer(options: {
     candidateSha: z.string().min(1),
     baseSha: z.string().min(1),
     policyRevision: z.string().min(1).optional(),
-    actor: z.string().min(1),
+    // Accepted only to reject a conflicting value; the actor is the server's launch identity.
+    actor: z.string().min(1).optional(),
   };
   server.registerTool(
     "batch_record_verification",
     {
-      description: "Attach verification evidence to an exact candidate/base/policy binding.",
+      description: "Attach verification evidence to an exact candidate/base/policy binding. The verifier is this server's configured actor.",
       inputSchema: z.object({
         ...bindingSchema,
         name: z.string().min(1),
@@ -472,8 +496,9 @@ export function createMcpServer(options: {
       }),
       annotations: externalMutation,
     },
-    wrapped(async ({ batchId, policyRevision, evidenceUrl, notes, ...input }) => await (await open()).recordVerification(batchId, {
+    wrapped(async ({ batchId, policyRevision, evidenceUrl, notes, actor, ...input }) => await (await open()).recordVerification(batchId, {
       ...input,
+      actor: boundActor(actor),
       ...(policyRevision ? { policyRevision } : {}),
       ...(evidenceUrl ? { evidenceUrl } : {}),
       ...(notes ? { notes } : {}),
@@ -482,24 +507,26 @@ export function createMcpServer(options: {
   server.registerTool(
     "batch_approve",
     {
-      description: "Authorize only an exact verified candidate/base/policy binding.",
+      description: "Authorize only an exact verified candidate/base/policy binding. The approver is this server's configured actor.",
       inputSchema: z.object(bindingSchema),
       annotations: externalMutation,
     },
-    wrapped(async ({ batchId, policyRevision, ...input }) => await (await open()).approveBatch(batchId, {
+    wrapped(async ({ batchId, policyRevision, actor, ...input }) => await (await open()).approveBatch(batchId, {
       ...input,
+      actor: boundActor(actor),
       ...(policyRevision ? { policyRevision } : {}),
     })),
   );
   server.registerTool(
     "batch_request_changes",
     {
-      description: "Revoke candidate approval and require a revision for an exact binding.",
+      description: "Revoke candidate approval and require a revision for an exact binding. The reviewer is this server's configured actor.",
       inputSchema: z.object({ ...bindingSchema, reason: z.string().min(1) }),
       annotations: externalMutation,
     },
-    wrapped(async ({ batchId, policyRevision, ...input }) => await (await open()).requestChanges(batchId, {
+    wrapped(async ({ batchId, policyRevision, actor, ...input }) => await (await open()).requestChanges(batchId, {
       ...input,
+      actor: boundActor(actor),
       ...(policyRevision ? { policyRevision } : {}),
     })),
   );

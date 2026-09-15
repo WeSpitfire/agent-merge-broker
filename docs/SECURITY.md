@@ -15,6 +15,38 @@ reads verification policy from the supplied protected-base commit. None of these
 safe to invoke an operator command from an untrusted fork checkout. Run the service and operator
 surfaces from a controlled checkout, and protect who may change its configuration or invoke it.
 
+## Principals and authority by transport
+
+The broker does not authenticate callers. Every transport acts with the authority of the operating
+system account that runs broker code against the repository, limited only by filesystem access to
+the checkout and Git's common directory. Transports differ in which operations they expose and in
+where recorded names come from.
+
+| Transport | Principal | Authorized operations | Recorded names |
+| --- | --- | --- | --- |
+| CLI | The OS account running `merge-broker` | Every command | `--actor`, or `MERGE_BROKER_ACTOR` set by a wrapper (a conflicting `--actor` is refused); lease `--holder` |
+| Node API | The OS account of the embedding process | Every `MergeBroker` method | `actor` and `holder` arguments from the caller |
+| MCP `worker` over stdio | The client that launched the server, as the server's OS account | Status, claim, heartbeat, extend, validate, nominate, release, reopen, and revise, for leases this server claimed or reopened or leases held under its launch identity | Holder: `--agent` or `MERGE_BROKER_AGENT` at launch; a different `holder` input is refused when set |
+| MCP `operator` over stdio | The client that launched the server, as the server's OS account | The full control plane: planning, integration, publication, synchronization, evidence, approval, retry, cancel, audit, metrics, and recovery | Actor: `--actor` or `MERGE_BROKER_ACTOR` at launch only; evidence, approval, and change-request tools refuse with `ACTOR_REQUIRED` without one and reject a different `actor` input |
+| GitHub through `gh` | The account `gh` is authenticated as | Whatever that account may do on the forge | Check evidence is recorded with actor `github` |
+| `verify-provenance` and the verify action | None; verification is an offline proof | Nothing; they only report | The signing key trusted by protected-base policy |
+
+Stdio MCP has no transport authentication: whoever can launch the server or write to its standard
+input holds its profile. There is no network listener, HTTP transport, or remote MCP authentication.
+
+Consequences:
+
+- Actor and holder names are policy labels, not authenticated identities. `approval.authorizedActors`
+  limits which names can approve; it cannot prove who chose the name. To make approval meaningful,
+  run operator surfaces through a wrapper that sets `MERGE_BROKER_ACTOR` from an authenticated context,
+  such as a single sign-on session or a CI identity token, and keep untrusted agents away from the
+  operator profile and from shell access on the integration host.
+- Lease tokens are bearer credentials between cooperating processes. The per-server lease binding
+  prevents one agent from managing another's lease through MCP tools, but every process running as
+  the broker's OS account can read the token directory.
+- Separating trust levels requires separate OS accounts, repositories, or hosts. A future remote
+  transport must authenticate its callers and derive actor and holder names from that authentication.
+
 ## Credentials
 
 - Lease tokens contain 192 bits of randomness and only SHA-256 digests are persisted in broker state.
@@ -260,9 +292,11 @@ when approval policy applies, but it does not inspect the live PR or fetch the t
 is asserting that the result really landed. Use it only after independently verifying a workflow
 for which the forge cannot expose sufficient proof.
 
-Authorized actor names are local policy identifiers, not cryptographic identities. Adapters should
-derive them from an authenticated execution context and should not accept an untrusted worker's
-free-form value. Stronger signed approval attestations are a compatible future extension.
+Authorized actor names are local policy identifiers, not cryptographic identities. The operator MCP
+server fixes its actor at launch, and the CLI accepts one fixed by `MERGE_BROKER_ACTOR`; see
+[principals and authority by transport](#principals-and-authority-by-transport). Other adapters should
+likewise derive the name from an authenticated execution context rather than accept a free-form value
+from the caller they are constraining. Stronger signed approval attestations are a compatible future extension.
 
 The final provenance commit is immutable. Do not use a forge's update-branch button on an integration
 branch. Even when the merged side is the real base, conflict resolution can introduce content that a
