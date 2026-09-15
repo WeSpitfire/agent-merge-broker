@@ -36,6 +36,16 @@ test("the full package adds only the MCP adapter to the core API", () => {
   assert.deepEqual(Object.keys(full).sort(), [...CORE_EXPORTS, "createMcpServer", "mcpToolNames"].sort());
 });
 
+test("PROTOCOL.md lists every supported runtime export", async () => {
+  const protocol = await readFile(new URL("../docs/PROTOCOL.md", import.meta.url), "utf8");
+  const start = protocol.indexOf("## Programmatic use");
+  assert.ok(start >= 0);
+  const section = protocol.slice(start, protocol.indexOf("\n## ", start + 1));
+  for (const name of [...CORE_EXPORTS, "createMcpServer", "mcpToolNames"]) {
+    assert.ok(section.includes(`\`${name}\``), `PROTOCOL.md programmatic use does not list ${name}`);
+  }
+});
+
 test("published declarations hide MergeBroker implementation fields", async (context) => {
   const declarations = await readFile(new URL("./broker.d.ts", import.meta.url), "utf8").catch(() => undefined);
   if (declarations === undefined) {

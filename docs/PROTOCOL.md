@@ -661,7 +661,23 @@ deciding whether the original action is still valid.
 
 ## Programmatic use
 
-The package exports `MergeBroker`, repository/configuration types, state types, and error classes:
+The root export is the supported Node API. Both packages provide:
+
+- `MergeBroker`, including the static `open`, `initialize`, `inspectStorage`, and
+  `compactAuditStorage` methods, and its input types;
+- `defaultConfig`, `loadConfig`, and `validateConfig`;
+- `githubCliPublisher` and the `ForgePublisher`, `PublicationResult`, and `PullRequestState` types;
+- `verifyProvenance`, `policyFromBase`, `batchIdFromBranch`, `verifyBatchProvenanceSignature`,
+  `provenanceKeyId`, and `provenancePath`;
+- `verifySubmissionAttestation` and the `SUBMISSION_ATTESTATION_PAYLOAD_TYPE` and
+  `SUBMISSION_ATTESTATION_PREDICATE_TYPE` constants;
+- `schemaFingerprint` and `schemaSnapshotIdentity`;
+- `BrokerError`, `BROKER_ERROR_CODES`, and `BROKER_ERROR_CATEGORIES`; and
+- the record, configuration, and result types used by those functions.
+
+The full `agent-merge-broker` package also exports `createMcpServer` and `mcpToolNames`. Module
+paths below the package root are not exported, and `MergeBroker` members marked internal are not
+part of the published types. See [interface stability](COMPATIBILITY.md#interface-stability-and-support).
 
 ```ts
 import { MergeBroker } from "agent-merge-broker";
