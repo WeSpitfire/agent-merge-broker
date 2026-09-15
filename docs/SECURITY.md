@@ -59,7 +59,11 @@ branches. Initial publication pushes the recorded candidate SHA with a create-on
 revision is the sole force update, limited to the broker's own integration branch and guarded by
 `--force-with-lease` against the prior candidate SHA. Broker-created commits use a fixed identity,
 disable signing, and bypass ambient hooks so machine-specific Git configuration cannot alter the
-validated artifact. Temporary worktrees stay under the broker state directory.
+validated artifact. Every broker Git command that runs inside an integration or worker worktree uses
+a fresh empty hooks directory as well: a relative `core.hooksPath`, such as the one `install-hooks`
+or husky configures, resolves inside that worktree, where hook files are submitted content.
+Temporary worktrees stay under the broker state directory. The provenance manifest is written only
+through real directories; a submitted symlink in its path fails with `UNSAFE_PATH`.
 
 After every successful focused and authoritative validator set, the broker requires the same `HEAD`
 and a clean integration or submission worktree. A validator that commits, checks out another
@@ -268,7 +272,9 @@ refresh`, which reruns validation and produces a new signed manifest.
 ## Command construction
 
 Configuration is trusted. `{taskId}`, `{filesFile}`, and the bounded legacy `{files}` placeholder are
-shell-quoted, and structured metadata is also supplied as environment variables. Every validator
+shell-quoted and substituted in a single pass over the configured command, so a value inserted for one
+placeholder is never rescanned for another. Task IDs passed to local validation use the same
+identifier grammar as claims. Structured metadata is also supplied as environment variables. Every validator
 gets `MERGE_BROKER_FILES_FILE` pointing to an owner-readable UTF-8 JSON array and
 `MERGE_BROKER_FILES_FILE_FORMAT=json`. Parse that JSON as data; do not source or evaluate it.
 Validators default to `filesInput: "inline"`; if either the newline environment form or quoted
@@ -282,7 +288,10 @@ Validators run under a fixed interpreter — `/bin/sh` on macOS/Linux, non-profi
 Windows, or `validation.shell` — and never under a login shell. Sourcing an operator's personal
 profile would make an integration decision depend on whose machine assembled the batch, and would
 let a compromised dotfile influence what the broker reports as validated. Quoting follows the
-selected shell. Explicit `cmd.exe` policy remains subject to cmd's percent-expansion semantics, so
+selected shell; PowerShell quoting also doubles the typographic single quotes PowerShell accepts as
+string delimiters. On Windows, bare executable names such as `git`, `gh`, and `powershell.exe` are
+resolved without first searching the working directory, so a committed `git.exe` in a candidate
+worktree is not selected. Explicit `cmd.exe` policy remains subject to cmd's percent-expansion semantics, so
 PowerShell or package scripts are preferred on Windows.
 
 Validator timeouts terminate the spawned process tree: a process group on POSIX and `taskkill /t`
@@ -290,7 +299,13 @@ on Windows. Repository configuration remains trusted code and can deliberately s
 beyond that tree; do not run untrusted fork policy.
 
 The MCP adapter enforces capability separation at server startup. The worker profile never registers
-integration, publication, evidence, or approval tools and never returns stored lease tokens. The
+integration, publication, evidence, or approval tools and never returns stored lease tokens. A worker
+server uses a stored token only for a task it claimed or reopened itself, or for a lease held under its
+explicit `MERGE_BROKER_AGENT` identity so a restarted server can resume; otherwise it returns
+`LEASE_NOT_OWNED`. When that identity is set, the server refuses to claim under a different holder
+name. This prevents one agent from heartbeating, extending, releasing, or nominating commits under
+another agent's lease through MCP tools. It is not an operating-system boundary: every process running
+as the broker user can read the token directory. The
 operator profile is a control-plane credential: expose it only to a trusted client with the same
 authority as the integration host.
 
@@ -328,12 +343,35 @@ early.
   workers; and
 - the repository requires either broker-authoritative validation or its own authoritative CI suite.
 
+Local validators are not separated from that key. Focused validators, and authoritative validators
+under `broker` authority, run as the broker's OS user. Removing `MERGE_BROKER_SIGNING_KEY*` from
+their environment does not stop them from reading the key file under Git's common directory or the
+broker process's memory. When workers can change code those validators execute (tests, build
+scripts, package scripts, or dependencies), a worker can extract the key and sign a forged manifest
+that verifies as authenticated. `merge-broker doctor` reports this as
+`signingKeyReachableByValidators`. Until a separate signer is available, integrate untrusted work
+only on a host where no local validator runs worker-controlled code: for example `required-ci`
+authority without focused validators, or a dedicated OS account per trust level.
+
+The verifier is only as strong as the workflow that runs it. On `pull_request` events GitHub runs the
+workflow definition from the change under review, so a pull request that can edit workflows can also
+edit or skip the verification job. Enforce the check through a repository ruleset's required
+workflow sourced from a protected branch, or restrict who may change `.github/`. The composite action
+installs and runs the verifier from an empty temporary directory so a committed `.npmrc` or
+`node_modules` in the checked-out change cannot select the verifier binary.
+
 Set `validation.authority` to `required-ci` only when that suite is a required pull-request check on
 the protected base. The broker requires pull-request publication and signed provenance for this
 mode, but it cannot prove that an arbitrary forge has made the named CI jobs mandatory. A check that
 merely runs, but is not required, is not an authority and can be bypassed at merge time.
 
-The verifier reads policy from the protected base, never the change being judged. A valid signature
+The verifier reads policy from the protected base, never the change being judged. A base without
+`.merge-broker/config.json` has no broker policy to enforce; a policy file that exists but cannot be
+read, is not JSON, or has a mistyped enforcement field fails verification instead of being treated as
+absent. Under `broker` validation authority, a manifest must record at least one authoritative
+validation; a signature over an empty validation list is rejected. Changed paths are compared with
+the same raw, rename-free listing the broker records, independent of the runner's `diff.renames` or
+`core.quotePath` settings. A valid signature
 authenticates the broker identity and the immutable manifest contents. It does not prove those
 contents are good, and it cannot protect a key exposed to the same worker it is meant to constrain.
 Legacy unsigned manifests receive structural verification only and must not be treated as proof that

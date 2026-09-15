@@ -5,8 +5,13 @@ import {
   LATEST_PROTOCOL_VERSION,
   type JSONRPCMessage,
 } from "@modelcontextprotocol/server";
+import path from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createMcpServer, mcpToolNames } from "./mcp.js";
+import { MergeBroker } from "./broker.js";
 import { BrokerError } from "./errors.js";
+import { runCommand } from "./process.js";
 
 async function request(transport: InMemoryTransport, message: JSONRPCMessage): Promise<JSONRPCMessage> {
   return await new Promise<JSONRPCMessage>((resolve, reject) => {
@@ -17,6 +22,49 @@ async function request(transport: InMemoryTransport, message: JSONRPCMessage): P
     };
     void transport.send(message).catch(reject);
   });
+}
+
+async function connect(options: Parameters<typeof createMcpServer>[0]): Promise<{
+  transport: InMemoryTransport;
+  close: () => Promise<void>;
+}> {
+  const server = createMcpServer(options);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await clientTransport.start();
+  await server.connect(serverTransport);
+  await request(clientTransport, {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: LATEST_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "merge-broker-test", version: "1" },
+    },
+  });
+  await clientTransport.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+  return { transport: clientTransport, close: async () => await server.close() };
+}
+
+let nextRequestId = 100;
+async function callTool(
+  transport: InMemoryTransport,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ isError: boolean; body: Record<string, unknown> }> {
+  const response = await request(transport, {
+    jsonrpc: "2.0",
+    id: nextRequestId++,
+    method: "tools/call",
+    params: { name, arguments: args },
+  });
+  assert.ok("result" in response && response.result && typeof response.result === "object");
+  const result = response.result as { isError?: boolean; structuredContent?: Record<string, unknown> };
+  const content = result.structuredContent ?? {};
+  return {
+    isError: result.isError === true,
+    body: (result.isError ? content.error : content.result) as Record<string, unknown>,
+  };
 }
 
 async function listedTools(profile: "worker" | "operator"): Promise<string[]> {
@@ -62,4 +110,53 @@ test("an unknown MCP profile fails closed", () => {
     () => createMcpServer({ profile: "admin" as "worker" }),
     (error: unknown) => error instanceof BrokerError && error.code === "INVALID_MCP_PROFILE",
   );
+});
+
+test("a worker MCP server cannot use another worker's stored lease token", async (context) => {
+  const repo = await mkdtemp(path.join(tmpdir(), "merge-broker-mcp-"));
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const git = async (...args: string[]): Promise<void> => {
+    await runCommand("git", args, { cwd: repo });
+  };
+  await git("init", "-b", "main");
+  await git("config", "user.name", "Merge Broker Test");
+  await git("config", "user.email", "test@merge-broker.invalid");
+  await writeFile(path.join(repo, "README.md"), "# Fixture\n", "utf8");
+  await git("add", "README.md");
+  await git("commit", "-m", "initial");
+  await MergeBroker.initialize(repo);
+
+  const alice = await connect({ cwd: repo, profile: "worker", version: "test", agent: "alice" });
+  const bob = await connect({ cwd: repo, profile: "worker", version: "test", agent: "bob" });
+  context.after(async () => {
+    await alice.close();
+    await bob.close();
+  });
+
+  const claimed = await callTool(alice.transport, "task_claim", { taskId: "SHARED", paths: ["src/**"] });
+  assert.equal(claimed.isError, false, JSON.stringify(claimed.body));
+  for (const [tool, args] of [
+    ["task_heartbeat", { taskId: "SHARED" }],
+    ["task_extend", { taskId: "SHARED", paths: ["docs/**"] }],
+    ["task_release", { taskId: "SHARED" }],
+    ["task_candidate", { taskId: "SHARED" }],
+  ] as const) {
+    const denied = await callTool(bob.transport, tool, args);
+    assert.equal(denied.isError, true, tool);
+    assert.equal(denied.body.code, "LEASE_NOT_OWNED", tool);
+  }
+  const impersonated = await callTool(bob.transport, "task_claim", { taskId: "OTHER", paths: ["lib/**"], holder: "alice" });
+  assert.equal(impersonated.isError, true);
+  assert.equal(impersonated.body.code, "INVALID_ARGUMENTS");
+
+  assert.equal((await callTool(alice.transport, "task_heartbeat", { taskId: "SHARED" })).isError, false);
+
+  // A restarted server with the same explicit identity resumes its own lease.
+  await alice.close();
+  const restarted = await connect({ cwd: repo, profile: "worker", version: "test", agent: "alice" });
+  context.after(async () => await restarted.close());
+  const resumed = await callTool(restarted.transport, "task_release", { taskId: "SHARED" });
+  assert.equal(resumed.isError, false, JSON.stringify(resumed.body));
 });

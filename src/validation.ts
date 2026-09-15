@@ -137,11 +137,19 @@ function renderCommand(
       { filesFile },
     );
   }
-  return command
-    .replaceAll("{taskId}", shell.quote(taskId ?? ""))
-    .replaceAll("{files}", inlineFiles ?? "")
-    .replaceAll("{filesFile}", shell.quote(filesFile))
-    .replaceAll("{validatorCacheDir}", shell.quote(validatorCacheDirectory));
+  const replacements: Record<string, string> = {
+    taskId: shell.quote(taskId ?? ""),
+    files: inlineFiles ?? "",
+    filesFile: shell.quote(filesFile),
+    validatorCacheDir: shell.quote(validatorCacheDirectory),
+  };
+  // One pass over the configured command only. Substituting placeholders one after another would
+  // rescan values already inserted, so a task ID of `{files}` could receive the file list inside its
+  // own quotes and turn a committed path into shell syntax.
+  return command.replace(
+    /\{(taskId|files|filesFile|validatorCacheDir)\}/gu,
+    (_match, name: string) => replacements[name] ?? "",
+  );
 }
 
 function inlineFileInputs(files: string[], shell: ResolvedShell): {

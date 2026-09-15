@@ -190,6 +190,43 @@ test("reads the audit trail past a line truncated by a crash", async (context) =
   );
 });
 
+test("keeps the next audit event after a crash left a truncated line", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const store = new StateStore(directory, "state", 10);
+  await store.transaction((_state, audit) => {
+    audit("first.event");
+  });
+  await appendFile(path.join(directory, "state", "audit.jsonl"), '{"sequence":2,"at":"2026-08', "utf8");
+  await store.transaction((_state, audit) => {
+    audit("after.crash");
+  });
+
+  assert.deepEqual(
+    (await store.readAudit(100)).map((event) => event.event),
+    ["first.event", "after.crash"],
+  );
+});
+
+test("durable state writes leave no temporary files behind", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const store = new StateStore(directory, "state", 10);
+  await store.transaction((_state, audit) => {
+    audit("durable.event");
+  });
+  await store.writeToken("TASK-1", "secret-token");
+  assert.equal((await store.read()).sequence, 1);
+  assert.equal(await store.readToken("TASK-1"), "secret-token");
+  const stateEntries = await readdir(path.join(directory, "state"));
+  const tokenEntries = await readdir(path.dirname(store.tokenPath("TASK-1")));
+  assert.deepEqual([...stateEntries, ...tokenEntries].filter((name) => name.endsWith(".tmp")), []);
+});
+
 test("reads recent audit events across rotated segments", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
   context.after(async () => {

@@ -240,6 +240,20 @@ For a protected GitHub repository, a useful progression is:
    not part of the current topology proof.
 4. Enable `autoMerge` only after `merge-broker doctor` reports the host ready.
 
+Run the provenance verifier on broker pull requests with the composite action pinned to the release
+tag. It needs the head and base commits, so fetch full history:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    ref: ${{ github.event.pull_request.head.sha }}
+    fetch-depth: 0
+- uses: WeSpitfire/agent-merge-broker/verify@v0.15.0
+```
+
+A pull request that can edit workflows can also edit this job. Require it through a repository
+ruleset's required workflow from a protected branch, or restrict changes to `.github/`.
+
 See [Security](SECURITY.md) before delegating authoritative validation to required CI or enabling
 exact-candidate approval.
 
@@ -502,7 +516,8 @@ installation above, configure `merge-broker-mcp` as a stdio server rooted at the
   "mcpServers": {
     "merge-broker": {
       "command": "merge-broker-mcp",
-      "args": ["-C", "/absolute/repository/path", "--profile", "worker"]
+      "args": ["-C", "/absolute/repository/path", "--profile", "worker"],
+      "env": { "MERGE_BROKER_AGENT": "agent-search" }
     }
   }
 }
@@ -513,6 +528,12 @@ configure `node` with the installed package's absolute `dist/mcp-cli.js` path as
 (use `npm root --global` to locate global packages). Worker tools can
 inspect status, claim, heartbeat, extend, validate, nominate, release, reopen, and revise their own
 leased work. Lease tokens remain in the local vault and are not returned in MCP messages.
+
+A worker server manages only leases it claimed or reopened itself. Give each agent's server a
+distinct `MERGE_BROKER_AGENT` so that a restarted server can resume leases held under that identity;
+without one, a restarted server cannot use an earlier lease and receives `LEASE_NOT_OWNED` until the
+task is claimed again. This separates cooperating agents; it does not isolate processes that run as
+the same OS user.
 
 A trusted integration controller can run a separate `--profile operator` server. It adds planning,
 integration, publication, synchronization, refresh, evidence, approval, retry/cancel, audit,
@@ -535,6 +556,8 @@ durable revocation and disables a possibly live auto-merge queue before deleting
 Set `validation.authority` to `required-ci` only when the forge requires the complete CI suite on the
 protected base. This mode requires pull-request publication and signed provenance. Keep local
 focused checks fast; leave `validation.authoritative` empty because required CI is the authority.
+Focused checks still run on the integration host beside the provenance signing key. If workers can
+change the code they execute, omit them; see [Security](SECURITY.md#enforcement-boundaries).
 
 ### Recover after an interrupted process
 

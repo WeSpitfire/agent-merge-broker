@@ -566,6 +566,7 @@ not message text. These are the currently emitted categories and the normal resp
   `TASK_EXISTS`, `UNKNOWN_TASK`, `UNKNOWN_BATCH`, `UNKNOWN_COMMIT`, `UNKNOWN_DEPENDENCY`, and
   `UNKNOWN_LOCK`. Correct the request or configuration; do not retry it unchanged.
 - Lease and task lifecycle — `LEASE_REQUIRED`, `LEASE_CONFLICT`, `LEASE_EXPIRED`, `LEASE_TOKEN`,
+  `LEASE_NOT_OWNED`,
   `TASK_CHANGED`, `TASK_NOT_CLAIMABLE`, `TASK_NOT_SUBMITTABLE`, `TASK_NOT_CANCELLABLE`,
   `TASK_NOT_RETRYABLE`, and `TASK_NOT_REVISABLE`. Re-read the task and obtain the current lease or
   perform the lifecycle action named by the error.

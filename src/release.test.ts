@@ -9,10 +9,17 @@ import { runCommand } from "./process.js";
 
 const packageMetadata = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
-) as { version: string; engines: { node: string }; scripts: Record<string, string>; files: string[] };
+) as {
+  version: string;
+  engines: { node: string };
+  scripts: Record<string, string>;
+  files: string[];
+  bin: Record<string, string>;
+};
 const action = await readFile(new URL("../verify/action.yml", import.meta.url), "utf8");
 const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
 const releaseGuide = await readFile(new URL("../docs/RELEASING.md", import.meta.url), "utf8");
+const gettingStarted = await readFile(new URL("../docs/GETTING_STARTED.md", import.meta.url), "utf8");
 const siteWorkflow = await readFile(new URL("../.github/workflows/site.yml", import.meta.url), "utf8");
 const siteSync = await readFile(new URL("../site/sync-docs.mjs", import.meta.url), "utf8");
 const ciWorkflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
@@ -33,6 +40,23 @@ test("release surfaces run the exact npm package version they advertise", () => 
   assert.match(action, new RegExp(`\\r?\\n\\s+default: ${version}\\r?\\n`, "u"));
   assert.match(readme, new RegExp(`verify@v${version}`, "u"));
   assert.match(releaseGuide, new RegExp(`verify@v${version}`, "u"));
+  // Every documented action reference must move with the release; an older action may not run.
+  for (const [name, document] of [["README", readme], ["RELEASING", releaseGuide], ["GETTING_STARTED", gettingStarted]]) {
+    for (const [reference] of document!.matchAll(/verify@v\d+\.\d+\.\d+/gu)) {
+      assert.equal(reference, `verify@v${packageMetadata.version}`, `${name} pins ${reference}`);
+    }
+  }
+});
+
+test("the provenance action runs a real package executable outside the checked-out change", () => {
+  const invocation = /npx --yes --package "agent-merge-broker@\$\{AMB_VERSION\}" -- ([\w-]+) /u.exec(action);
+  assert.ok(invocation, "The action must name the package and executable separately.");
+  assert.ok(Object.hasOwn(packageMetadata.bin, invocation[1]!), `Unknown package executable: ${invocation[1]}`);
+  // npx honors a project .npmrc and local node_modules from its working directory.
+  assert.ok(action.indexOf('cd -- "${runner}"') < action.indexOf("npx --yes"));
+  assert.match(action, /runner="\$\(mktemp -d "\$\{RUNNER_TEMP:-\/tmp\}\//u);
+  assert.match(action, /args=\(-C "\$\{repository\}" verify-provenance /u);
+  assert.match(action, /uses: actions\/setup-node@[0-9a-f]{40} # v\d+/u);
 });
 
 test("the site redeploys when any canonical content source changes", () => {

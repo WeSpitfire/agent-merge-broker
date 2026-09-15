@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { MergeBroker } from "./broker.js";
 import { configPath, loadConfig } from "./config.js";
@@ -170,6 +170,88 @@ test("claims, submits, verifies, and transactionally batches independent commits
   assert.ok(audit.some((event) => event.event === "batch.prepared"));
   assert.ok(audit.some((event) => event.event === "batch.merged"));
 });
+
+test("does not run hooks committed by a worker while integrating its candidate", async (context) => {
+  const repo = await createRepository();
+  const outside = await mkdtemp(path.join(tmpdir(), "merge-broker-hook-marker-"));
+  context.after(async () => {
+    await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const config = await loadConfig(repo);
+  config.integration.history = "squash";
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await git(repo, "add", ".merge-broker", "AGENTS.md");
+  await git(repo, "commit", "-m", "squash integration");
+  // install-hooks and husky both configure a hooks path relative to whichever worktree Git runs in.
+  await git(repo, "config", "core.hooksPath", ".githooks");
+  const broker = await MergeBroker.open(repo);
+
+  const marker = path.join(outside, "hook-ran").replaceAll("\\", "/");
+  const hook = `#!/bin/sh\necho "$0" >> '${marker}'\n`;
+  const hookNames = [
+    "post-checkout",
+    "post-commit",
+    "post-index-change",
+    "post-rewrite",
+    "pre-commit",
+    "reference-transaction",
+  ];
+  // The fixture's own Git commands in the main checkout must not trip the hooks it is adding.
+  const noHooks = path.join(outside, "no-hooks");
+  await mkdir(noHooks);
+  const fixtureGit = async (...args: string[]): Promise<string> => await git(repo, "-c", `core.hooksPath=${noHooks}`, ...args);
+  const claim = await broker.claimTask({ id: "HOOKS", holder: "worker", expectedPaths: [".githooks/**", "src/**"] });
+  await fixtureGit("switch", "-c", "agent-hooks", "main");
+  await mkdir(path.join(repo, ".githooks"), { recursive: true });
+  await mkdir(path.join(repo, "src"), { recursive: true });
+  for (const name of hookNames) await writeFile(path.join(repo, ".githooks", name), hook, { encoding: "utf8", mode: 0o755 });
+  await writeFile(path.join(repo, "src", "feature.ts"), "export const feature = true;\n", "utf8");
+  await fixtureGit("add", "--chmod=+x", ...hookNames.map((name) => `.githooks/${name}`));
+  await fixtureGit("add", "src/feature.ts");
+  await fixtureGit("commit", "-m", "add worker hooks");
+  const commit = await fixtureGit("rev-parse", "HEAD");
+  await fixtureGit("switch", "main");
+  await broker.submitTask("HOOKS", [commit], claim.token);
+
+  const integrated = await broker.integrate();
+  assert.equal(integrated.batch.status, "prepared");
+  await assert.rejects(stat(marker), { code: "ENOENT" });
+  assert.deepEqual(
+    (await git(repo, "diff", "--name-only", "main", `${integrated.batch.branchName}^`)).split("\n").sort(),
+    [...hookNames.map((name) => `.githooks/${name}`), "src/feature.ts"].sort(),
+  );
+});
+
+test(
+  "refuses to write provenance through a symlink committed by a worker",
+  { skip: process.platform === "win32" ? "symlink fixture requires Windows developer mode" : false },
+  async (context) => {
+    const repo = await createRepository();
+    const outside = await mkdtemp(path.join(tmpdir(), "merge-broker-provenance-outside-"));
+    context.after(async () => {
+      await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      await rm(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    });
+    const broker = await MergeBroker.open(repo);
+    const provenanceDirectory = broker.config.integration.provenance?.directory ?? "";
+    assert.ok(provenanceDirectory);
+    const claim = await broker.claimTask({ id: "LINK", holder: "worker", expectedPaths: [`${provenanceDirectory}`] });
+    await git(repo, "switch", "-c", "agent-link", "main");
+    await mkdir(path.dirname(path.join(repo, provenanceDirectory)), { recursive: true });
+    await symlink(outside, path.join(repo, provenanceDirectory), "dir");
+    await git(repo, "add", provenanceDirectory);
+    await git(repo, "commit", "-m", "redirect provenance");
+    const commit = await git(repo, "rev-parse", "HEAD");
+    await git(repo, "switch", "main");
+    await broker.submitTask("LINK", [commit], claim.token);
+
+    await assert.rejects(broker.integrate(), (error: unknown) =>
+      error instanceof BrokerError && /UNSAFE_PATH|link or non-directory/u.test(`${error.code} ${error.message}`),
+    );
+    assert.deepEqual(await readdir(outside), []);
+  },
+);
 
 test("refuses a receipt that is replaced after planning but before integration starts", async (context) => {
   const repo = await createRepository();
@@ -413,6 +495,8 @@ test("a missing signing key blocks integration without failing tasks and can be 
   const identity = await broker.setupProvenanceSigning();
   assert.match(identity.keyId, /^[0-9a-f]{64}$/u);
   assert.equal((await broker.doctor()).ok, true);
+  // No local validator runs, so no worker-controlled code shares the host with the key.
+  assert.equal((await broker.doctor()).signingKeyReachableByValidators, false);
   assert.equal((await broker.integrate()).batch.status, "prepared");
 });
 
@@ -575,6 +659,8 @@ test("required CI authority prepares a signed batch after focused preflight", as
   assert.equal(integrated.batch.validationAuthority, "required-ci");
   assert.deepEqual(integrated.batch.validations.map((item) => item.name), ["changed-scope preflight"]);
   assert.equal((await broker.doctor()).validationAuthority, "required-ci");
+  // Focused preflight still runs worker-controlled code on this host, next to the signing key.
+  assert.equal((await broker.doctor()).signingKeyReachableByValidators, true);
   assert.equal(
     ((await broker.doctor()).warnings as string[]).some((warning) => /no authoritative validators/u.test(warning)),
     false,
@@ -1387,6 +1473,9 @@ test("validates a working tree against the configured validators before anything
   const clean = await broker.validateWorkingTree();
   assert.equal(clean.ok, true);
   assert.deepEqual(clean.files, []);
+  // Task IDs reach validator commands through {taskId}; local pre-flight must apply the same
+  // identifier grammar as claims instead of passing arbitrary text to the shell.
+  await assert.rejects(broker.validateWorkingTree({ taskId: "{files}" }), { code: "INVALID_TASK" });
 
   // Uncommitted and untracked, which is the state a worker is actually in when it wants to know
   // whether its work would survive integration.

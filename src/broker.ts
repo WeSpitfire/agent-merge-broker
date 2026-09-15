@@ -1144,6 +1144,7 @@ export class MergeBroker {
       cwd?: string;
     } = {},
   ): Promise<LocalValidationResult> {
+    if (options.taskId !== undefined) assertTaskId(options.taskId);
     const scope = options.scope ?? "all";
     const cwd = options.cwd ? path.resolve(options.cwd) : this.repo.root;
     const baseRef = options.base ?? this.config.baseRef;
@@ -4678,6 +4679,21 @@ export class MergeBroker {
     }
     const validationReady = this.config.validation.authority === "required-ci"
       || this.config.validation.authoritative.length > 0;
+    // Validators run as this OS user. Removing key variables from their environment does not stop
+    // them from reading the key file or this process's memory, so a signature cannot distinguish a
+    // real batch from one forged by code a worker contributed to a test, build script, or dependency.
+    const signingKeyReachableByValidators = Boolean(
+      signingKeyId
+        && (
+          this.config.validation.focused.length > 0
+          || (this.config.validation.authority === "broker" && this.config.validation.authoritative.length > 0)
+        ),
+    );
+    if (signingKeyReachableByValidators) {
+      warnings.push(
+        "Local validators run as the broker's OS user and can read its provenance signing key. If workers can change code those validators execute, a worker can forge signed provenance. Integrate untrusted work only where no local validator runs worker code, for example required-ci authority without focused validators.",
+      );
+    }
     if (!validationReady) {
       warnings.push(
         "validation.authority is broker, but no authoritative validators are configured. Add validation.authoritative commands or explicitly delegate the complete decision to required CI.",
@@ -4806,6 +4822,7 @@ export class MergeBroker {
       authoritativeValidators: this.config.validation.authoritative.map((validator) => validator.name),
       provenanceAuthenticated: Boolean(provenance?.enabled && provenance.requireSignature && signingKeyId),
       provenanceKeyId: signingKeyId,
+      signingKeyReachableByValidators,
       runningBatches,
       pendingCandidateRevisions,
       policy: { configCommitted },

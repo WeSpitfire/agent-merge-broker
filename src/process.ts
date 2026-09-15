@@ -37,7 +37,33 @@ function quoteCmd(value: string): string {
 }
 
 function quotePowerShell(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
+  // PowerShell accepts the typographic single quotes U+2018-U+201B as string delimiters too, so
+  // each of them must be doubled like an ASCII apostrophe to stay literal.
+  return `'${value.replace(/['\u2018\u2019\u201A\u201B]/gu, "$&$&")}'`;
+}
+
+/**
+ * On Windows, libuv looks for a bare executable name in the working directory before PATH unless
+ * the spawning process has `NoDefaultCurrentDirectoryInExePath` set. Broker commands run with a
+ * candidate-controlled working directory, where a committed `git.exe` or `powershell.exe` would
+ * otherwise be selected. The variable is set only while the synchronous spawn call runs, so the host
+ * process and the child's own environment are unchanged.
+ */
+export function withoutCurrentDirectoryExecutableSearch<T>(
+  operation: () => T,
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+): T {
+  if (platform !== "win32") return operation();
+  const name = "NoDefaultCurrentDirectoryInExePath";
+  const previous = environment[name];
+  environment[name] = "1";
+  try {
+    return operation();
+  } finally {
+    if (previous === undefined) delete environment[name];
+    else environment[name] = previous;
+  }
 }
 
 /**
@@ -151,10 +177,22 @@ function terminate(child: ReturnType<typeof spawn>, signal: NodeJS.Signals, tree
     }
   }
   if (tree && process.platform === "win32" && child.pid) {
-    spawn("taskkill", ["/pid", String(child.pid), "/t", ...(signal === "SIGKILL" ? ["/f"] : [])], {
-      stdio: "ignore",
-      windowsHide: true,
-    }).unref();
+    // taskkill discovers descendants through the root's parent links, so the root must still be
+    // alive while it walks the tree. Console processes also ignore a non-forced request. Force the
+    // whole tree first and only then fall back to terminating the direct child.
+    let fallback = false;
+    const killDirectChild = (): void => {
+      if (fallback) return;
+      fallback = true;
+      child.kill(signal);
+    };
+    const taskkill = withoutCurrentDirectoryExecutableSearch(() =>
+      spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }),
+    );
+    taskkill.once("error", killDirectChild);
+    taskkill.once("exit", killDirectChild);
+    taskkill.unref();
+    return;
   }
   child.kill(signal);
 }
@@ -167,15 +205,19 @@ export async function runCommand(
   const command = commandForArchitecture(executable, args, options.executionArchitecture);
   const rendered = [command.executable, ...command.args].map(quoteForDisplay).join(" ");
 
+  // Snapshot the inherited environment before the Windows search guard touches process.env.
+  const env = options.env ?? { ...process.env };
   return await new Promise<CommandResult>((resolve, reject) => {
-    const child = spawn(command.executable, command.args, {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      shell: false,
-      stdio: "pipe",
-      detached: options.killProcessTree === true && process.platform !== "win32",
-      windowsHide: true,
-    });
+    const child = withoutCurrentDirectoryExecutableSearch(() =>
+      spawn(command.executable, command.args, {
+        cwd: options.cwd,
+        env,
+        shell: false,
+        stdio: "pipe",
+        detached: options.killProcessTree === true && process.platform !== "win32",
+        windowsHide: true,
+      }),
+    );
     const stdout = new OutputCapture(options.maxOutputBytes);
     const stderr = new OutputCapture(options.maxOutputBytes);
     let timedOut = false;

@@ -201,7 +201,7 @@ function sameFile(left: Stats, right: Stats): boolean {
     && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
-async function syncDirectory(directory: string): Promise<void> {
+export async function syncDirectory(directory: string): Promise<void> {
   // POSIX directory fsync makes the new archive entry durable before its source is unlinked.
   // Windows does not expose the same directory-handle operation through Node.
   if (process.platform === "win32") return;

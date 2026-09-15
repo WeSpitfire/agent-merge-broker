@@ -100,6 +100,24 @@ test("passes large validator path sets through a bounded JSON file", async () =>
   assert.equal(result?.stdout, "30000|0|json|true");
 });
 
+test("substitutes placeholders in one pass so inserted values cannot expand again", async () => {
+  const [result] = await runValidators({
+    validators: [{
+      name: "placeholder values stay literal",
+      command: `node -p "JSON.stringify(process.argv.slice(1))" {taskId}`,
+    }],
+    scope: "focused",
+    cwd: process.cwd(),
+    taskId: "{files}",
+    files: ["$(echo injected)", "`echo injected`"],
+    baseSha: "base",
+    headSha: "head",
+    batchId: "batch",
+  });
+  assert.equal(result?.exitCode, 0, result?.stderr ?? "");
+  assert.deepEqual(JSON.parse(result?.stdout.trim() ?? ""), ["{files}"]);
+});
+
 test("fails closed when compatibility-inline validator input exceeds portable limits", async () => {
   await assert.rejects(
     runValidators({
