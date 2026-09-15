@@ -38,6 +38,7 @@ export const BROKER_ERROR_CODES = {
   INVALID_CONFIG: "input",
   INVALID_ARGUMENTS: "input",
   OUTPUT_EXISTS: "input",
+  ACTOR_REQUIRED: "input",
   INVALID_INTERVAL: "input",
   INVALID_LIMIT: "input",
   INVALID_MCP_PROFILE: "input",

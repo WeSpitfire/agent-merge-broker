@@ -316,6 +316,20 @@ function commandLineFileError(error: unknown, file: string, action: "read" | "cr
   return error;
 }
 
+/**
+ * The actor recorded on evidence, approvals, and change requests. A supervising wrapper can fix it
+ * through MERGE_BROKER_ACTOR; a conflicting --actor is refused rather than silently preferred.
+ */
+function resolveActor(flag: string | undefined): string {
+  const bound = process.env.MERGE_BROKER_ACTOR || undefined;
+  if (bound && flag !== undefined && flag !== bound) {
+    throw new BrokerError("INVALID_ARGUMENTS", `MERGE_BROKER_ACTOR is ${bound}; --actor cannot choose ${flag}.`);
+  }
+  const actor = flag ?? bound;
+  if (!actor) throw new BrokerError("ACTOR_REQUIRED", "Pass --actor or set MERGE_BROKER_ACTOR.");
+  return actor;
+}
+
 async function openBroker(): Promise<MergeBroker> {
   return await MergeBroker.open(globalOptions().cwd);
 }
@@ -1019,7 +1033,7 @@ batch
   .requiredOption("--candidate <sha>", "exact candidate SHA that was verified")
   .requiredOption("--base <sha>", "exact candidate base SHA that was verified")
   .option("--policy-revision <revision>", "exact policy revision that was applied")
-  .requiredOption("--actor <actor>", "verifier identity")
+  .option("--actor <actor>", "verifier identity (default: MERGE_BROKER_ACTOR)")
   .option("--evidence-url <url>", "durable evidence URL")
   .option("--notes <notes>", "short verification notes")
   .action(async (
@@ -1030,18 +1044,19 @@ batch
       candidate: string;
       base: string;
       policyRevision?: string;
-      actor: string;
+      actor?: string;
       evidenceUrl?: string;
       notes?: string;
     },
   ) => {
+    const actor = resolveActor(options.actor);
     const result = await (await openBroker()).recordVerification(id, {
       name: options.name,
       status: options.status,
       candidateSha: options.candidate,
       baseSha: options.base,
       ...(options.policyRevision ? { policyRevision: options.policyRevision } : {}),
-      actor: options.actor,
+      actor,
       ...(options.evidenceUrl ? { evidenceUrl: options.evidenceUrl } : {}),
       ...(options.notes ? { notes: options.notes } : {}),
     });
@@ -1054,16 +1069,17 @@ batch
   .requiredOption("--candidate <sha>", "exact candidate SHA")
   .requiredOption("--base <sha>", "exact candidate base SHA")
   .option("--policy-revision <revision>", "exact policy revision")
-  .requiredOption("--actor <actor>", "authorized approver identity")
+  .option("--actor <actor>", "authorized approver identity (default: MERGE_BROKER_ACTOR)")
   .action(async (
     id: string,
-    options: { candidate: string; base: string; policyRevision?: string; actor: string },
+    options: { candidate: string; base: string; policyRevision?: string; actor?: string },
   ) => {
+    const actor = resolveActor(options.actor);
     const result = await (await openBroker()).approveBatch(id, {
       candidateSha: options.candidate,
       baseSha: options.base,
       ...(options.policyRevision ? { policyRevision: options.policyRevision } : {}),
-      actor: options.actor,
+      actor,
     });
     output(result, batchHuman(result));
   });
@@ -1074,17 +1090,18 @@ batch
   .requiredOption("--candidate <sha>", "exact candidate SHA")
   .requiredOption("--base <sha>", "exact candidate base SHA")
   .option("--policy-revision <revision>", "exact policy revision")
-  .requiredOption("--actor <actor>", "reviewer identity")
+  .option("--actor <actor>", "reviewer identity (default: MERGE_BROKER_ACTOR)")
   .requiredOption("--reason <reason>", "why a revision is required")
   .action(async (
     id: string,
-    options: { candidate: string; base: string; policyRevision?: string; actor: string; reason: string },
+    options: { candidate: string; base: string; policyRevision?: string; actor?: string; reason: string },
   ) => {
+    const actor = resolveActor(options.actor);
     const result = await (await openBroker()).requestChanges(id, {
       candidateSha: options.candidate,
       baseSha: options.base,
       ...(options.policyRevision ? { policyRevision: options.policyRevision } : {}),
-      actor: options.actor,
+      actor,
       reason: options.reason,
     });
     output(result, batchHuman(result));

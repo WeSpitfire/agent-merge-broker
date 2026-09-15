@@ -10,12 +10,20 @@ const program = new Command()
   .description("Serve Agent Merge Broker tools over MCP stdio")
   .version(version)
   .option("-C, --cwd <directory>", "repository or worktree directory", process.cwd())
-  .addOption(new Option("--profile <profile>", "worker or operator capabilities").choices(["worker", "operator"]).default("worker"));
+  .addOption(new Option("--profile <profile>", "worker or operator capabilities").choices(["worker", "operator"]).default("worker"))
+  .option("--agent <name>", "worker identity for resuming leases (default: MERGE_BROKER_AGENT)")
+  .option("--actor <name>", "operator identity for evidence and approvals (default: MERGE_BROKER_ACTOR)");
 
 program.parse();
-const options = program.opts<{ cwd: string; profile: McpProfile }>();
+const options = program.opts<{ cwd: string; profile: McpProfile; agent?: string; actor?: string }>();
 const handle = serveStdio(
-  () => createMcpServer({ cwd: options.cwd, profile: options.profile, version }),
+  () => createMcpServer({
+    cwd: options.cwd,
+    profile: options.profile,
+    version,
+    ...(options.agent ? { agent: options.agent } : {}),
+    ...(options.actor ? { actor: options.actor } : {}),
+  }),
   { onerror: (error) => console.error(error instanceof Error ? error.message : String(error)) },
 );
 
