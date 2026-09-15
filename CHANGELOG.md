@@ -25,6 +25,15 @@
   Twelve previously emitted but undocumented codes are now documented, plus `OUTPUT_EXISTS` for an
   attestation output path that already exists.
 - An interface stability and support policy in [Compatibility](docs/COMPATIBILITY.md).
+- JSON Schemas for broker state, archived state slices, and audit events, generated from the runtime
+  decoders and published with immutable snapshot identities. [Protocol](docs/PROTOCOL.md) lists
+  every saved format and its schema.
+
+### Changed
+
+- `prune` writes `version: 1` in archived state slices. Slices without a version remain readable as
+  version 1; a slice with an unknown version is ignored rather than reinterpreted.
+- Audit reads skip lines that lack the stable event envelope, as they already skipped invalid JSON.
 
 ### Fixed
 

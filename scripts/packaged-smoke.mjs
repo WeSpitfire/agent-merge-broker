@@ -130,6 +130,7 @@ async function verifyPackage(source, metadata, packDestination, consumer) {
     "dist/core.js", "dist/core.d.ts", "dist/cli.js",
     ...(!core ? ["dist/index.js", "dist/index.d.ts", "dist/mcp-cli.js"] : []),
     "schemas/config.schema.json", "schemas/submission.schema.json", "schemas/identities.json",
+    "schemas/state.schema.json", "schemas/archived-state.schema.json", "schemas/audit-event.schema.json",
     "schemas/submission-attestation-envelope.schema.json", "schemas/submission-attestation-statement.schema.json",
     "templates/AGENTS.snippet.md", "README.md", "LICENSE",
   ]) {

@@ -232,6 +232,39 @@ existing snapshots must not be rewritten. Maintainers run `npm run build` follow
 `node scripts/update-schema-snapshots.mjs --write`; `--check` verifies generated schemas, mappings,
 and both current and historical snapshots without writing.
 
+## Saved formats
+
+Every file the broker reads back across releases has a `version` field or a documented default, and
+a JSON Schema in `schemas/`:
+
+| Format | Location | Schema |
+| --- | --- | --- |
+| Repository configuration | `.merge-broker/config.json` | `config.schema.json` |
+| Broker state | `state.json` in the runtime state directory | `state.schema.json` |
+| Archived state slice | `archive/state-*.json` written by `prune` | `archived-state.schema.json` |
+| Audit event | `audit.jsonl` and rotated `archive/audit-*.jsonl[.gz]`, one JSON object per line | `audit-event.schema.json` |
+| Submission record | `submissions/*.json` and `archive/submissions/*.json` | `submission.schema.json` |
+| Gate authority registration | fixed path in Git's common directory | `gate-authority.schema.json` |
+| Commit receipt | `receipts/*.json` | `receipt.schema.json` |
+| Exact candidate | `candidate` in batch records | `candidate.schema.json` |
+| Batch provenance manifest | integration branch | `provenance.schema.json` |
+| Gate attestation | detached DSSE file | `submission-attestation-envelope.schema.json`, `submission-attestation-statement.schema.json` |
+
+The state, archived-state, and audit-event schemas are generated from the decoders the broker uses to
+read those files, so the schema and the reader cannot disagree. Readers additionally require each task,
+batch, and submission record's `id` to equal its collection key, which JSON Schema cannot express.
+Unknown fields are preserved on read and write, and an unsupported `version` is refused rather than
+reinterpreted: `STATE_VERSION` for state, and an ignored slice for archived state. Archived state
+slices written before 0.16.0 have no `version` and are version 1.
+
+For audit events, the envelope (`sequence`, `at`, `event`, and the optional `actor`, `taskId`,
+`batchId`, `submissionId`, and `details`) is stable. Event names and the contents of `details` are
+informational and may gain values in minor releases. Readers skip lines that are not valid JSON or
+lack the envelope.
+
+Batch manifests under `batches/`, lock owner files, token and key files, and disposable worktrees are
+implementation details. Use `batch show --json`, `status --json`, and `doctor --json` instead.
+
 ## Claim
 
 ```bash

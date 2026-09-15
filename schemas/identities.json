@@ -4,6 +4,22 @@
   "description": "Local packaged snapshots have immutable content identities. Alias URLs may change; URNs identify content and are not network locations.",
   "schemas": [
     {
+      "name": "archived-state",
+      "alias": "schemas/archived-state.schema.json",
+      "aliasId": "urn:agent-merge-broker:schema:archived-state:v1",
+      "id": "urn:agent-merge-broker:schema:archived-state:sha256:4ca1289664974a1133ffd9002f571d8e7b0310b06c0569f100e9f61c22672cf1",
+      "fingerprint": "4ca1289664974a1133ffd9002f571d8e7b0310b06c0569f100e9f61c22672cf1",
+      "path": "schemas/immutable/archived-state.4ca1289664974a1133ffd9002f571d8e7b0310b06c0569f100e9f61c22672cf1.schema.json"
+    },
+    {
+      "name": "audit-event",
+      "alias": "schemas/audit-event.schema.json",
+      "aliasId": "urn:agent-merge-broker:schema:audit-event:v1",
+      "id": "urn:agent-merge-broker:schema:audit-event:sha256:92488ee23bbcebbc5fe15cfacc2fb3202965f219d5f24fe007e025a691ce5552",
+      "fingerprint": "92488ee23bbcebbc5fe15cfacc2fb3202965f219d5f24fe007e025a691ce5552",
+      "path": "schemas/immutable/audit-event.92488ee23bbcebbc5fe15cfacc2fb3202965f219d5f24fe007e025a691ce5552.schema.json"
+    },
+    {
       "name": "candidate",
       "alias": "schemas/candidate.schema.json",
       "aliasId": "https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/candidate.schema.json",
@@ -42,6 +58,14 @@
       "id": "urn:agent-merge-broker:schema:receipt:sha256:c8b78ab9d86e9228d58c4b8bdb1547ff2142809bafe9bf05551638e7cbe644af",
       "fingerprint": "c8b78ab9d86e9228d58c4b8bdb1547ff2142809bafe9bf05551638e7cbe644af",
       "path": "schemas/immutable/receipt.c8b78ab9d86e9228d58c4b8bdb1547ff2142809bafe9bf05551638e7cbe644af.schema.json"
+    },
+    {
+      "name": "state",
+      "alias": "schemas/state.schema.json",
+      "aliasId": "urn:agent-merge-broker:schema:state:v1",
+      "id": "urn:agent-merge-broker:schema:state:sha256:681a402e6168e8c97bf0e947b81510a87e01e1cedb8c2f5bb7f5a93b88bc1ceb",
+      "fingerprint": "681a402e6168e8c97bf0e947b81510a87e01e1cedb8c2f5bb7f5a93b88bc1ceb",
+      "path": "schemas/immutable/state.681a402e6168e8c97bf0e947b81510a87e01e1cedb8c2f5bb7f5a93b88bc1ceb.schema.json"
     },
     {
       "name": "submission-attestation-envelope",

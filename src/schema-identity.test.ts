@@ -6,6 +6,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { z } from "zod";
 import { schemaFingerprint, schemaSnapshotIdentity } from "./schema-identity.js";
 import { submissionAttestationStatementSchema, submissionAttestationEnvelopeSchema } from "./submission-attestation.js";
+import { savedFormatSchemas } from "./state-codec.js";
 
 interface SchemaEntry {
   name: string;
@@ -41,7 +42,9 @@ test("every public schema alias maps to the exact packaged content fingerprint w
     assert.equal(snapshot.$id, entry.id);
     assert.equal(alias.$id, entry.aliasId);
     assert.deepEqual(content(snapshot), content(alias));
-    if (!["submission-attestation-statement", "submission-attestation-envelope"].includes(entry.name)) {
+    // Generated schemas use content-oriented URNs; hand-written legacy aliases keep their URLs.
+    const generated = ["submission-attestation-statement", "submission-attestation-envelope", ...Object.keys(savedFormatSchemas())];
+    if (!generated.includes(entry.name)) {
       assert.equal(alias.$id, `https://github.com/WeSpitfire/agent-merge-broker/raw/main/schemas/${entry.name}.schema.json`);
     }
   }

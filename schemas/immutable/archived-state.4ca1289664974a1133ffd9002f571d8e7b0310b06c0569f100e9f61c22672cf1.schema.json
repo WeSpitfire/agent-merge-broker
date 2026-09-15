@@ -1,0 +1,850 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-merge-broker:schema:archived-state:sha256:4ca1289664974a1133ffd9002f571d8e7b0310b06c0569f100e9f61c22672cf1",
+  "title": "Agent Merge Broker archived state slice v1",
+  "description": "Tasks and batches retired from state.json by prune. Slices written before 0.16.0 omit version and are version 1.",
+  "type": "object",
+  "required": [
+    "tasks",
+    "batches"
+  ],
+  "properties": {
+    "tasks": {
+      "type": "object",
+      "description": "Records keyed by their id; each record's id must equal its key.",
+      "additionalProperties": {
+        "$ref": "#/$defs/task"
+      }
+    },
+    "batches": {
+      "type": "object",
+      "description": "Records keyed by their id; each record's id must equal its key.",
+      "additionalProperties": {
+        "$ref": "#/$defs/batch"
+      }
+    },
+    "version": {
+      "const": 1
+    },
+    "archivedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "cutoff": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "approval": {
+      "type": "object",
+      "required": [
+        "candidateSha",
+        "baseSha",
+        "policyRevision",
+        "actor",
+        "approvedAt"
+      ],
+      "properties": {
+        "candidateSha": {
+          "type": "string"
+        },
+        "baseSha": {
+          "type": "string"
+        },
+        "policyRevision": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "approvedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "confirmedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "revocationRequestedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "revocationReason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "batch": {
+      "type": "object",
+      "required": [
+        "id",
+        "status",
+        "taskIds",
+        "baseBranch",
+        "baseSha",
+        "validations",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "verified",
+            "prepared",
+            "published",
+            "merged",
+            "closed",
+            "failed"
+          ]
+        },
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "baseBranch": {
+          "type": "string"
+        },
+        "baseSha": {
+          "type": "string"
+        },
+        "validations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/validationResult"
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validationAuthority": {
+          "enum": [
+            "broker",
+            "required-ci"
+          ]
+        },
+        "remote": {
+          "type": "string"
+        },
+        "publicationMode": {
+          "enum": [
+            "none",
+            "branch",
+            "pull-request"
+          ]
+        },
+        "remoteUrlFingerprint": {
+          "type": "string"
+        },
+        "forgeRepository": {
+          "type": "string"
+        },
+        "branchName": {
+          "type": "string"
+        },
+        "headSha": {
+          "type": "string"
+        },
+        "candidate": {
+          "$ref": "#/$defs/candidate"
+        },
+        "candidateHistory": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/candidate"
+          }
+        },
+        "integratedHeadSha": {
+          "type": "string"
+        },
+        "provenancePath": {
+          "type": "string"
+        },
+        "worktree": {
+          "type": "string"
+        },
+        "finishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "publishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "pullRequestUrl": {
+          "type": "string"
+        },
+        "autoMergeEnabled": {
+          "type": "boolean"
+        },
+        "autoMergePending": {
+          "type": "boolean"
+        },
+        "changeRequestIntent": {
+          "type": "object",
+          "required": [
+            "candidateSha",
+            "baseSha",
+            "actor",
+            "reason",
+            "requestedAt"
+          ],
+          "properties": {
+            "candidateSha": {
+              "type": "string"
+            },
+            "baseSha": {
+              "type": "string"
+            },
+            "actor": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "requestedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "policyRevision": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "publishWarning": {
+          "type": "string"
+        },
+        "refreshRequired": {
+          "type": "boolean"
+        },
+        "refreshCloseIntent": {
+          "type": "object",
+          "required": [
+            "pullRequestUrl",
+            "targetBaseSha",
+            "startedAt"
+          ],
+          "properties": {
+            "pullRequestUrl": {
+              "type": "string"
+            },
+            "targetBaseSha": {
+              "type": "string"
+            },
+            "startedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "nonce": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "closedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "error": {
+          "type": "string"
+        },
+        "revisionIntent": {
+          "type": "object",
+          "required": [
+            "revision",
+            "taskId",
+            "previousCandidateSha",
+            "candidateSha",
+            "branchName",
+            "createdAt",
+            "nextBatch",
+            "revisedTask"
+          ],
+          "properties": {
+            "revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "previousCandidateSha": {
+              "type": "string"
+            },
+            "candidateSha": {
+              "type": "string"
+            },
+            "branchName": {
+              "type": "string"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "nextBatch": {
+              "$ref": "#/$defs/batchSnapshot"
+            },
+            "revisedTask": {
+              "type": "object",
+              "required": [
+                "commits",
+                "actualPaths",
+                "warnings",
+                "submittedAt"
+              ],
+              "properties": {
+                "commits": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "actualPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "warnings": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "submittedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "batchSnapshot": {
+      "type": "object",
+      "required": [
+        "id",
+        "status",
+        "taskIds",
+        "baseBranch",
+        "baseSha",
+        "validations",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "verified",
+            "prepared",
+            "published",
+            "merged",
+            "closed",
+            "failed"
+          ]
+        },
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "baseBranch": {
+          "type": "string"
+        },
+        "baseSha": {
+          "type": "string"
+        },
+        "validations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/validationResult"
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validationAuthority": {
+          "enum": [
+            "broker",
+            "required-ci"
+          ]
+        },
+        "remote": {
+          "type": "string"
+        },
+        "publicationMode": {
+          "enum": [
+            "none",
+            "branch",
+            "pull-request"
+          ]
+        },
+        "remoteUrlFingerprint": {
+          "type": "string"
+        },
+        "forgeRepository": {
+          "type": "string"
+        },
+        "branchName": {
+          "type": "string"
+        },
+        "headSha": {
+          "type": "string"
+        },
+        "candidate": {
+          "$ref": "#/$defs/candidate"
+        },
+        "candidateHistory": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/candidate"
+          }
+        },
+        "integratedHeadSha": {
+          "type": "string"
+        },
+        "provenancePath": {
+          "type": "string"
+        },
+        "worktree": {
+          "type": "string"
+        },
+        "finishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "publishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "pullRequestUrl": {
+          "type": "string"
+        },
+        "autoMergeEnabled": {
+          "type": "boolean"
+        },
+        "autoMergePending": {
+          "type": "boolean"
+        },
+        "changeRequestIntent": {
+          "type": "object",
+          "required": [
+            "candidateSha",
+            "baseSha",
+            "actor",
+            "reason",
+            "requestedAt"
+          ],
+          "properties": {
+            "candidateSha": {
+              "type": "string"
+            },
+            "baseSha": {
+              "type": "string"
+            },
+            "actor": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "requestedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "policyRevision": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "publishWarning": {
+          "type": "string"
+        },
+        "refreshRequired": {
+          "type": "boolean"
+        },
+        "refreshCloseIntent": {
+          "type": "object",
+          "required": [
+            "pullRequestUrl",
+            "targetBaseSha",
+            "startedAt"
+          ],
+          "properties": {
+            "pullRequestUrl": {
+              "type": "string"
+            },
+            "targetBaseSha": {
+              "type": "string"
+            },
+            "startedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "nonce": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "closedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "candidate": {
+      "type": "object",
+      "required": [
+        "revision",
+        "sha",
+        "baseSha",
+        "policyRevision",
+        "state",
+        "requiredVerifications",
+        "verifications",
+        "createdAt"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sha": {
+          "type": "string"
+        },
+        "baseSha": {
+          "type": "string"
+        },
+        "policyRevision": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "verifying",
+            "ready_for_approval",
+            "approved",
+            "merging",
+            "changes_requested",
+            "verification_failed",
+            "superseded",
+            "blocked",
+            "abandoned",
+            "merged"
+          ]
+        },
+        "requiredVerifications": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "verifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/verificationEvidence"
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "approval": {
+          "$ref": "#/$defs/approval"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "lease": {
+      "type": "object",
+      "required": [
+        "tokenHash",
+        "holder",
+        "acquiredAt",
+        "heartbeatAt",
+        "expiresAt"
+      ],
+      "properties": {
+        "tokenHash": {
+          "type": "string"
+        },
+        "holder": {
+          "type": "string"
+        },
+        "acquiredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "heartbeatAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": true
+    },
+    "task": {
+      "type": "object",
+      "required": [
+        "id",
+        "status",
+        "priority",
+        "baseSha",
+        "expectedPaths",
+        "actualPaths",
+        "dependsOn",
+        "commits",
+        "warnings",
+        "validations",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "registered",
+            "claimed",
+            "submitted",
+            "integrating",
+            "batched",
+            "published",
+            "merged",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "priority": {
+          "type": "number"
+        },
+        "baseSha": {
+          "type": "string"
+        },
+        "expectedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "actualPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "commits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "validations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/validationResult"
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "title": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "worktree": {
+          "type": "string"
+        },
+        "lease": {
+          "$ref": "#/$defs/lease"
+        },
+        "submittedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "batchedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "publishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "mergedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "batchId": {
+          "type": "string"
+        },
+        "lastError": {
+          "type": "string"
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": true
+    },
+    "validationResult": {
+      "type": "object",
+      "required": [
+        "name",
+        "command",
+        "scope",
+        "startedAt",
+        "finishedAt",
+        "durationMs",
+        "exitCode",
+        "stdout",
+        "stderr"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "focused",
+            "authoritative"
+          ]
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "durationMs": {
+          "type": "number"
+        },
+        "exitCode": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "verificationEvidence": {
+      "type": "object",
+      "required": [
+        "name",
+        "source",
+        "status",
+        "candidateSha",
+        "baseSha",
+        "policyRevision",
+        "actor",
+        "recordedAt"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "manual",
+            "github-check"
+          ]
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed"
+          ]
+        },
+        "candidateSha": {
+          "type": "string"
+        },
+        "baseSha": {
+          "type": "string"
+        },
+        "policyRevision": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "recordedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidenceUrl": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
