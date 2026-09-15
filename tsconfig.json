@@ -9,6 +9,7 @@
     "outDir": "dist",
     "declaration": true,
     "declarationMap": false,
+    "stripInternal": true,
     "sourceMap": false,
     "strict": true,
     "noUncheckedIndexedAccess": true,

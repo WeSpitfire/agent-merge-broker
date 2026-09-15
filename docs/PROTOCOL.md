@@ -548,9 +548,9 @@ Segments over 64 MiB, links, existing gzip copies, and non-saving compression ar
 each pass processes at most 100 eligible segments or 256 MiB of original bytes. Review skip reasons
 before another pass. Upgrade every reader first: versions before 0.15.0 cannot read gzip history.
 
-Both package APIs export `inspectStorage(store, { repositoryRoot, provenanceDirectory? })` and
-`compactAuditStorage(store, { olderThanDays?, apply? })`, plus their result/option types. `store`
-is a `StateStore`; compaction has the same preview default as the CLI. Invalid age returns
+Both package APIs provide `MergeBroker.inspectStorage(cwd?)` and
+`MergeBroker.compactAuditStorage(cwd?, { olderThanDays?, apply? })`, plus their result/option types.
+Neither opens or initializes broker state; compaction has the same preview default as the CLI. Invalid age returns
 `INVALID_ARGUMENT`. `UNSAFE_PATH`, `STORAGE_CHANGED`, or `STORAGE_VERIFICATION_FAILED` requires
 inspection, not an automatic destructive retry. Preserve both copies if an interruption left them;
 earlier segments in the same pass may already have completed.

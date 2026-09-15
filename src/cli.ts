@@ -15,9 +15,6 @@ import {
 } from "./serve-log.js";
 import { MergeBroker } from "./broker.js";
 import { GitRepository } from "./git.js";
-import { loadConfig } from "./config.js";
-import { StateStore } from "./store.js";
-import { compactAuditStorage, inspectStorage } from "./storage.js";
 import { prePushHook } from "./hooks.js";
 import { formatBrokerStatus } from "./status.js";
 import { createSupportBundle } from "./support.js";
@@ -1289,22 +1286,11 @@ program
 
 const storage = program.command("storage").description("inspect broker storage and compact closed audit logs without deleting evidence");
 
-// Inspection/preview must not initialize absent state or create keys and lock directories.
-async function storageContext() {
-  const repo = await GitRepository.discover(globalOptions().cwd);
-  const config = await loadConfig(repo.root);
-  const store = new StateStore(repo.commonGitDir, config.stateDirectory, config.leases.lockTimeoutSeconds);
-  return { repo, config, store };
-}
-
 storage.command("show")
   .description("report logical bytes and file counts; never read stored secrets or follow symlinks")
   .action(async () => {
-    const { repo, config, store } = await storageContext();
-    const report = await inspectStorage(store, {
-      repositoryRoot: repo.root,
-      ...(config.integration.provenance?.directory ? { provenanceDirectory: config.integration.provenance.directory } : {}),
-    });
+    // Inspection must not initialize absent state or create keys and lock directories.
+    const report = await MergeBroker.inspectStorage(globalOptions().cwd);
     output(report, [
       `Broker storage: ${report.logicalBytes.toLocaleString("en-US")} logical bytes in ${report.files} files${report.complete ? "" : " (partial)"}.`,
       ...report.categories.map((item) => `  ${item.category}: ${item.logicalBytes.toLocaleString("en-US")} bytes, ${item.files} files`),
@@ -1318,8 +1304,7 @@ storage.command("compact")
   .option("--older-than <days>", "minimum modification age of closed audit logs", "30")
   .option("--apply", "write verified gzip copies and remove only their redundant originals")
   .action(async (options: { olderThan: string; apply?: boolean }) => {
-    const { store } = await storageContext();
-    const result = await compactAuditStorage(store, {
+    const result = await MergeBroker.compactAuditStorage(globalOptions().cwd, {
       olderThanDays: Number(options.olderThan),
       apply: options.apply ?? false,
     });

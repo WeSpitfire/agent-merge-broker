@@ -1,3 +1,5 @@
+// The supported Node API, shared by the full and core packages. Anything not exported here is an
+// implementation detail and may change in any release; see docs/COMPATIBILITY.md.
 export {
   MergeBroker,
   type AdoptCandidateInput,
@@ -5,57 +7,7 @@ export {
   type RegisterCandidateAuthorityOptions,
   type RegisterTaskInput,
 } from "./broker.js";
-export {
-  adoptedRef,
-  GitRepository,
-  type LinearCommitHistory,
-  type PinnedGitCommit,
-  type WorktreeInfo,
-} from "./git.js";
-export { StateStore, type ArchivedStateSlice, type LockStatus } from "./store.js";
-export {
-  inspectStorage,
-  compactAuditStorage,
-  type StorageCategory,
-  type StorageReport,
-  type StorageCompactionOptions,
-  type StorageCompactionResult,
-} from "./storage.js";
-export { installHooks, prePushHook, uninstallHooks, type HookInstallation } from "./hooks.js";
-export {
-  describeServeEvent,
-  formatServeEvent,
-  serveEventJson,
-  shouldReportIdle,
-  type ServeEvent,
-} from "./serve-log.js";
-export {
-  currentServicePlatform,
-  installService,
-  launchdPlist,
-  serviceFilePath,
-  serviceName,
-  systemdUnit,
-  windowsTaskXml,
-  quoteWindowsArgument,
-  uninstallService,
-  type ServiceDefinition,
-  type ServiceInstallation,
-  type ServiceOptions,
-  type ServicePlatform,
-} from "./service.js";
-export { defaultConfig, initializeConfig, loadConfig, validateConfig, writeConfig } from "./config.js";
-export {
-  applyBootstrapPlan,
-  detectBootstrapPlan,
-  hasAgentContract,
-  installAgentContract,
-  type AgentContractResult,
-  type BootstrapPlan,
-} from "./bootstrap.js";
-export { scheduleTasks } from "./scheduler.js";
-export { formatBrokerStatus } from "./status.js";
-export { createSupportBundle, sanitizeSupportData, type SupportBundle } from "./support.js";
+export { defaultConfig, loadConfig, validateConfig } from "./config.js";
 export {
   githubCliPublisher,
   type ForgePublisher,
@@ -63,29 +15,15 @@ export {
   type PullRequestState,
 } from "./publisher.js";
 export {
-  buildBatchProvenance,
-  generateProvenanceSigningIdentity,
-  provenanceKeyId,
-  provenancePath,
-  publicKeyFromPrivate,
-  signBatchProvenance,
-  validateProvenancePublicKey,
-  verifyBatchProvenanceSignature,
-  type ProvenanceSigningIdentity,
-} from "./provenance.js";
-export {
   batchIdFromBranch,
   policyFromBase,
   verifyProvenance,
   type ProvenanceVerification,
   type VerifyProvenanceOptions,
 } from "./verify.js";
-export { BrokerError, CommandError, ValidationError } from "./errors.js";
+export { provenanceKeyId, provenancePath, verifyBatchProvenanceSignature } from "./provenance.js";
 export {
-  signSubmissionAttestation,
   verifySubmissionAttestation,
-  submissionAttestationEnvelopeSchema,
-  submissionAttestationStatementSchema,
   SUBMISSION_ATTESTATION_PAYLOAD_TYPE,
   SUBMISSION_ATTESTATION_PREDICATE_TYPE,
   type SubmissionAttestationEnvelope,
@@ -94,4 +32,16 @@ export {
   type SubmissionAttestationVerificationResult,
 } from "./submission-attestation.js";
 export { schemaFingerprint, schemaSnapshotIdentity } from "./schema-identity.js";
+export { BrokerError } from "./errors.js";
+// Result types of MergeBroker methods.
+export type { LockStatus } from "./store.js";
+export type { HookInstallation } from "./hooks.js";
+export type { ServiceInstallation } from "./service.js";
+export type { AgentContractResult, BootstrapPlan } from "./bootstrap.js";
+export type {
+  StorageCategory,
+  StorageCompactionOptions,
+  StorageCompactionResult,
+  StorageReport,
+} from "./storage.js";
 export type * from "./types.js";
