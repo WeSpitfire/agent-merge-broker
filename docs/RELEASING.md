@@ -108,7 +108,7 @@ attestation for the expected source repository and commit. A tarball publication
 binding. A successful local check or pushed Git commit alone is not proof of npm publication.
 
 The composite action is documented with the same exact release tag, for example
-`WeSpitfire/agent-merge-broker/verify@v0.15.0`. Do not document a floating major tag unless that tag
+`WeSpitfire/agent-merge-broker/verify@v0.15.1`. Do not document a floating major tag unless that tag
 actually exists and is maintained deliberately.
 
 Do not reuse or move a published version tag. If a release is incorrect, deprecate it and publish a corrected patch version.

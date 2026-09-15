@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
-const out = path.join(here, "docs");
+// An explicit output directory lets tests inspect the rewritten pages without touching the site.
+const out = process.argv[2] ? path.resolve(process.argv[2]) : path.join(here, "docs");
 
 const BLOB = "https://github.com/WeSpitfire/agent-merge-broker/blob/main";
 const TREE = "https://github.com/WeSpitfire/agent-merge-broker/tree/main";
@@ -18,27 +19,24 @@ const EXTERNAL = [
   [/\]\(LICENSE\)/g, `](${BLOB}/LICENSE)`],
 ];
 
-/** Docs that do have a page here, so cross-references stay inside the site. */
+/** Docs that do have a page here, so cross-references (and their anchors) stay inside the site. */
+const SITE_PAGES = {
+  GETTING_STARTED: "getting-started",
+  ARCHITECTURE: "architecture",
+  PROTOCOL: "protocol",
+  SECURITY: "security",
+  RELEASING: "releasing",
+  COMPATIBILITY: "compatibility",
+  VISION: "vision",
+  ROADMAP: "roadmap",
+  SUPPORT: "support",
+};
 const INTERNAL = [
-  [/\]\((?:docs\/)?GETTING_STARTED\.md#2-install-and-initialize\)/g, "](/docs/getting-started#_2-install-and-initialize)"],
-  [/\]\((?:docs\/)?GETTING_STARTED\.md(#[^)]+)\)/g, "](/docs/getting-started$1)"],
-  [/\]\(docs\/GETTING_STARTED\.md\)/g, "](/docs/getting-started)"],
-  [/\]\(docs\/ARCHITECTURE\.md\)/g, "](/docs/architecture)"],
-  [/\]\(docs\/PROTOCOL\.md\)/g, "](/docs/protocol)"],
-  [/\]\(docs\/SECURITY\.md\)/g, "](/docs/security)"],
-  [/\]\(docs\/RELEASING\.md\)/g, "](/docs/releasing)"],
-  [/\]\(docs\/COMPATIBILITY\.md\)/g, "](/docs/compatibility)"],
-  [/\]\(VISION\.md\)/g, "](/docs/vision)"],
-  [/\]\(ROADMAP\.md\)/g, "](/docs/roadmap)"],
-  [/\]\(SUPPORT\.md\)/g, "](/docs/support)"],
-  [/\]\(GETTING_STARTED\.md\)/g, "](/docs/getting-started)"],
-  [/\]\(ARCHITECTURE\.md\)/g, "](/docs/architecture)"],
-  [/\]\(PROTOCOL\.md\)/g, "](/docs/protocol)"],
-  [/\]\(SECURITY\.md\)/g, "](/docs/security)"],
-  [/\]\(RELEASING\.md\)/g, "](/docs/releasing)"],
-  [/\]\(COMPATIBILITY\.md\)/g, "](/docs/compatibility)"],
-  [/\]\(VISION\.md\)/g, "](/docs/vision)"],
-  [/\]\(ROADMAP\.md\)/g, "](/docs/roadmap)"],
+  [
+    new RegExp(`\\]\\((?:docs\\/)?(${Object.keys(SITE_PAGES).join("|")})\\.md(#[^)]+)?\\)`, "g"),
+    // VitePress prefixes heading slugs that start with a digit, such as "2. Install", with "_".
+    (_match, name, anchor = "") => `](/docs/${SITE_PAGES[name]}${anchor.replace(/^#(\d)/u, "#_$1")})`,
+  ],
 ];
 
 const PAGES = [

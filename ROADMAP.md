@@ -6,7 +6,7 @@ This roadmap is organized by capability rather than promised release numbers or 
 
 ## Now — consolidate the recoverable transaction core
 
-Version `0.15.0` is the current baseline. It includes Coordinate mode: leases and commit receipts,
+Version `0.15.1` is the current baseline. It includes Coordinate mode: leases and commit receipts,
 deterministic batching, disposable-worktree validation, optional exact-candidate approval, signed
 provenance support, bound Git/GitHub publication, and recovery for interrupted publication,
 auto-merge, revocation, revision, and stale-base refresh. It also ships the trusted local-ref Gate
