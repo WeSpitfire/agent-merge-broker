@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 — 2026-09-15
+
+Contract release. It defines the CLI, Node, MCP, error, and saved-format interfaces that `1.0` will
+freeze, and contains breaking changes; read the upgrade notes below before installing.
 
 ### Breaking
 
@@ -51,6 +54,23 @@
 
 - Files named on the command line that cannot be read or created report `INVALID_ARGUMENTS` or
   `OUTPUT_EXISTS` instead of an internal error.
+
+### Upgrade notes
+
+1. Stop the service or `serve` loop, MCP servers, and agents that share the repository's broker state.
+2. Install `0.16.0` everywhere that reads that state, then run `merge-broker migrate` and, if it
+   reports upgradable files, `merge-broker migrate --apply`. Originals are kept under the reported
+   backup directory.
+3. Update workflows to `WeSpitfire/agent-merge-broker/verify@v0.16.0`.
+4. Start operator MCP servers with `--actor` or `MERGE_BROKER_ACTOR`; their approval and evidence
+   tools now refuse without one.
+5. Change scripts that treat any failure as exit `1`: usage and input errors now exit `2`, refused or
+   failed operations `3`, and internal errors `4`. `doctor` exits `1` whenever the host is not
+   operational.
+6. Change JSON consumers that match `INVALID_ARGUMENT` or `UNEXPECTED` to `INVALID_ARGUMENTS` and
+   `INTERNAL_ERROR`.
+7. Node callers importing internal modules must move to `MergeBroker` methods, including
+   `MergeBroker.inspectStorage` and `MergeBroker.compactAuditStorage`.
 
 ## 0.15.1 — 2026-09-15
 
