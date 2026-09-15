@@ -27,9 +27,10 @@ interfaces. Before `1.0.0`, a minor release may still break them; every break is
 - the root exports of `agent-merge-broker` and `agent-merge-broker-core`, described in
   [programmatic use](PROTOCOL.md#programmatic-use);
 - MCP profiles, tool names, and tool input schemas;
-- persisted repository formats and their `version` fields: configuration, broker state, submission
-  records, receipts, provenance manifests, attestation envelopes and predicates, and the immutable
-  schema snapshots in `schemas/identities.json`; and
+- the [saved formats](PROTOCOL.md#saved-formats) and their `version` fields: configuration, broker
+  state, archived state slices, the audit event envelope, submission records, Gate authority
+  registrations, receipts, provenance manifests, attestation envelopes and predicates, and the
+  immutable schema snapshots in `schemas/identities.json`; and
 - inputs of the `verify` composite action.
 
 **Not stable:** human-readable CLI output and log text, `serve` progress messages, module paths below

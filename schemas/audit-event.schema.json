@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-merge-broker:schema:audit-event:v1",
+  "title": "Agent Merge Broker audit event v1",
+  "description": "One JSON line of the append-only audit stream, including rotated and gzip-compacted segments. The envelope is stable; event names and details are informational and may gain values in minor releases.",
+  "type": "object",
+  "required": [
+    "sequence",
+    "at",
+    "event"
+  ],
+  "properties": {
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "event": {
+      "type": "string"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "taskId": {
+      "type": "string"
+    },
+    "batchId": {
+      "type": "string"
+    },
+    "submissionId": {
+      "type": "string"
+    },
+    "details": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

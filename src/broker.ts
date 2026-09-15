@@ -100,6 +100,7 @@ import type {
   ValidationResult,
   VerificationEvidence,
 } from "./types.js";
+import { ARCHIVED_STATE_VERSION } from "./types.js";
 
 function now(): string {
   return new Date().toISOString();
@@ -4348,6 +4349,7 @@ export class MergeBroker {
         return { ...selection, cutoff, dryRun: false };
       }
       const archivePath = await this.store.archive("state", {
+        version: ARCHIVED_STATE_VERSION,
         archivedAt: now(),
         cutoff,
         tasks: Object.fromEntries(selection.tasks.map((id) => [id, state.tasks[id]])),

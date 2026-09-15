@@ -2,6 +2,7 @@ export const STATE_VERSION = 1 as const;
 export const CONFIG_VERSION = 1 as const;
 export const SUBMISSION_VERSION = 1 as const;
 export const GATE_AUTHORITY_VERSION = 1 as const;
+export const ARCHIVED_STATE_VERSION = 1 as const;
 
 export type UnexpectedPathPolicy = "error" | "warn" | "allow";
 export type PublishMode = "none" | "branch" | "pull-request";
@@ -448,6 +449,16 @@ export interface AuditEvent {
   batchId?: string;
   submissionId?: string;
   details?: Record<string, unknown>;
+}
+
+/** Tasks and batches retired from active state by prune. */
+export interface ArchivedStateSlice {
+  /** Absent in slices written before 0.16.0, which are version 1. */
+  version?: typeof ARCHIVED_STATE_VERSION;
+  archivedAt?: string;
+  cutoff?: string;
+  tasks: BrokerState["tasks"];
+  batches: BrokerState["batches"];
 }
 
 export interface BrokerState {

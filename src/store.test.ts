@@ -210,6 +210,26 @@ test("keeps the next audit event after a crash left a truncated line", async (co
   );
 });
 
+test("audit reads skip records without the stable event envelope", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const store = new StateStore(directory, "state", 10);
+  await store.transaction((_state, audit) => {
+    audit("first.event");
+  });
+  await appendFile(
+    path.join(directory, "state", "audit.jsonl"),
+    `${JSON.stringify({ event: "missing.sequence", at: "2026-09-15T12:00:00.000Z" })}\n[1, 2]\n`,
+    "utf8",
+  );
+  await store.transaction((_state, audit) => {
+    audit("second.event");
+  });
+  assert.deepEqual((await store.readAudit(100)).map((event) => event.event), ["first.event", "second.event"]);
+});
+
 test("durable state writes leave no temporary files behind", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
   context.after(async () => {

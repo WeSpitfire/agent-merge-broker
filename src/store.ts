@@ -22,8 +22,12 @@ import {
 } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
 import { MAX_COMPACT_AUDIT_BYTES, syncDirectory } from "./storage.js";
-import { decodeSubmissionRecord } from "./state-codec.js";
-import { decodeBrokerState } from "./state-codec.js";
+import {
+  decodeArchivedStateSlice,
+  decodeBrokerState,
+  decodeSubmissionRecord,
+  isAuditEvent,
+} from "./state-codec.js";
 import {
   generateProvenanceSigningIdentity,
   provenanceKeyId,
@@ -32,8 +36,8 @@ import {
 } from "./provenance.js";
 import {
   STATE_VERSION,
+  type ArchivedStateSlice,
   type AuditEvent,
-  type BrokerState,
   type CommitReceipt,
   type CurrentBrokerState,
   type SubmissionRecord,
@@ -141,13 +145,6 @@ export type AuditRecorder = (
   event: string,
   fields?: Omit<AuditEvent, "sequence" | "at" | "event">,
 ) => void;
-
-export interface ArchivedStateSlice {
-  archivedAt?: string;
-  cutoff?: string;
-  tasks: BrokerState["tasks"];
-  batches: BrokerState["batches"];
-}
 
 export class StateStore {
   readonly commonGitDirectory: string;
@@ -628,11 +625,14 @@ export class StateStore {
     if (partialStart) lines.shift();
     const events: AuditEvent[] = [];
     for (const line of lines) {
+      let value: unknown;
       try {
-        events.push(JSON.parse(line) as AuditEvent);
+        value = JSON.parse(line) as unknown;
       } catch {
         continue;
       }
+      // A record without the stable envelope is as unusable as a truncated line.
+      if (isAuditEvent(value)) events.push(value);
     }
     return events.slice(-limit);
   }
@@ -671,11 +671,14 @@ export class StateStore {
     const slices: ArchivedStateSlice[] = [];
     for (const file of archived.filter((item) => item.startsWith("state-") && item.endsWith(".json")).sort()) {
       try {
-        const value = JSON.parse(await readFile(path.join(this.archiveDirectory, file), "utf8")) as Partial<ArchivedStateSlice>;
-        if (!value.tasks || !value.batches) continue;
+        const value = decodeArchivedStateSlice(
+          JSON.parse(await readFile(path.join(this.archiveDirectory, file), "utf8")) as unknown,
+          `archive[${JSON.stringify(file)}]`,
+        );
         slices.push({
-          ...(typeof value.archivedAt === "string" ? { archivedAt: value.archivedAt } : {}),
-          ...(typeof value.cutoff === "string" ? { cutoff: value.cutoff } : {}),
+          ...(value.version !== undefined ? { version: value.version } : {}),
+          ...(value.archivedAt !== undefined ? { archivedAt: value.archivedAt } : {}),
+          ...(value.cutoff !== undefined ? { cutoff: value.cutoff } : {}),
           tasks: value.tasks,
           batches: value.batches,
         });

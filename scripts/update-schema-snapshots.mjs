@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { schemaSnapshotIdentity } from "../dist/schema-identity.js";
 import { z } from "zod";
 import { submissionAttestationStatementSchema, submissionAttestationEnvelopeSchema } from "../dist/submission-attestation.js";
+import { savedFormatSchemas } from "../dist/state-codec.js";
 
 // Run npm run build first. --check is read-only; --write creates immutable snapshots and updates
 // the alias manifest. Existing snapshots are never overwritten, even by --write.
@@ -33,6 +34,15 @@ for (const [name, runtimeSchema, title, description] of [
   const encoded = `${JSON.stringify(generated, null, 2)}\n`;
   if (mode === "--write") await writeFile(destination, encoded, "utf8");
   else if (await readFile(destination, "utf8") !== encoded) throw new Error(`Generated ${name} schema is stale; regenerate with --write.`);
+}
+// Saved runtime formats are generated from the decoders that read them, so they cannot drift.
+for (const [name, generated] of Object.entries(savedFormatSchemas())) {
+  const destination = path.join(schemaDirectory, `${name}.schema.json`);
+  const encoded = `${JSON.stringify(generated, null, 2)}\n`;
+  if (mode === "--write") await writeFile(destination, encoded, "utf8");
+  else if (await readFile(destination, "utf8").catch(() => undefined) !== encoded) {
+    throw new Error(`Generated ${name} schema is stale; regenerate with --write.`);
+  }
 }
 const aliases = (await readdir(schemaDirectory)).filter((name) => name.endsWith(".schema.json")).sort();
 const entries = [];
