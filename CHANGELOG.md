@@ -25,6 +25,10 @@
   Twelve previously emitted but undocumented codes are now documented, plus `OUTPUT_EXISTS` for an
   attestation output path that already exists.
 - An interface stability and support policy in [Compatibility](docs/COMPATIBILITY.md).
+- `merge-broker migrate` and `MergeBroker.migrate()` report every saved format's version and status.
+  `--apply` upgrades files written by older releases after backing up their original bytes, and
+  refuses with the new `MIGRATION_BLOCKED` code when a file comes from a newer release or cannot be
+  read. Saved-format compatibility rules are documented in [Compatibility](docs/COMPATIBILITY.md).
 - JSON Schemas for broker state, archived state slices, and audit events, generated from the runtime
   decoders and published with immutable snapshot identities. [Protocol](docs/PROTOCOL.md) lists
   every saved format and its schema.

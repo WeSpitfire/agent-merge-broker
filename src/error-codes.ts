@@ -125,6 +125,7 @@ export const BROKER_ERROR_CODES = {
   STATE_CORRUPT: "state",
   STATE_VERSION: "state",
   AUDIT_ARCHIVE_TOO_LARGE: "state",
+  MIGRATION_BLOCKED: "state",
   // Storage maintenance
   STORAGE_CHANGED: "storage",
   STORAGE_VERIFICATION_FAILED: "storage",

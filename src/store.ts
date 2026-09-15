@@ -158,7 +158,7 @@ export class StateStore {
   readonly provenanceKeysDirectory: string;
   private readonly stateFile: string;
   private readonly auditFile: string;
-  private readonly receiptsDirectory: string;
+  readonly receiptsDirectory: string;
   private readonly batchesDirectory: string;
   private readonly lockTimeoutMs: number;
 
@@ -725,6 +725,27 @@ export class StateStore {
   }
 
   /** Writes a retired slice of state to the archive directory and returns its path. */
+  /**
+   * Rewrite one saved JSON file for a format migration. The caller must hold the state lock. The
+   * original bytes are durably copied under `archive/migrations/<run>/` before replacement, so an
+   * operator can restore them if an older release must read the file again.
+   */
+  async migrateJsonFile(target: string, run: string, value: unknown): Promise<string> {
+    const relative = path.relative(this.commonGitDirectory, target);
+    if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new BrokerError("UNSAFE_PATH", `Migration target is outside Git's common directory: ${target}`);
+    }
+    const status = await lstat(target);
+    if (status.isSymbolicLink() || !status.isFile()) {
+      throw new BrokerError("UNSAFE_PATH", `Migration target is not a regular file: ${target}`);
+    }
+    const backup = path.join(this.archiveDirectory, "migrations", run, relative);
+    await this.ensurePhysicalDirectoryTree(path.dirname(backup));
+    await replaceFileDurably(backup, await readFile(target, "utf8"));
+    await replaceFileDurably(target, `${JSON.stringify(value, null, 2)}\n`);
+    return backup;
+  }
+
   async archive(name: string, value: unknown): Promise<string> {
     await mkdir(this.archiveDirectory, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/gu, "-");

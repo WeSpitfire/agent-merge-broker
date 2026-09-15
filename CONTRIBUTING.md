@@ -36,6 +36,10 @@ Run `npm run verify` before submitting. CI repeats verification and both example
 and Windows with Node.js 22, 24, and 26, then installs and exercises the actual npm tarball. Releases
 publish the tested tarball only after the complete matrix succeeds.
 
+A saved-format change follows the rules in [Compatibility](docs/COMPATIBILITY.md#interface-stability-and-support):
+a version bump needs a migration in `src/migrations.ts` with a test that upgrades a file written by
+the previous version.
+
 The state, archived-state, and audit-event schemas are generated from `src/state-codec.ts`; change
 the decoder, never the generated JSON. For schema changes, run `npm run build` and
 `node scripts/update-schema-snapshots.mjs --write`. The generator adds new fingerprint snapshots and

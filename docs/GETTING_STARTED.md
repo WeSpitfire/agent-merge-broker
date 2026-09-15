@@ -597,6 +597,20 @@ independently proving the owner is gone. The Gate authority lock lives directly 
 directory, and these commands inspect/release that exact fixed-root path rather than the configurable
 state directory.
 
+### Upgrade the broker
+
+Upgrade every process that shares a repository's broker state together:
+
+1. Stop the service or `serve` loop, MCP servers, and agents using the repository.
+2. Install the new version.
+3. Run `merge-broker migrate`. It exits `0` when everything is current. Otherwise it lists files to
+   upgrade and any file this release cannot read.
+4. If files are upgradable and none are blocked, run `merge-broker migrate --apply`. Originals are
+   kept under the reported backup directory.
+5. Run `merge-broker doctor`, then restart the service and agents.
+
+Read the changelog's upgrade notes before step 4 for anything a migration cannot decide for you.
+
 ### Upgrade with an in-flight pre-0.12 batch
 
 Drain every `prepared` or `published` batch before upgrading from a release older than `0.12.0`.
