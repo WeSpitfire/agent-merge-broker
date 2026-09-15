@@ -551,7 +551,7 @@ before another pass. Upgrade every reader first: versions before 0.15.0 cannot r
 Both package APIs provide `MergeBroker.inspectStorage(cwd?)` and
 `MergeBroker.compactAuditStorage(cwd?, { olderThanDays?, apply? })`, plus their result/option types.
 Neither opens or initializes broker state; compaction has the same preview default as the CLI. Invalid age returns
-`INVALID_ARGUMENT`. `UNSAFE_PATH`, `STORAGE_CHANGED`, or `STORAGE_VERIFICATION_FAILED` requires
+`INVALID_ARGUMENTS`. `UNSAFE_PATH`, `STORAGE_CHANGED`, or `STORAGE_VERIFICATION_FAILED` requires
 inspection, not an automatic destructive retry. Preserve both copies if an interruption left them;
 earlier segments in the same pass may already have completed.
 
@@ -585,22 +585,28 @@ not message text. These are the currently emitted categories and the normal resp
   `PIN_REF_FAILED`, `TEMPORARY_REF_CONFLICT`, `FETCH_REF_INVALID`,
   `TEMPORARY_REF_CLEANUP_FAILED`, `GIT_HOOK_ISOLATION_FAILED`, `WORKTREE_IDENTITY_UNAVAILABLE`,
   `GATE_AUTHORITY_REQUIRED`, `GATE_AUTHORITY_EXISTS`, `GATE_AUTHORITY_CORRUPT`,
-  `GATE_AUTHORITY_VERSION`, `GATE_AUTHORITY_MISMATCH`, and `GATE_AUTHORITY_CHANGED`. Register or
+  `GATE_AUTHORITY_VERSION`, `GATE_AUTHORITY_MISMATCH`, `GATE_AUTHORITY_CHANGED`,
+  `SUBMISSION_NOT_PENDING`, `SUBMISSION_NOT_TERMINAL`, `SUBMISSION_ARCHIVE_PENDING`,
+  `INVALID_SUBMISSION_ARCHIVE`, `SUBMISSION_REF_RELEASE_FAILED`, and `SUBMISSION_ABANDONED` (a
+  terminal `SubmissionRecord.errorCode` after `candidate abandon`, never thrown). Register or
   restore the reviewed authority and correct an input/policy
   precondition before adopting again. `GATE_AUTHORITY_EXISTS` requires deliberate `--replace`; never
   automate replacement. For a durable `received` or `validating` record, run `recover`; do not edit
   its identity or move its broker-owned ref. An authority-change warning requires restoring the
   original registration; the broker does not migrate a pending submission between authorities.
-- Locks and state — `LOCK_HELD`, `LOCK_TIMEOUT`, `STATE_CORRUPT`, and `STATE_VERSION`. A timeout may
+- Locks and state — `LOCK_HELD`, `LOCK_TIMEOUT`, `STATE_CORRUPT`, `STATE_VERSION`, and
+  `AUDIT_ARCHIVE_TOO_LARGE`. A timeout may
   be retried after the holder finishes. Corrupt or unsupported state requires operator recovery; an
   adapter must not initialize over it. `unlock` and `doctor` include the fixed-root `gate-authority`
   lock; force-release it only after independently proving no setup, adoption, or recovery process can
   still progress.
-- Storage maintenance (0.15.0) — `INVALID_ARGUMENT`, `STORAGE_CHANGED`, and
-  `STORAGE_VERIFICATION_FAILED`, with `UNSAFE_PATH` for redirected paths. Correct invalid age or
+- Storage maintenance — `STORAGE_CHANGED` and `STORAGE_VERIFICATION_FAILED`, with
+  `INVALID_ARGUMENTS` for an invalid age and `UNSAFE_PATH` for redirected paths. Correct invalid age or
   inspect changed files and any preserved gzip/original pair before retrying.
-- Signing and proof — `SIGNING_KEY_REQUIRED`, `SIGNING_KEY_MISMATCH`, `SIGNING_KEY_EXISTS`, and
-  `PROVENANCE_INVALID`. Restore or deliberately rotate the configured identity; never downgrade a
+- Signing and proof — `SIGNING_KEY_REQUIRED`, `SIGNING_KEY_MISMATCH`, `SIGNING_KEY_EXISTS`,
+  `PROVENANCE_INVALID`, `PROVENANCE_KEY_MISSING`, `SUBMISSION_NOT_ATTESTABLE`,
+  `SUBMISSION_ATTESTATION_INELIGIBLE`, `SUBMISSION_ATTESTATION_INVALID`,
+  `SUBMISSION_ATTESTATION_SIGNATURE_INVALID`, and `SUBMISSION_ATTESTATION_IDENTITY_MISMATCH`. Restore or deliberately rotate the configured identity; never downgrade a
   required signature automatically.
 - Target and publication — `REMOTE_URL_UNKNOWN`, `REMOTE_REPOSITORY_UNKNOWN`,
   `REMOTE_TARGET_CHANGED`, `FORGE_TARGET_MISMATCH`, `BATCH_TARGET_UNBOUND`, `BASE_REFRESH_FAILED`,
@@ -630,9 +636,9 @@ not message text. These are the currently emitted categories and the normal resp
   `INVALID_SERVICE_USER`, `SERVICE_CLI_PATH`, `SERVICE_FILE_CONFLICT`, `SERVICE_PUBLISH_DISABLED`,
   `SERVICE_USER_ID`, `UNSUPPORTED_PLATFORM`, and `COMMAND_FAILED`. Surface the diagnostic details to
   an operator.
-- Adapter wrapper fallbacks — the JSON CLI uses `UNEXPECTED` and MCP tools use `INTERNAL_ERROR` when
-  a non-`BrokerError` escapes. Treat either as an unknown internal failure, preserve diagnostics,
-  and fail closed.
+- Internal failure — `INTERNAL_ERROR`. The JSON CLI and MCP tools report it when a non-`BrokerError`
+  escapes. Treat it as an unknown internal failure, preserve diagnostics, fail closed, and report it
+  as a defect.
 
 Additional codes may be introduced. Adapters must display unknown errors and fail closed rather than
 treating them as success. Concurrency codes such as `TASK_CHANGED`, `BATCH_CHANGED`,

@@ -33,6 +33,12 @@ export {
 } from "./submission-attestation.js";
 export { schemaFingerprint, schemaSnapshotIdentity } from "./schema-identity.js";
 export { BrokerError } from "./errors.js";
+export {
+  BROKER_ERROR_CATEGORIES,
+  BROKER_ERROR_CODES,
+  type BrokerErrorCategory,
+  type BrokerErrorCode,
+} from "./error-codes.js";
 // Result types of MergeBroker methods.
 export type { LockStatus } from "./store.js";
 export type { HookInstallation } from "./hooks.js";

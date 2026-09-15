@@ -7,6 +7,8 @@ import * as full from "./index.js";
 // The root exports are the supported Node API. Adding a name is a minor change that needs docs;
 // removing or renaming one is a breaking change. Update this list only deliberately.
 const CORE_EXPORTS = [
+  "BROKER_ERROR_CATEGORIES",
+  "BROKER_ERROR_CODES",
   "BrokerError",
   "MergeBroker",
   "SUBMISSION_ATTESTATION_PAYLOAD_TYPE",

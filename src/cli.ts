@@ -1597,7 +1597,7 @@ program.parseAsync().catch((error: unknown) => {
     const value =
       error instanceof BrokerError
         ? { error: { code: error.code, message: error.message, details: error.details } }
-        : { error: { code: "UNEXPECTED", message: error instanceof Error ? error.message : String(error) } };
+        : { error: { code: "INTERNAL_ERROR", message: error instanceof Error ? error.message : String(error) } };
     console.error(JSON.stringify(value, null, 2));
   } else if (error instanceof CommandError) {
     console.error(`${error.message}${error.stderr ? `\n${error.stderr.trim()}` : ""}`);

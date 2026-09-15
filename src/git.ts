@@ -28,6 +28,7 @@ import {
 } from "./git-locators.js";
 export { remoteUrlFingerprint, isHostQualifiedForgeRepository } from "./git-locators.js";
 import { BrokerError } from "./errors.js";
+import type { BrokerErrorCode } from "./error-codes.js";
 import { runCommand, withoutCurrentDirectoryExecutableSearch, type CommandResult } from "./process.js";
 import type { SubmissionWorktreeIdentity } from "./types.js";
 
@@ -334,7 +335,7 @@ export class GitRepository {
   }
 
   /** Mutable transport commands can redirect an already fingerprinted locator on a second use. */
-  private async assertNoUrlRewriteConfiguration(code: string): Promise<void> {
+  private async assertNoUrlRewriteConfiguration(code: BrokerErrorCode): Promise<void> {
     const result = await runCommand(
       "git",
       [
@@ -390,7 +391,7 @@ export class GitRepository {
   }
 
   /** Allow credential headers, but never let config replace the URL's HTTP authority. */
-  private async assertNoHttpRoutingHeaders(code: string): Promise<void> {
+  private async assertNoHttpRoutingHeaders(code: BrokerErrorCode): Promise<void> {
     const result = await runCommand(
       "git",
       [
@@ -430,7 +431,7 @@ export class GitRepository {
   }
 
   /** An exact URL/path must not be reinterpreted as any mutable Git remote shorthand. */
-  private async assertExactRemoteLocator(remote: string, code: string): Promise<void> {
+  private async assertExactRemoteLocator(remote: string, code: BrokerErrorCode): Promise<void> {
     await this.assertNoUrlRewriteConfiguration(code);
     const effective = await runCommand(
       "git",
@@ -746,7 +747,7 @@ export class GitRepository {
     return repository;
   }
 
-  async remotePushUrl(remote: string, errorCode = "REMOTE_URL_UNKNOWN"): Promise<string> {
+  async remotePushUrl(remote: string, errorCode: BrokerErrorCode = "REMOTE_URL_UNKNOWN"): Promise<string> {
     await this.assertNoUrlRewriteConfiguration(errorCode);
     const configured = await this.localObjectGit(["remote", "get-url", "--push", remote], this.root, true);
     const value = singleGitOutputRecord(configured.stdout);
@@ -781,7 +782,7 @@ export class GitRepository {
   }
 
   /** Resolve and physically bind the URL Git uses to fetch from a named remote. */
-  async remoteFetchUrl(remote: string, errorCode = "REMOTE_URL_UNKNOWN"): Promise<string> {
+  async remoteFetchUrl(remote: string, errorCode: BrokerErrorCode = "REMOTE_URL_UNKNOWN"): Promise<string> {
     await this.assertNoUrlRewriteConfiguration(errorCode);
     const configured = await this.localObjectGit(["remote", "get-url", remote], this.root, true);
     const value = singleGitOutputRecord(configured.stdout);

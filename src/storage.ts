@@ -222,11 +222,11 @@ export async function compactAuditStorage(
   options: StorageCompactionOptions = {},
 ): Promise<StorageCompactionResult> {
   if (options.apply !== undefined && typeof options.apply !== "boolean") {
-    throw new BrokerError("INVALID_ARGUMENT", "Storage compaction apply must be an explicit boolean.");
+    throw new BrokerError("INVALID_ARGUMENTS", "Storage compaction apply must be an explicit boolean.");
   }
   const olderThanDays = options.olderThanDays ?? 30;
   if (!Number.isFinite(olderThanDays) || olderThanDays < 0) {
-    throw new BrokerError("INVALID_ARGUMENT", "Storage compaction age must be a nonnegative number of days.");
+    throw new BrokerError("INVALID_ARGUMENTS", "Storage compaction age must be a nonnegative number of days.");
   }
   const result: StorageCompactionResult = {
     applied: options.apply === true, olderThanDays, eligibleFiles: 0, eligibleBytes: 0,
