@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -65,6 +65,22 @@ test("the site redeploys when any canonical content source changes", () => {
   }
   for (const source of ["VISION.md", "ROADMAP.md", "SUPPORT.md"]) {
     assert.match(siteSync, new RegExp(`from: ["']${source}["']`, "u"));
+  }
+});
+
+test("synced site pages contain no repository-relative links that would be dead on the site", async (context) => {
+  const output = await mkdtemp(path.join(tmpdir(), "merge-broker-site-sync-"));
+  context.after(async () => await rm(output, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL("../site/sync-docs.mjs", import.meta.url));
+  await runCommand(process.execPath, [script, output], { cwd: path.dirname(script) });
+  const pages = await readdir(output);
+  assert.ok(pages.length > 0);
+  for (const page of pages) {
+    const markdown = await readFile(path.join(output, page), "utf8");
+    // VitePress fails the Pages build on a dead link. Every link must be absolute, site-rooted, or
+    // an in-page anchor after sync-docs rewrites repository paths.
+    const relative = [...markdown.matchAll(/\]\((?!https?:|\/|#|mailto:)([^)]+)\)/gu)].map((match) => match[1]);
+    assert.deepEqual(relative, [], `${page} has repository-relative links`);
   }
 });
 

@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.15.1 — 2026-09-15
+
+Security release. Upgrade from 0.15.0, whose verify action cannot run.
 
 ### Security
 
@@ -37,6 +39,8 @@
   truncated by a crash no longer swallows the next event.
 - The packaged smoke test skips its npm publication dry-run when the version is already published,
   so CI no longer fails on every run after a release.
+- The documentation site sync rewrites anchored links to every synced guide, which fixes the Pages
+  build, and a release test now rejects repository-relative links in synced pages.
 
 ### Upgrade notes
 
@@ -45,7 +49,7 @@
   re-cut open batches, or deliberately select `required-ci` authority.
 - Give each MCP worker server a distinct `MERGE_BROKER_AGENT` if it must resume leases after a
   restart.
-- Update workflows to the release containing the fixed verify action; `verify@v0.15.0` cannot run.
+- Update workflows to `WeSpitfire/agent-merge-broker/verify@v0.15.1`; `verify@v0.15.0` cannot run.
 
 ## 0.15.0 — 2026-09-06
 

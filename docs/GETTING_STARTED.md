@@ -5,7 +5,7 @@ path. Start locally, prove the Coordinate workflow with a small task, then enabl
 publication. A separate section covers validation-only intake for a trusted Git ref assembled
 outside that workflow.
 
-This guide covers version `0.15.0`. The documentation tracks source; check npm's version history to
+This guide covers version `0.15.1`. The documentation tracks source; check npm's version history to
 confirm published availability. The companion core package is published separately; check its
 [npm version history](https://www.npmjs.com/package/agent-merge-broker-core?activeTab=versions) too.
 
@@ -53,7 +53,7 @@ remove their temporary repositories unless `KEEP=1` is set.
 Install once outside your projects, then initialize each repository that needs coordination:
 
 ```bash
-npm install --global agent-merge-broker@0.15.0
+npm install --global agent-merge-broker@0.15.1
 # From the repository you want to coordinate:
 merge-broker init --base main --base-ref origin/main --remote origin
 git add .merge-broker AGENTS.md
@@ -69,7 +69,7 @@ your team. For global-install permission errors, use npm's documented
 For occasional commands without a global install, request the package and executable explicitly:
 
 ```bash
-npm exec --yes --package=agent-merge-broker@0.15.0 -- merge-broker doctor
+npm exec --yes --package=agent-merge-broker@0.15.1 -- merge-broker doctor
 ```
 
 [npm exec](https://docs.npmjs.com/cli/v11/commands/npm-exec/) uses npm's cache when the requested
@@ -82,7 +82,7 @@ For a repository-owned version and reproducible CI dependencies, install locally
 both the manifest and lockfile:
 
 ```bash
-npm install --save-dev --save-exact agent-merge-broker@0.15.0
+npm install --save-dev --save-exact agent-merge-broker@0.15.1
 npm exec --no -- merge-broker doctor
 ```
 
@@ -248,7 +248,7 @@ tag. It needs the head and base commits, so fetch full history:
   with:
     ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
-- uses: WeSpitfire/agent-merge-broker/verify@v0.15.0
+- uses: WeSpitfire/agent-merge-broker/verify@v0.15.1
 ```
 
 A pull request that can edit workflows can also edit this job. Require it through a repository

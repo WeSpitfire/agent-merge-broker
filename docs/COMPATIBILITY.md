@@ -8,7 +8,7 @@ The documentation site tracks the `main` branch and may be ahead of npm. Compare
 with the topmost entry in the
 [changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md); if that current
 entry is **Unreleased**, it is source-checkout behavior until the next release is published. This
-page covers version `0.15.0`; npm's version history
+page covers version `0.15.1`; npm's version history
 confirms published availability. The `v0.14.0` and `v0.14.1` GitHub tags exist, but neither was
 published to npm.
 
