@@ -5,6 +5,7 @@ import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { MergeBroker } from "./broker.js";
+import { configPath, loadConfig } from "./config.js";
 import { BrokerError } from "./errors.js";
 import { runCommand } from "./process.js";
 import {
@@ -22,6 +23,9 @@ function validator(schema: object) {
 const validateState = validator(schemas.state);
 const validateArchivedState = validator(schemas["archived-state"]);
 const validateAuditEvent = validator(schemas["audit-event"]);
+const validateSubmission = validator(
+  JSON.parse(await readFile(new URL("../schemas/submission.schema.json", import.meta.url), "utf8")) as object,
+);
 
 async function git(repo: string, ...args: string[]): Promise<string> {
   return (await runCommand("git", args, { cwd: repo })).stdout.trim();
@@ -145,4 +149,43 @@ test("archive slices written before versioning remain readable", async (context)
   // An unknown future version is not reinterpreted as version 1.
   await writeFile(target, `${JSON.stringify({ ...slice, version: 2 }, null, 2)}\n`, "utf8");
   assert.deepEqual(await broker.store.readArchivedState(), []);
+});
+
+test("Gate submission records satisfy both the generated state schema and the submission schema", async (context) => {
+  const repo = await mkdtemp(path.join(tmpdir(), "merge-broker-formats-gate-"));
+  context.after(async () => await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  await git(repo, "init", "-b", "main");
+  await git(repo, "config", "user.name", "Merge Broker Test");
+  await git(repo, "config", "user.email", "test@merge-broker.invalid");
+  await writeFile(path.join(repo, "README.md"), "# Fixture\n", "utf8");
+  await git(repo, "add", "README.md");
+  await git(repo, "commit", "-m", "initial");
+  await MergeBroker.initialize(repo);
+  const config = await loadConfig(repo);
+  config.integration.refreshBase = false;
+  config.validation.authoritative = [{ name: "suite", command: "node --version" }];
+  await writeFile(configPath(repo), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await git(repo, "add", ".merge-broker");
+  await git(repo, "commit", "-m", "protected policy");
+  await git(repo, "switch", "-c", "producer/candidate");
+  await writeFile(path.join(repo, "candidate.txt"), "candidate\n", "utf8");
+  await git(repo, "add", "candidate.txt");
+  await git(repo, "commit", "-m", "candidate");
+  await git(repo, "switch", "main");
+
+  const broker = await MergeBroker.open(repo);
+  await broker.registerCandidateAuthority();
+  const record = await broker.adoptCandidate({ ref: "producer/candidate" });
+  assert.equal(record.status, "validated");
+
+  const state = JSON.parse(await readFile(path.join(broker.store.directory, "state.json"), "utf8")) as {
+    submissions: Record<string, unknown>;
+  };
+  assert.ok(validateState(state), JSON.stringify(validateState.errors));
+  const saved = state.submissions[record.id];
+  assert.ok(validateSubmission(saved), JSON.stringify(validateSubmission.errors));
+  const snapshot = JSON.parse(
+    await readFile(path.join(broker.store.submissionsDirectory, (await readdir(broker.store.submissionsDirectory)).find((file) => file.endsWith(".json"))!), "utf8"),
+  ) as unknown;
+  assert.ok(validateSubmission(snapshot), JSON.stringify(validateSubmission.errors));
 });
