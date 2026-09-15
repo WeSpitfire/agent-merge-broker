@@ -37,6 +37,7 @@ export const BROKER_ERROR_CODES = {
   NOT_INITIALIZED: "input",
   INVALID_CONFIG: "input",
   INVALID_ARGUMENTS: "input",
+  OUTPUT_EXISTS: "input",
   INVALID_INTERVAL: "input",
   INVALID_LIMIT: "input",
   INVALID_MCP_PROFILE: "input",
@@ -215,4 +216,40 @@ export type BrokerErrorCode = keyof typeof BROKER_ERROR_CODES;
 
 export function isBrokerErrorCode(value: string): value is BrokerErrorCode {
   return Object.hasOwn(BROKER_ERROR_CODES, value);
+}
+
+/**
+ * CLI exit statuses, documented in docs/PROTOCOL.md. Scripts may rely on these values; JSON callers
+ * should still branch on the error code for detail.
+ */
+export const CLI_EXIT_CODES = {
+  /** The command succeeded. */
+  success: 0,
+  /** The command ran and its answer is a rejection: failed validation or failed verification. */
+  rejected: 1,
+  /** The invocation, input, lookup, or configuration is invalid; retrying unchanged will not help. */
+  usage: 2,
+  /** The broker refused or could not complete the operation (state, lease, Git, forge, host). */
+  failed: 3,
+  /** An unexpected internal failure; report it as a defect. */
+  internal: 4,
+} as const;
+
+/** Codes whose meaning is a verdict about the work or evidence under examination. */
+const REJECTION_CODES: ReadonlySet<BrokerErrorCode> = new Set<BrokerErrorCode>([
+  "VALIDATION_FAILED",
+  "VALIDATOR_MUTATED_WORKTREE",
+  "CHERRY_PICK_CONFLICT",
+  "PROVENANCE_INVALID",
+  "SUBMISSION_ATTESTATION_INVALID",
+  "SUBMISSION_ATTESTATION_SIGNATURE_INVALID",
+  "SUBMISSION_ATTESTATION_IDENTITY_MISMATCH",
+]);
+
+export function cliExitCodeForError(code: BrokerErrorCode): number {
+  if (REJECTION_CODES.has(code)) return CLI_EXIT_CODES.rejected;
+  const category = BROKER_ERROR_CODES[code];
+  if (category === "input") return CLI_EXIT_CODES.usage;
+  if (category === "internal") return CLI_EXIT_CODES.internal;
+  return CLI_EXIT_CODES.failed;
 }

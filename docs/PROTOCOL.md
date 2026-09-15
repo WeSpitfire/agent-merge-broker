@@ -12,7 +12,8 @@ A worker needs only five capabilities:
 
 Finite operational CLI commands support `--json`: success writes one JSON value to stdout and exits
 zero, while usage and action errors write
-`{ "error": { "code": "...", "message": "...", "details": {} } }` to stderr and exit nonzero.
+`{ "error": { "code": "...", "message": "...", "details": {} } }` to stderr and exit with a
+nonzero [CLI exit status](#cli-exit-statuses).
 The `details` field is omitted when no diagnostic details exist. In `0.14.2`,
 `candidate verify-attestation` also returns a JSON result on stdout with exit code 1 when the
 signature verifies but the recorded validation was rejected or failed; check both `verified` and
@@ -21,7 +22,7 @@ intentionally a newline-delimited stream of event objects until the process stop
 `serve --once --json` returns one summary document containing recovery, events, and operation
 results. `candidate adopt` has one deliberate terminal-result exception: when it returns a durable
 non-`validated` `SubmissionRecord` (`rejected` or `failed`), it writes that record to stdout but exits
-nonzero. An exception that prevents a terminal record from being returned uses the normal stderr
+with status 1. `doctor` likewise writes its report and exits 1 when the host is not operational. An exception that prevents a terminal record from being returned uses the normal stderr
 error envelope; because durable state may already exist, inspect `candidate list` and run `recover`
 before blindly retrying. `--help` and `--version` remain human-readable text. The error code is the
 machine-readable branching surface. Messages and details are diagnostic context and may become more
@@ -555,12 +556,25 @@ Neither opens or initializes broker state; compaction has the same preview defau
 inspection, not an automatic destructive retry. Preserve both copies if an interruption left them;
 earlier segments in the same pass may already have completed.
 
+## CLI exit statuses
+
+Every `merge-broker` command exits with one of these statuses. They are part of the stable CLI
+contract; use the JSON error code for detail.
+
+| Status | Meaning |
+| --- | --- |
+| `0` | The command succeeded. |
+| `1` | The command ran and its answer is a rejection: failed or mutated validation, a cherry-pick conflict, rejected provenance or attestation evidence, a candidate that was not `validated`, or a `doctor` report that is not operational. |
+| `2` | Invalid usage, input, lookup, or configuration — every code in the "Setup, input, and lookup" category and command-line parsing errors. Retrying unchanged will not help. |
+| `3` | The broker refused or could not complete the operation: lease, state, lock, Gate, storage, signing, Git, forge, service, and subprocess failures. |
+| `4` | `INTERNAL_ERROR`: an unexpected failure. Report it as a defect. |
+
 ## Stable error categories
 
 Adapters should branch on `BrokerError.code` (or a returned terminal `SubmissionRecord.errorCode`),
 not message text. These are the currently emitted categories and the normal response to each family:
 
-- Setup, input, and lookup — `NOT_INITIALIZED`, `INVALID_CONFIG`, `INVALID_ARGUMENTS`,
+- Setup, input, and lookup — `NOT_INITIALIZED`, `INVALID_CONFIG`, `INVALID_ARGUMENTS`, `OUTPUT_EXISTS`,
   `INVALID_INTERVAL`, `INVALID_LIMIT`, `INVALID_MCP_PROFILE`, `INVALID_AGENT_CONTRACT`,
   `INVALID_PULL_REQUEST_URL`, `INVALID_SIGNING_KEY`, `INVALID_TASK`, `PATHS_REQUIRED`, `UNSAFE_PATH`,
   `TASK_EXISTS`, `UNKNOWN_TASK`, `UNKNOWN_BATCH`, `UNKNOWN_COMMIT`, `UNKNOWN_DEPENDENCY`, and
