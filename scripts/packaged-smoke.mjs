@@ -201,8 +201,12 @@ async function verifyPackage(source, metadata, packDestination, consumer) {
     `assert.equal(typeof broker.createMcpServer, ${JSON.stringify(core ? "undefined" : "function")});`,
     'assert.equal(typeof broker.verifySubmissionAttestation, "function");',
     'assert.equal(typeof broker.schemaFingerprint, "function");',
-    'assert.equal(typeof broker.inspectStorage, "function");',
-    'assert.equal(typeof broker.compactAuditStorage, "function");',
+    'assert.equal(typeof broker.MergeBroker.inspectStorage, "function");',
+    'assert.equal(typeof broker.MergeBroker.compactAuditStorage, "function");',
+    'assert.equal(typeof broker.BROKER_ERROR_CODES.INVALID_ARGUMENTS, "string");',
+    // Internal modules are not part of the installed package's API.
+    'assert.equal(broker.StateStore, undefined);',
+    'assert.equal(broker.GitRepository, undefined);',
     "",
   ].join("\n"));
   await run(process.execPath, ["consumer.mjs"], consumer);
