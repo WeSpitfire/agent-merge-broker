@@ -126,6 +126,22 @@ async function serveOnce(repo: string, preload?: string): Promise<CommandResult>
   return result;
 }
 
+test("plan output redacts lease token hashes like every other task output", async (context) => {
+  const repo = await repository(context);
+  const broker = await MergeBroker.open(repo);
+  await submitTask(broker, repo, "PLANNED");
+
+  const planned = await runCommand(process.execPath, commandArguments(repo, "plan"), {
+    cwd: PROJECT_ROOT,
+    allowFailure: true,
+  });
+  assert.equal(planned.exitCode, 0, planned.stderr);
+  const plan = JSON.parse(planned.stdout) as { selected: Array<{ id: string; lease?: Record<string, unknown> }> };
+  assert.deepEqual(plan.selected.map((task) => task.id), ["PLANNED"]);
+  assert.equal(plan.selected[0]?.lease?.tokenHash, undefined);
+  assert.doesNotMatch(planned.stdout, /tokenHash/u);
+});
+
 test("JSON mode envelopes command-line usage errors", async () => {
   const sourceTest = fileURLToPath(import.meta.url).endsWith(".ts");
   const cli = fileURLToPath(new URL(sourceTest ? "./cli.ts" : "./cli.js", import.meta.url));

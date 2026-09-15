@@ -19,7 +19,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { StateStore } from "./store.js";
 import { BrokerError } from "./errors.js";
-import { STATE_VERSION, SUBMISSION_VERSION, type SubmissionRecord } from "./types.js";
+import { STATE_VERSION, SUBMISSION_VERSION, type BrokerState, type SubmissionRecord } from "./types.js";
 
 function submissionRecord(id = "submission-one"): SubmissionRecord {
   const at = "2026-09-04T12:00:00.000Z";
@@ -297,6 +297,18 @@ test("releases an abandoned lock but refuses one that may still be live", async 
   );
   assert.equal((await store.releaseLock("integration", { force: true })).held, false);
 
+  // Another operating system instance can share this hostname: WSL2 beside Windows, or a container
+  // with host networking. Its process IDs mean nothing here, so its lock is never assumed dead.
+  await write({ pid: 4_294_967_295, host: hostname(), platform: "win32-x64", createdAt: new Date().toISOString() });
+  const otherPlatform = await store.inspectLock("integration");
+  assert.equal(otherPlatform.held, true);
+  assert.equal(otherPlatform.abandoned, false);
+  await assert.rejects(
+    store.releaseLock("integration"),
+    (error: unknown) => error instanceof BrokerError && error.code === "LOCK_HELD",
+  );
+  assert.equal((await store.releaseLock("integration", { force: true })).held, false);
+
   // A holder on this machine whose process is gone is provably abandoned.
   await write({ pid: 4_294_967_295, host: hostname(), createdAt: new Date().toISOString() });
   assert.equal((await store.inspectLock("integration")).abandoned, true);
@@ -478,3 +490,34 @@ test(
     assert.equal((await stat(token)).mode & 0o777, 0o600);
   },
 );
+
+test("a transaction refuses to write after its lock is taken by another process", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-store-"));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const store = new StateStore(directory, "state", 10);
+  const at = "2026-09-15T12:00:00.000Z";
+  await store.transaction((state, audit) => {
+    state.tasks.KEPT = {
+      id: "KEPT", status: "registered", priority: 0, baseSha: "a".repeat(40), expectedPaths: ["src/**"],
+      actualPaths: [], dependsOn: [], commits: [], warnings: [], validations: [], createdAt: at, updatedAt: at,
+    } satisfies BrokerState["tasks"][string];
+    audit("first.event");
+  });
+  const before = await readFile(path.join(directory, "state", "state.json"), "utf8");
+
+  await assert.rejects(
+    store.transaction(async (state) => {
+      // Simulate a reclaim: the lock this transaction holds is replaced while its mutator runs.
+      const owner = path.join(directory, "state", "state.lock", "owner.json");
+      const current = JSON.parse(await readFile(owner, "utf8")) as Record<string, unknown>;
+      await writeFile(owner, `${JSON.stringify({ ...current, nonce: "someone-else" })}\n`, "utf8");
+      delete state.tasks.KEPT;
+    }),
+    (error: unknown) => error instanceof BrokerError && error.code === "LOCK_LOST",
+  );
+
+  assert.equal(await readFile(path.join(directory, "state", "state.json"), "utf8"), before);
+  assert.ok((await store.read()).tasks.KEPT);
+});

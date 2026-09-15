@@ -61,3 +61,37 @@ test("Gate support bundles omit operator abandonment prose while retaining machi
   assert.match(serialized, /safe-policy-fingerprint/u);
   assert.match(serialized, /abandoned integration transaction/u);
 });
+
+test("redaction covers credentials that travel inside free text", () => {
+  const bundle = sanitizeSupportData(
+    {
+      stderr: [
+        "fatal: authentication failed for ssh://deploy-token@git.example.invalid/org/repo.git",
+        "remote: scp style build-bot@git.example.invalid:org/repo.git rejected",
+        "Authorization: Bearer abcd.efgh.ijkl",
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n-----END OPENSSH PRIVATE KEY-----",
+      ].join("\n"),
+      signingKey: "-----BEGIN PRIVATE KEY-----MIIB-----END PRIVATE KEY-----",
+      apiKey: "sk-live-1234",
+      authorization: "Bearer abcd",
+      passphrase: "hunter2",
+    },
+    { repositoryRoot: "/srv/repo", homeDirectory: "/home/dev" },
+  ) as Record<string, string>;
+
+  for (const field of ["signingKey", "apiKey", "authorization", "passphrase"]) {
+    assert.equal(bundle[field], "<redacted-secret>", field);
+  }
+  assert.doesNotMatch(bundle.stderr ?? "", /deploy-token|build-bot@|abcd\.efgh\.ijkl|b3BlbnNzaC1rZXktdjEA/u);
+  assert.match(bundle.stderr ?? "", /<redacted-url>/u);
+  assert.match(bundle.stderr ?? "", /<redacted-git-url>/u);
+  assert.match(bundle.stderr ?? "", /<redacted-private-key>/u);
+});
+
+test("repository and home paths are replaced in both separator styles", () => {
+  const sanitized = sanitizeSupportData(
+    { path: "C:\\work\\repo\\src, C:/work/repo/src, /home/dev/.config" },
+    { repositoryRoot: "C:\\work\\repo", homeDirectory: "/home/dev" },
+  ) as { path: string };
+  assert.equal(sanitized.path, "<repository>\\src, <repository>/src, <home>/.config");
+});

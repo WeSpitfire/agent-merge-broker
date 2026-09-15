@@ -58,6 +58,24 @@ test(
     });
     assert.equal(bypassed.exitCode, 0);
 
+    // The remote ref decides what a push creates, whatever the local ref is called.
+    const mapped = await runCommand("git", ["push", "origin", "HEAD:refs/heads/sneaked"], {
+      cwd: repo,
+      allowFailure: true,
+    });
+    assert.notEqual(mapped.exitCode, 0);
+    assert.match(mapped.stderr, /Direct implementation pushes are disabled/u);
+    const mappedToBase = await runCommand("git", ["push", "origin", "HEAD:main"], { cwd: repo, allowFailure: true });
+    assert.notEqual(mappedToBase.exitCode, 0);
+
+    // A local branch may still feed an integration ref.
+    const mappedToIntegration = await runCommand(
+      "git",
+      ["push", "origin", "HEAD:refs/heads/merge-broker/20260101T000000Z-mapped"],
+      { cwd: repo, allowFailure: true },
+    );
+    assert.equal(mappedToIntegration.exitCode, 0, mappedToIntegration.stderr);
+
     // Integration branches are exactly what the guard exists to let through.
     await git(repo, "switch", "-c", "merge-broker/20260101T000000Z-abcdef");
     const allowed = await runCommand("git", ["push", "origin", "merge-broker/20260101T000000Z-abcdef"], {

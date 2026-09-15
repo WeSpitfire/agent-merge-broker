@@ -171,25 +171,44 @@ export function systemdUnit(options: ServiceOptions): string {
     String(options.intervalSeconds),
     ...(options.eager ? ["--eager"] : []),
   ];
+  const log = systemdValue(`append:${options.logFile}`);
   return `# ${SERVICE_MARKER}. Remove with: merge-broker install-service --uninstall
 [Unit]
-Description=Agent Merge Broker integration loop for ${options.repositoryRoot}
+Description=Agent Merge Broker integration loop for ${systemdValue(options.repositoryRoot)}
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${JSON.stringify(options.repositoryRoot)}
-Environment=${JSON.stringify(`PATH=${options.pathEntries.join(":")}`)}
-ExecStart=${args.map((value) => JSON.stringify(value)).join(" ")}
-StandardOutput=${JSON.stringify(`append:${options.logFile}`)}
-StandardError=${JSON.stringify(`append:${options.logFile}`)}
+WorkingDirectory=${systemdValue(options.repositoryRoot)}
+Environment=${systemdArgument(`PATH=${options.pathEntries.join(":")}`)}
+ExecStart=${args.map(systemdArgument).join(" ")}
+StandardOutput=${log}
+StandardError=${log}
 Restart=always
 RestartSec=15
 
 [Install]
 WantedBy=default.target
 `;
+}
+
+/**
+ * Escape a systemd unit value. Only `%` is special in a plain value: it introduces a specifier that
+ * systemd would expand. Paths are written unquoted because settings such as WorkingDirectory take the
+ * rest of the line literally and reject a value that still carries quotes.
+ */
+function systemdValue(value: string): string {
+  return value.replaceAll("%", "%%");
+}
+
+/**
+ * Quote one systemd command-line word. ExecStart and Environment are split like a shell line, so a
+ * value with spaces needs quotes, `"` and `\` need escaping, and `$` would otherwise start a
+ * variable reference.
+ */
+function systemdArgument(value: string): string {
+  return `"${systemdValue(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "$$$$")}"`;
 }
 
 /** Quote one argument using the CommandLineToArgvW rules used by Node on Windows. */

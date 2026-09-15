@@ -4520,8 +4520,14 @@ export class MergeBroker {
     const [state, archived] = await Promise.all([this.store.read(), this.store.readArchivedState()]);
     const activeTasks = Object.values(state.tasks);
     const activeBatches = Object.values(state.batches);
-    const archivedTasks = archived.flatMap((slice) => Object.values(slice.tasks));
-    const archivedBatches = archived.flatMap((slice) => Object.values(slice.batches));
+    // Retirement writes an archive slice before deleting the active record, and a slice can be
+    // replayed after an interrupted prune. Keep the active copy of any record that appears in both.
+    const archivedTasks = [...new Map(
+      archived.flatMap((slice) => Object.entries(slice.tasks)),
+    )].filter(([id]) => !Object.hasOwn(state.tasks, id)).map(([, task]) => task);
+    const archivedBatches = [...new Map(
+      archived.flatMap((slice) => Object.entries(slice.batches)),
+    )].filter(([id]) => !Object.hasOwn(state.batches, id)).map(([, batch]) => batch);
     const tasks = [...archivedTasks, ...activeTasks];
     const batches = [...archivedBatches, ...activeBatches];
     // Read archives after the active snapshot: retirement writes its archive before deleting the
@@ -4638,10 +4644,11 @@ export class MergeBroker {
     const warnings: string[] = [];
     let ok = true;
     const nodeVersion = process.versions.node;
-    const nodeSupported = versionAtLeast(nodeVersion, [20, 12]);
+    // Keep in step with the engines range in package.json.
+    const nodeSupported = versionAtLeast(nodeVersion, [22, 0]);
     if (!nodeSupported) {
       ok = false;
-      warnings.push(`Node ${nodeVersion} is unsupported; Agent Merge Broker requires Node 20.12 or newer.`);
+      warnings.push(`Node ${nodeVersion} is unsupported; Agent Merge Broker requires Node 22 or newer.`);
     }
     const gitVersion = /git version\s+([^\s]+)/u.exec(gitVersionResult.stdout)?.[1] ?? "unknown";
     const gitSupported = versionAtLeast(gitVersion, [2, 31]);

@@ -31,8 +31,10 @@ if [ "\${${BYPASS_VARIABLE}:-}" = "1" ]; then
   exit 0
 fi
 
-while read -r local_ref _local_sha _remote_ref _remote_sha; do
-  case "$local_ref" in
+# Git supplies "<local ref> <local sha> <remote ref> <remote sha>" per ref. The remote ref decides
+# what this push would create: "git push origin HEAD:main" has a local ref that says nothing.
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
     refs/heads/${branchPrefix}*)
       ;;
     refs/heads/*)

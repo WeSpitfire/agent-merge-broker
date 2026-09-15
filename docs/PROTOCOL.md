@@ -672,7 +672,7 @@ not message text. These are the currently emitted categories and the normal resp
   its identity or move its broker-owned ref. An authority-change warning requires restoring the
   original registration; the broker does not migrate a pending submission between authorities.
 - Locks and state — `LOCK_HELD`, `LOCK_TIMEOUT`, `STATE_CORRUPT`, `STATE_VERSION`,
-  `AUDIT_ARCHIVE_TOO_LARGE`, and `MIGRATION_BLOCKED`. A timeout may
+  `AUDIT_ARCHIVE_TOO_LARGE`, `MIGRATION_BLOCKED`, and `LOCK_LOST`. A timeout may
   be retried after the holder finishes. Corrupt or unsupported state requires operator recovery; an
   adapter must not initialize over it. `unlock` and `doctor` include the fixed-root `gate-authority`
   lock; force-release it only after independently proving no setup, adoption, or recovery process can
