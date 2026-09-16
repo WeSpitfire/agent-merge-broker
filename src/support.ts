@@ -1,7 +1,8 @@
 import os from "node:os";
 import type { AuditEvent } from "./types.js";
 
-const SECRET_KEY = /(?:token|secret|password|credential|private[_-]?key)/iu;
+const SECRET_KEY =
+  /(?:token|secret|password|passphrase|credential|private[_-]?key|signing[_-]?key|api[_-]?key|authorization|auth[_-]?header|cookie|session)/iu;
 const URL_KEY = /(?:url|uri)$/iu;
 const OPERATOR_TEXT_KEY = /^abandon[_-]?reason$/iu;
 
@@ -19,6 +20,24 @@ function replaceAllLiteral(value: string, search: string, replacement: string): 
   return search ? value.split(search).join(replacement) : value;
 }
 
+/**
+ * Replace a filesystem path wherever it appears. Windows paths are compared without case, and both
+ * separators are accepted because diagnostics mix Git's forward slashes with native paths.
+ */
+function replacePath(value: string, directory: string, replacement: string): string {
+  if (!directory) return value;
+  const variants = new Set([directory, directory.replaceAll("\\", "/"), directory.replaceAll("/", "\\")]);
+  let sanitized = value;
+  for (const variant of variants) {
+    sanitized = replaceAllLiteral(sanitized, variant, replacement);
+    if (process.platform === "win32") {
+      const pattern = new RegExp(variant.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "giu");
+      sanitized = sanitized.replace(pattern, replacement);
+    }
+  }
+  return sanitized;
+}
+
 /** Redacts credentials, repository-local paths, home paths, and URL-bearing fields recursively. */
 export function sanitizeSupportData(
   value: unknown,
@@ -29,10 +48,22 @@ export function sanitizeSupportData(
   if (URL_KEY.test(key)) return value === undefined ? undefined : "<redacted-url>";
   if (OPERATOR_TEXT_KEY.test(key)) return "<redacted-operator-text>";
   if (typeof value === "string") {
-    let sanitized = replaceAllLiteral(value, options.repositoryRoot, "<repository>");
-    sanitized = replaceAllLiteral(sanitized, options.homeDirectory ?? os.homedir(), "<home>");
-    sanitized = sanitized.replace(/https?:\/\/[^\s"']+/giu, "<redacted-url>");
-    sanitized = sanitized.replace(/git@[^\s:]+:[^\s]+/giu, "<redacted-git-url>");
+    let sanitized = replacePath(value, options.repositoryRoot, "<repository>");
+    sanitized = replacePath(sanitized, options.homeDirectory ?? os.homedir(), "<home>");
+    // Key material and bearer tokens travel inside free text such as validator output and Git stderr.
+    sanitized = sanitized.replace(
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gu,
+      "<redacted-private-key>",
+    );
+    // An authorization header carries a scheme before its credential; a bare scheme can also appear.
+    sanitized = sanitized.replace(
+      /\b(proxy-authorization|authorization)\b\s*[:=]\s*(?:[A-Za-z]+\s+)?\S+/giu,
+      "$1 <redacted-secret>",
+    );
+    sanitized = sanitized.replace(/\b(bearer|basic|token)\b\s*[:=]?\s+\S+/giu, "$1 <redacted-secret>");
+    // Any scheme can carry credentials, and an scp-style locator names a host without one.
+    sanitized = sanitized.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"']+/giu, "<redacted-url>");
+    sanitized = sanitized.replace(/\b[\w.-]+@[\w.-]+:[^\s"']+/gu, "<redacted-git-url>");
     return sanitized;
   }
   if (Array.isArray(value)) {
@@ -78,6 +109,6 @@ export function createSupportBundle(options: {
     },
     diagnostics: sanitizeSupportData(options.diagnostics, redaction),
     recentEvents: sanitizeSupportData(options.recentEvents, redaction),
-    redaction: "Repository paths, home-directory paths, URLs, secret-bearing fields, and free-form abandonment reasons were removed. Review before sharing.",
+    redaction: "Repository paths, home-directory paths, URLs, private keys, bearer tokens, secret-bearing fields, and free-form abandonment reasons were removed. Redaction is best effort over unbounded validator output. Review before sharing.",
   };
 }

@@ -216,7 +216,7 @@ export async function applySavedFormatMigrations(locations: SavedFormatLocations
   }
   if (preview.pending === 0) return preview;
   const run = new Date().toISOString().replace(/[:.]/gu, "-");
-  return await store.withStorageLock(async () => {
+  return await store.withStorageLock(async (ownerNonce) => {
     // Rescan under the lock: another process may have written or upgraded files since the preview.
     const { files, complete } = await scanSavedFormats(locations);
     const report = summarize(files, complete, [configuration]);
@@ -228,7 +228,7 @@ export async function applySavedFormatMigrations(locations: SavedFormatLocations
       if (file.finding.status !== "upgradable" || !file.value) continue;
       const migration = MIGRATIONS.find((candidate) => candidate.id === file.finding.migration);
       if (!migration) continue;
-      await store.migrateJsonFile(file.finding.path, run, migration.apply(file.value));
+      await store.migrateJsonFile(file.finding.path, run, migration.apply(file.value), ownerNonce);
       migrated += 1;
     }
     return {

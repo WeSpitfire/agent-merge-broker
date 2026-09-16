@@ -793,7 +793,14 @@ program
       ...(options.task.length > 0 ? { taskIds: options.task } : {}),
       ...(options.maxTasks ? { maxTasks: positiveIntegerOption(options.maxTasks, "--max-tasks") } : {}),
     });
-    output(result, planHuman(result));
+    // A plan is a task listing; it must redact lease token hashes like every other task output.
+    output(
+      {
+        ...result,
+        selected: result.selected.map(publicTask),
+      },
+      planHuman(result),
+    );
   });
 
 program

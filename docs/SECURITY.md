@@ -78,7 +78,10 @@ modify the repository's Git directory can still modify broker state or audit rec
 stream is append-only by convention, not cryptographically tamper-evident.
 
 State, integration, fixed Gate-authority, and per-batch locks are correctness controls between
-cooperating local processes, not authorization boundaries. Their owner nonces prevent an old process
+cooperating local processes, not authorization boundaries. A state transaction re-proves its
+ownership nonce immediately before writing and fails with `LOCK_LOST` rather than writing under a
+reclaimed lock, and a lock whose owner recorded a different operating system instance is never
+treated as abandoned, because a process in another PID namespace can share this hostname. Their owner nonces prevent an old process
 from releasing a successor's lock, and only a provably dead same-host process is reclaimed
 automatically. An operator with filesystem access can force-unlock, edit state, or replace Git objects; the security model
 already trusts that operator and host. A shared Git directory does not provide distributed consensus

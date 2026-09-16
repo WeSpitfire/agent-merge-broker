@@ -16,6 +16,8 @@ import {
   type ServiceOptions,
 } from "./service.js";
 import { BrokerError } from "./errors.js";
+import { runCommand } from "./process.js";
+import { fileURLToPath } from "node:url";
 
 function options(overrides: Partial<ServiceOptions> = {}): ServiceOptions {
   return {
@@ -73,6 +75,31 @@ test("omits --eager when it was not asked for", () => {
   assert.doesNotMatch(systemdUnit(options({ eager: false })), /--eager/);
 });
 
+test(
+  "systemd accepts the generated unit",
+  { skip: process.platform === "linux" ? false : "systemd-analyze runs on Linux" },
+  async (context) => {
+    const analyze = await runCommand("systemd-analyze", ["--version"], { cwd: process.cwd(), allowFailure: true })
+      .catch(() => undefined);
+    if (!analyze || analyze.exitCode !== 0) {
+      context.skip("systemd-analyze is unavailable");
+      return;
+    }
+    const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-unit-"));
+    context.after(async () => await rm(directory, { recursive: true, force: true }));
+    const unit = path.join(directory, "merge-broker-test.service");
+    // Reference real executables so verification reports only formatting problems.
+    await writeFile(unit, systemdUnit(options({
+      repositoryRoot: directory,
+      nodePath: process.execPath,
+      cliPath: fileURLToPath(new URL("./cli.js", import.meta.url)),
+      logFile: path.join(directory, "serve.log"),
+    })), "utf8");
+    const verified = await runCommand("systemd-analyze", ["verify", unit], { cwd: directory, allowFailure: true });
+    assert.equal(verified.exitCode, 0, `${verified.stdout}\n${verified.stderr}`);
+  },
+);
+
 test("escapes a repository path that would otherwise break the plist", () => {
   const plist = launchdPlist(options({ repositoryRoot: "/Users/dev/Ben & Co <work>" }));
   assert.match(plist, /Ben &amp; Co &lt;work&gt;/);
@@ -82,9 +109,18 @@ test("escapes a repository path that would otherwise break the plist", () => {
 test("quotes systemd arguments so a spaced path stays one argument", () => {
   const unit = systemdUnit(options({ repositoryRoot: "/srv/two words" }));
   assert.match(unit, /ExecStart=.*"\/srv\/two words"/);
-  assert.match(unit, /StandardOutput="append:.*serve\.log"/);
-  assert.match(unit, /StandardError="append:.*serve\.log"/);
   assert.match(unit, /Restart=always/);
+});
+
+test("writes systemd path settings unquoted and escapes specifier characters", () => {
+  const unit = systemdUnit(options({ repositoryRoot: "/srv/100% both$ words" }));
+  // systemd does not strip quotes from these settings: a quoted path is not an absolute path,
+  // and a quoted append: target is ignored, so the service would fail to start or lose its log.
+  assert.match(unit, /\nWorkingDirectory=\/srv\/100%% both\$ words\n/u);
+  assert.match(unit, /\nStandardOutput=append:\/[^"\n]*serve\.log\n/u);
+  assert.match(unit, /\nStandardError=append:\/[^"\n]*serve\.log\n/u);
+  // Inside quoted command words, % starts a specifier and $ starts a variable reference.
+  assert.match(unit, /ExecStart=.*"\/srv\/100%% both\$\$ words"/u);
 });
 
 test("the Windows scheduled task is per-user, restartable, logged, and safely quoted", () => {

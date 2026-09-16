@@ -56,10 +56,15 @@ export interface LockStatus {
   name: string;
   held: boolean;
   path: string;
-  owner?: { pid?: number; host?: string; createdAt?: string; nonce?: string };
+  owner?: { pid?: number; host?: string; platform?: string; createdAt?: string; nonce?: string };
   ageMs?: number;
   /** True only when the holder is provably gone: this machine, and the process no longer exists. */
   abandoned?: boolean;
+}
+
+/** Identifies the operating system instance a lock owner's process ID belongs to. */
+function lockPlatform(): string {
+  return `${process.platform}-${process.arch}`;
 }
 
 const delay = async (milliseconds: number): Promise<void> => {
@@ -303,7 +308,7 @@ export class StateStore {
   }
 
   async transaction<T>(mutator: (state: CurrentBrokerState, audit: AuditRecorder) => Promise<T> | T): Promise<T> {
-    return await this.withLock("state", async () => {
+    return await this.withLock("state", async (ownerNonce) => {
       const state = await this.read();
       const events: AuditEvent[] = [];
       const record: AuditRecorder = (event, fields = {}) => {
@@ -311,6 +316,8 @@ export class StateStore {
         events.push({ sequence: state.sequence, at: new Date().toISOString(), event, ...fields });
       };
       const result = await mutator(state, record);
+      // Fencing: a mutator can run long enough for a reclaim to hand this lock to another process.
+      await this.assertLockOwned("state", ownerNonce);
       await this.atomicWrite(this.stateFile, state);
       if (events.length > 0) {
         await this.rotateAuditIfLarge();
@@ -325,8 +332,23 @@ export class StateStore {
   }
 
   /** Serializes audit compaction with state writes and audit rotation, without rewriting state. */
-  async withStorageLock<T>(operation: () => Promise<T>): Promise<T> {
+  async withStorageLock<T>(operation: (ownerNonce: string) => Promise<T> | T): Promise<T> {
     return await this.withLock("state", operation);
+  }
+
+  /**
+   * Prove this process still holds a lock before writing under it. Reclaim moves a provably dead
+   * owner's lock aside, and an unlucky reclaim of a live holder must not let both write.
+   */
+  async assertLockOwned(name: string, ownerNonce: string, directory = this.directory): Promise<void> {
+    const owner = await this.readLockOwner(path.join(directory, `${name}.lock`));
+    if (owner?.nonce !== ownerNonce) {
+      throw new BrokerError(
+        "LOCK_LOST",
+        `The ${name} lock is no longer held by this process; nothing was written. Re-run the operation.`,
+        { lock: name, ...(owner?.nonce ? { currentOwner: owner.nonce } : {}) },
+      );
+    }
   }
 
   /**
@@ -730,7 +752,8 @@ export class StateStore {
    * original bytes are durably copied under `archive/migrations/<run>/` before replacement, so an
    * operator can restore them if an older release must read the file again.
    */
-  async migrateJsonFile(target: string, run: string, value: unknown): Promise<string> {
+  async migrateJsonFile(target: string, run: string, value: unknown, ownerNonce: string): Promise<string> {
+    await this.assertLockOwned("state", ownerNonce);
     const relative = path.relative(this.commonGitDirectory, target);
     if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
       throw new BrokerError("UNSAFE_PATH", `Migration target is outside Git's common directory: ${target}`);
@@ -763,23 +786,8 @@ export class StateStore {
     const lockDirectory = path.join(directory, `${name}.lock`);
     const lockStat = await stat(lockDirectory).catch(() => undefined);
     if (!lockStat) return { name, held: false, path: lockDirectory };
-    let owner: LockStatus["owner"];
-    try {
-      const parsed = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as {
-        pid?: unknown;
-        host?: unknown;
-        createdAt?: unknown;
-        nonce?: unknown;
-      };
-      owner = {
-        ...(Number.isInteger(parsed.pid) ? { pid: parsed.pid as number } : {}),
-        ...(typeof parsed.host === "string" ? { host: parsed.host } : {}),
-        ...(typeof parsed.createdAt === "string" ? { createdAt: parsed.createdAt } : {}),
-        ...(typeof parsed.nonce === "string" ? { nonce: parsed.nonce } : {}),
-      };
-    } catch {
-      owner = undefined;
-    }
+    // One parser: a second copy here silently ignored the owner fields added for reclaim safety.
+    const owner = await this.readLockOwner(lockDirectory);
     return {
       name,
       held: true,
@@ -841,6 +849,7 @@ export class StateStore {
     const owner = {
       pid: process.pid,
       host: hostname(),
+      platform: lockPlatform(),
       createdAt: new Date().toISOString(),
       nonce: ownerNonce,
     };
@@ -877,7 +886,7 @@ export class StateStore {
   /** Builds a complete owner directory before atomically publishing it as the active lock. */
   private async tryAcquireLock(
     lockDirectory: string,
-    owner: { pid: number; host: string; createdAt: string; nonce: string },
+    owner: { pid: number; host: string; platform: string; createdAt: string; nonce: string },
   ): Promise<boolean> {
     const candidate = `${lockDirectory}.candidate-${owner.nonce}`;
     await mkdir(candidate, { mode: 0o700 });
@@ -915,12 +924,14 @@ export class StateStore {
       const parsed = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as {
         pid?: unknown;
         host?: unknown;
+        platform?: unknown;
         createdAt?: unknown;
         nonce?: unknown;
       };
       return {
         ...(Number.isInteger(parsed.pid) ? { pid: parsed.pid as number } : {}),
         ...(typeof parsed.host === "string" ? { host: parsed.host } : {}),
+        ...(typeof parsed.platform === "string" ? { platform: parsed.platform } : {}),
         ...(typeof parsed.createdAt === "string" ? { createdAt: parsed.createdAt } : {}),
         ...(typeof parsed.nonce === "string" ? { nonce: parsed.nonce } : {}),
       };
@@ -991,6 +1002,10 @@ export class StateStore {
    */
   private lockOwnerCrashed(owner: LockStatus["owner"]): boolean {
     if (!owner) return false;
+    // A WSL2 or container process can share this hostname while running in another PID namespace,
+    // where its PID means nothing here. Records written before platforms were recorded fall back to
+    // the host and process check.
+    if (owner.platform !== undefined && owner.platform !== lockPlatform()) return false;
     // Records written before owners carried a hostname fall back to the process check. Treating them
     // as foreign instead would strand a crashed holder's lock for the full stale timeout.
     if (owner.host !== undefined && owner.host !== hostname()) return false;

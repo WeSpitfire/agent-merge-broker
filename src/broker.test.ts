@@ -1357,6 +1357,25 @@ test("retires completed records but keeps dependencies of active work", async (c
   assert.equal(metricsAfter.records.archivedTasks, 1);
   assert.equal(metricsAfter.records.archivedBatches, 1);
 
+  // An interrupted prune, or a replayed slice, can archive a record that is still active. Counting
+  // both copies would inflate historical throughput.
+  await broker.store.archive("state", {
+    version: 1,
+    archivedAt: new Date().toISOString(),
+    cutoff: new Date().toISOString(),
+    tasks: { "DONE-A": state.tasks["DONE-A"] },
+    batches: { [keptBatch]: state.batches[keptBatch] },
+  });
+  const metricsWithOverlap = await broker.metrics() as {
+    records: { archivedTasks: number; archivedBatches: number };
+    tasks: { total: number; merged: number };
+    batches: { total: number; merged: number };
+  };
+  assert.equal(metricsWithOverlap.tasks.total, metricsAfter.tasks.total);
+  assert.equal(metricsWithOverlap.batches.total, metricsAfter.batches.total);
+  assert.equal(metricsWithOverlap.records.archivedTasks, 1);
+  assert.equal(metricsWithOverlap.records.archivedBatches, 1);
+
   // A pruned dependency would strand its dependents, so the surviving one still plans.
   assert.deepEqual((await broker.plan()).selected.map((task) => task.id), ["ACTIVE"]);
 });

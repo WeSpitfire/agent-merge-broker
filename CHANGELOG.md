@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The pre-push guard now inspects the remote ref a push would update, not the local ref. A mapped
+  push such as `git push origin HEAD:main` previously bypassed it.
+- The systemd unit writes `WorkingDirectory` and `append:` log targets unquoted and escapes `%` and
+  `$`. systemd does not strip quotes from those settings, so the generated unit could fail to load or
+  silently drop its log. A test runs `systemd-analyze verify` where systemd is available.
+- State transactions prove they still hold the state lock immediately before writing, and report the
+  new `LOCK_LOST` code instead of writing under a lock that was reclaimed. Lock owners record their
+  operating system instance, so a process in a WSL2 or container namespace that shares a hostname is
+  never treated as a dead holder. Lock owner files are parsed in one place; a second parser had
+  silently dropped the fields reclaim safety depends on.
+- `doctor` reports the supported Node.js version as 22, matching the package's engines range.
+- Support bundles redact private keys, bearer and authorization credentials in free text, URLs of any
+  scheme, scp-style Git locators for any user, and fields named for signing keys, API keys,
+  authorization, passphrases, cookies, and sessions. Repository and home paths are matched with both
+  separator styles, and case-insensitively on Windows.
+- `plan --json` redacts lease token hashes, as other task output already did.
+- `metrics` counts a record once when an interrupted or replayed prune leaves it in both active state
+  and an archive slice.
+
 ## 0.16.0 — 2026-09-15
 
 Contract release. It defines the CLI, Node, MCP, error, and saved-format interfaces that `1.0` will
