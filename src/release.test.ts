@@ -113,6 +113,13 @@ test("Windows configures LF checkout before materializing generated schema fixtu
   assert.ok(configure >= 0 && configure < checkout, "Changing autocrlf after checkout cannot repair existing CRLF bytes.");
 });
 
+test("Windows checks native validator supervision before the complete verification suite", () => {
+  const preflight = verificationWorkflow.indexOf("node --test --test-reporter=spec dist/process.test.js dist/execution-guard.test.js dist/validation.test.js");
+  const complete = verificationWorkflow.indexOf("- run: npm run verify");
+  assert.ok(preflight >= 0 && preflight < complete);
+  assert.match(verificationWorkflow, /name: Verify Windows validator supervision early\r?\n\s+if: runner\.os == 'Windows'/u);
+});
+
 test("publication requires verification of the release event's immutable commit, not another main run", () => {
   const resolve = workflowJob(releaseWorkflow, "resolve");
   const verify = workflowJob(releaseWorkflow, "verify");

@@ -41,6 +41,8 @@
 - Windows supervision survives broker termination long enough to record an empty validator job,
   and suppresses PowerShell bootstrap progress so validator output remains intact. Recovery tests
   use portable module URLs and compare canonical paths across Windows short-name aliases.
+- Supervised commands require an explicit launch-specific completion message. A supervisor that
+  exits successfully before starting or finishing its command cannot count as passing validation.
 
 - The pre-push guard now inspects the remote ref a push would update, not the local ref. A mapped
   push such as `git push origin HEAD:main` previously bypassed it.

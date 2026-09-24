@@ -140,6 +140,10 @@ public static class MergeBrokerSupervisor {
       // Parent death can break the output pipes. Persist the already-proven empty job first so
       // a diagnostic copy failure cannot strand automatic recovery after a normal disconnect.
       Task.WaitAll(stdout, stderr);
+      // A clean host exit is not proof that the command ran. Only this launch-bound frame, after
+      // executor completion and job quiescence, authorizes the broker to accept its exit status.
+      Console.Error.Write("\u001eMERGE_BROKER_SUPERVISOR_RESULT:" + (string)input["protocolNonce"] + ":" + code + "\u001f");
+      Console.Error.Flush();
       return code;
     } catch (Exception error) {
       Console.Error.WriteLine("Validator supervisor failed: " + error.Message);
@@ -157,6 +161,34 @@ export const WINDOWS_SUPERVISOR = Buffer.from(
   `$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\nAdd-Type -ReferencedAssemblies 'System.Web.Extensions' -TypeDefinition @'\n${WINDOWS_SOURCE}\n'@\nexit ([MergeBrokerSupervisor]::Run())`,
   "utf16le",
 ).toString("base64");
+
+// PowerShell's console host can exit without executing its command under DETACHED_PROCESS. A
+// detached Node relay survives broker death, while its non-detached PowerShell child retains the
+// working CREATE_NO_WINDOW launch mode. Keep all pipes referenced until PowerShell has drained its
+// job; relay death instead closes libuv's kill-on-close job, killing PowerShell and its validator job.
+export const WINDOWS_RELAY = String.raw`
+const { spawn } = require("node:child_process");
+process.env.NoDefaultCurrentDirectoryInExePath = "1";
+const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", ${JSON.stringify(WINDOWS_SUPERVISOR)}], {
+  stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false,
+});
+const relay = (source, destination) => {
+  let open = true;
+  destination.on("error", () => { open = false; source.resume(); });
+  destination.on("drain", () => source.resume());
+  source.on("data", (chunk) => {
+    if (open && !destination.write(chunk)) source.pause();
+  });
+  return () => open;
+};
+relay(child.stdout, process.stdout);
+const errorOpen = relay(child.stderr, process.stderr);
+child.stdin.on("error", () => {});
+process.stdin.pipe(child.stdin);
+process.stdin.on("error", () => child.stdin.end());
+child.once("error", (error) => { if (errorOpen()) console.error(error.message); process.exitCode = 127; });
+child.once("close", (code) => { process.stdin.destroy(); process.exitCode = code ?? 128; });
+`;
 
 export function windowsSupervisorInput(input: Record<string, unknown>): string {
   return `${JSON.stringify({ ...input, node: process.execPath, executor: WINDOWS_EXECUTOR })}\n`;

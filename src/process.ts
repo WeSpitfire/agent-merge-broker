@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { CommandError } from "./errors.js";
 import { registerExecution, retireExecution, type ExecutionGuard } from "./execution-guard.js";
-import { POSIX_SUPERVISOR, WINDOWS_SUPERVISOR, windowsSupervisorInput } from "./process-supervisor.js";
+import { POSIX_SUPERVISOR, WINDOWS_RELAY, windowsSupervisorInput } from "./process-supervisor.js";
 
 export interface CommandResult {
   command: string;
@@ -284,10 +285,8 @@ async function runSupervisedCommand(
   const bootstrapEnvironment = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
     !/^(?:NODE_OPTIONS|NODE_PATH|NODE_REPL_EXTERNAL_MODULE|PSModulePath|LD_.*|DYLD_.*)$/iu.test(name)));
   const child = withoutCurrentDirectoryExecutableSearch(() => spawn(
-    windows ? "powershell.exe" : process.execPath,
-    windows
-      ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_SUPERVISOR]
-      : ["--input-type=commonjs", "-e", POSIX_SUPERVISOR],
+    process.execPath,
+    ["--input-type=commonjs", "-e", windows ? WINDOWS_RELAY : POSIX_SUPERVISOR],
     {
       // libuv puts non-detached Windows children in its own kill-on-parent-exit job. The supervisor
       // must survive broker death long enough to empty its separate validator job and persist proof.
@@ -302,7 +301,12 @@ async function runSupervisedCommand(
   let launchError: Error | undefined;
   let timedOut = false;
   let ready = false;
+  let handedOff = false;
+  let exited = false;
   let startupError = "";
+  const protocolNonce = randomUUID();
+  const resultPrefix = `\u001eMERGE_BROKER_SUPERVISOR_RESULT:${protocolNonce}:`;
+  let protocolOutput = "";
   let timer: NodeJS.Timeout | undefined;
   let forceTimer: NodeJS.Timeout | undefined;
   let starting: Promise<void> | undefined;
@@ -325,14 +329,19 @@ async function runSupervisedCommand(
     starting = (async () => {
       if (!child.pid) throw new Error("Validator supervisor has no process identity.");
       guard = await registerExecution(child.pid, options.cwd);
+      if (exited) throw new Error("Validator supervisor exited before command handoff.");
       const input = {
-        type: "start", ...command, cwd: options.cwd, env: environment,
+        type: "start", ...command, cwd: options.cwd, env: environment, protocolNonce,
         ...(options.input !== undefined ? { input: options.input } : {}),
         ...(guard ? { guardFile: guard.file, guardNonce: guard.nonce } : {}),
       };
-      if (windows) child.stdin?.write(windowsSupervisorInput(input));
-      else if (child.connected) child.send(input);
-      else throw new Error("Validator supervisor exited before command handoff.");
+      await new Promise<void>((resolve, reject) => {
+        const sent = (error: Error | null | undefined): void => error ? reject(error) : resolve();
+        if (windows && child.stdin?.writable) child.stdin.write(windowsSupervisorInput(input), sent);
+        else if (!windows && child.connected) child.send(input, sent);
+        else reject(new Error("Validator supervisor exited before command handoff."));
+      });
+      handedOff = true;
       if (options.timeoutMs) {
         timer = setTimeout(() => { timedOut = true; stop(); }, options.timeoutMs);
       }
@@ -349,14 +358,39 @@ async function runSupervisedCommand(
   child.stdout?.setEncoding("utf8");
   child.stderr?.setEncoding("utf8");
   child.stdout?.on("data", (chunk: string) => stdout.append(chunk));
-  child.stderr?.on("data", (chunk: string) => {
-    if (!windows || ready) { stderr.append(chunk); return; }
-    startupError = (startupError + chunk).slice(-8_192);
-    const marker = "MERGE_BROKER_SUPERVISOR_READY";
-    const index = startupError.indexOf(marker);
+  const captureWindowsStderr = (chunk: string): void => {
+    protocolOutput += chunk;
+    const index = protocolOutput.indexOf(resultPrefix);
     if (index >= 0) {
-      stderr.append(startupError.slice(0, index));
-      stderr.append(startupError.slice(index + marker.length).replace(/^\r?\n/u, ""));
+      stderr.append(protocolOutput.slice(0, index));
+      protocolOutput = protocolOutput.slice(index);
+      const end = protocolOutput.indexOf("\u001f", resultPrefix.length);
+      if (end >= 0) {
+        const value = protocolOutput.slice(resultPrefix.length, end);
+        if (/^-?\d{1,10}$/u.test(value) && Number.isSafeInteger(Number(value))) resultCode = Number(value);
+        else launchError = new Error("Validator supervisor reported an invalid command completion.");
+        stderr.append(protocolOutput.slice(end + 1));
+        protocolOutput = "";
+      } else if (protocolOutput.length > resultPrefix.length + 12) {
+        launchError = new Error("Validator supervisor reported an invalid command completion.");
+        stderr.append(protocolOutput);
+        protocolOutput = "";
+      }
+      return;
+    }
+    // Retain only enough text to recognize a control frame split across pipe chunks.
+    const retain = Math.min(protocolOutput.length, resultPrefix.length - 1);
+    stderr.append(protocolOutput.slice(0, protocolOutput.length - retain));
+    protocolOutput = protocolOutput.slice(-retain);
+  };
+  child.stderr?.on("data", (chunk: string) => {
+    if (!windows) { stderr.append(chunk); return; }
+    if (ready) { captureWindowsStderr(chunk); return; }
+    startupError = (startupError + chunk).slice(-8_192);
+    const marker = /MERGE_BROKER_SUPERVISOR_READY\r?\n/u.exec(startupError);
+    if (marker) {
+      stderr.append(startupError.slice(0, marker.index));
+      captureWindowsStderr(startupError.slice(marker.index + marker[0].length));
       startupError = "";
       start();
     }
@@ -370,6 +404,7 @@ async function runSupervisedCommand(
     }
   });
   child.once("exit", () => {
+    exited = true;
     if (!windows && resultCode === undefined && child.pid) {
       // A supervisor can itself be killed while its owner remains alive. Stop the group belonging
       // to this current child handle before returning control to cleanup in the caller.
@@ -383,6 +418,7 @@ async function runSupervisedCommand(
     });
     await starting;
     if (startupError) stderr.append(startupError);
+    if (protocolOutput) stderr.append(protocolOutput);
     // close observes the supervisor's pipes, while its POSIX group can take a little longer to
     // disappear. Keep the durable guard if an unexpected supervisor death left any child alive.
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -390,7 +426,13 @@ async function runSupervisedCommand(
       await new Promise<void>((resolve) => setTimeout(resolve, 25));
     }
     if (launchError) throw launchError;
-    const exitCode = timedOut ? 128 : resultCode ?? code ?? 128;
+    // Supervisor exit status alone is never validator success: console/bootstrap failures can
+    // exit zero before READY, after READY, or after accepting a command without executing it.
+    if (!ready || !handedOff || (!timedOut && resultCode === undefined)) {
+      const stage = !ready ? "initializing" : !handedOff ? "command handoff" : "reporting command completion";
+      throw new Error(`Validator supervisor exited before ${stage} (status ${code ?? "unknown"}). ${stderr.value()}`.trim());
+    }
+    const exitCode = timedOut ? 128 : resultCode!;
     const result = {
       command: rendered, exitCode, stdout: stdout.value(),
       stderr: stderr.value() + (timedOut ? `\nTimed out after ${options.timeoutMs}ms` : ""),
