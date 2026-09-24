@@ -325,14 +325,25 @@ export async function enableAutoMerge(
 
   // The request may have reached GitHub even when the CLI process lost its response. A durable
   // broker retry must recognize the already-queued state instead of warning forever while the PR
-  // is, in fact, waiting to merge.
-  const autoMergeStatus = await readAutoMergeStatus(repoRoot, pullRequestUrl);
+  // is, in fact, waiting to merge. A rejected head guard can also leave another head queued: bind
+  // recovery to one coherent observation before treating any queue or terminal state as ours.
+  const guardedState = expectedHeadSha ? await inspectPullRequest(repoRoot, pullRequestUrl) : undefined;
+  if (guardedState && guardedState.headRefOid !== expectedHeadSha) {
+    throw new BrokerError("AUTO_MERGE_FAILED", "The pull request head no longer matches the candidate whose auto-merge was requested.", {
+      pullRequestUrl, expectedHeadSha, actualHeadSha: guardedState.headRefOid,
+    });
+  }
+  const autoMergeStatus = guardedState
+    ? { state: guardedState.state, enabled: guardedState.autoMergeEnabled }
+    : await readAutoMergeStatus(repoRoot, pullRequestUrl);
   if (autoMergeStatus?.state === "MERGED" || autoMergeStatus?.enabled) return true;
 
   // GitHub refuses to queue auto-merge on a pull request that is already mergeable, which happens
   // whenever the required checks finish before publication returns. Ask GitHub what the state is
   // instead of reading the CLI's prose, which differs across gh versions and locales.
-  const mergeState = await readMergeState(repoRoot, pullRequestUrl);
+  const mergeState = guardedState
+    ? { state: guardedState.state, mergeStateStatus: guardedState.mergeStateStatus ?? "UNKNOWN", mergeable: guardedState.mergeable ?? "UNKNOWN" }
+    : await readMergeState(repoRoot, pullRequestUrl);
   if (mergeState?.state === "MERGED") return true;
   if (mergeState?.mergeStateStatus === "CLEAN") {
     // "CLEAN" means mergeable with every required check already passed, so merging now is exactly

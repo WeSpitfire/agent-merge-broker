@@ -2,6 +2,7 @@ import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, readFile, rm } from "node:fs/promises";
 import { BrokerError, CommandError, ValidationError } from "./errors.js";
+import { assertExecutionsStopped } from "./execution-guard.js";
 import {
   GitRepository,
   isHostQualifiedForgeRepository,
@@ -1620,6 +1621,9 @@ export class MergeBroker {
           rejected: plan.rejected,
         });
       } catch (error) {
+        // Preserve the running batch and its worktree pointer if a supervisor failed without
+        // proving its validator tree stopped. Recovery must resolve that execution before cleanup.
+        await assertExecutionsStopped();
         keepWorktree = this.config.integration.keepFailedWorktrees;
         if (retainedBranchCreated && batch.branchName) {
           await this.repo.deleteBranch(batch.branchName);

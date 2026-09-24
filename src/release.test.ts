@@ -165,6 +165,41 @@ test("core publication is opt-in and independent of the existing full-package pu
   assert.match(core, /npm publish "\.\/release-core-package\/agent-merge-broker-core-\$RELEASE_VERSION\.tgz" --provenance --access public/u);
 });
 
+test("release candidates use next and contradictory release metadata cannot publish", async () => {
+  const script = fileURLToPath(new URL("../scripts/release-channel.mjs", import.meta.url));
+  const channel = async (version: string, prerelease: string) => await runCommand(
+    process.execPath, [script, version, prerelease], { cwd: path.dirname(script), allowFailure: true },
+  );
+  for (const [version, prerelease, expected] of [
+    ["0.17.0", "false", "latest"],
+    ["1.0.0", "false", "latest"],
+    ["1.0.0-rc.1", "true", "next"],
+    ["1.0.0-beta.2", "true", "next"],
+  ]) {
+    const result = await channel(version!, prerelease!);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.stdout.trim(), expected);
+  }
+  for (const [version, prerelease] of [
+    ["1.0.0-rc.1", "false"], ["1.0.0", "true"], ["1.0.0", ""],
+    ["1.0.0-rc.01", "true"], ["01.0.0", "false"], ["1.0.0+build", "false"],
+    ["1.0.0\n", "false"], ["not-a-version", "false"],
+  ]) {
+    const result = await channel(version!, prerelease!);
+    assert.notEqual(result.exitCode, 0, `${version} / ${prerelease} must be refused`);
+    assert.equal(result.stdout, "");
+  }
+  const resolve = workflowJob(releaseWorkflow, "resolve");
+  assert.match(resolve, /RELEASE_PRERELEASE: \$\{\{ github\.event\.release\.prerelease \}\}/u);
+  assert.match(resolve, /node scripts\/release-channel\.mjs "\$package_version" "\$RELEASE_PRERELEASE"/u);
+  assert.match(resolve, /channel: \$\{\{ steps\.release\.outputs\.channel \}\}/u);
+  for (const name of ["npm", "npm-core"]) {
+    const publisher = workflowJob(releaseWorkflow, name);
+    assert.match(publisher, /NPM_DIST_TAG: \$\{\{ needs\.resolve\.outputs\.channel \}\}/u);
+    assert.match(publisher, /npm publish .* --tag "\$NPM_DIST_TAG"/u);
+  }
+});
+
 test("release artifact verification rejects changed bytes and a different source commit", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-release-artifact-"));
   context.after(async () => { await rm(directory, { recursive: true, force: true }); });

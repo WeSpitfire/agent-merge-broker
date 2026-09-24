@@ -1,0 +1,1162 @@
+// core.d.ts
+export { MergeBroker, type AdoptCandidateInput, type ClaimTaskInput, type RegisterCandidateAuthorityOptions, type RegisterTaskInput, } from "./broker.js";
+export { defaultConfig, loadConfig, validateConfig } from "./config.js";
+export { githubCliPublisher, type ForgePublisher, type PublicationResult, type PullRequestState, } from "./publisher.js";
+export { batchIdFromBranch, policyFromBase, verifyProvenance, type ProvenanceVerification, type VerifyProvenanceOptions, } from "./verify.js";
+export { provenanceKeyId, provenancePath, verifyBatchProvenanceSignature } from "./provenance.js";
+export { verifySubmissionAttestation, SUBMISSION_ATTESTATION_PAYLOAD_TYPE, SUBMISSION_ATTESTATION_PREDICATE_TYPE, type SubmissionAttestationEnvelope, type SubmissionAttestationStatement, type SubmissionAttestationVerificationOptions, type SubmissionAttestationVerificationResult, } from "./submission-attestation.js";
+export { schemaFingerprint, schemaSnapshotIdentity } from "./schema-identity.js";
+export { BrokerError } from "./errors.js";
+export { BROKER_ERROR_CATEGORIES, BROKER_ERROR_CODES, type BrokerErrorCategory, type BrokerErrorCode, } from "./error-codes.js";
+export type { LockStatus } from "./store.js";
+export type { HookInstallation } from "./hooks.js";
+export type { ServiceInstallation } from "./service.js";
+export type { AgentContractResult, BootstrapPlan } from "./bootstrap.js";
+export type { StorageCategory, StorageCompactionOptions, StorageCompactionResult, StorageReport, } from "./storage.js";
+export type * from "./types.js";
+
+// index.d.ts
+export * from "./core.js";
+export { createMcpServer, mcpToolNames, type McpProfile } from "./mcp.js";
+
+// broker.d.ts
+import { type AgentContractResult, type BootstrapPlan } from "./bootstrap.js";
+import { type LockStatus } from "./store.js";
+import { type StorageCompactionOptions, type StorageCompactionResult, type StorageReport } from "./storage.js";
+import { type ForgePublisher } from "./publisher.js";
+import { type HookInstallation } from "./hooks.js";
+import { type SubmissionAttestationEnvelope } from "./submission-attestation.js";
+import { type ServiceInstallation } from "./service.js";
+import type { BatchRecord, BrokerConfig, CurrentBrokerState, GateAuthorityRegistration, IntegrationOptions, IntegrationResult, LocalValidationResult, MigrationReport, RefreshResult, RevisionResult, RecoveryResult, PruneOptions, PruneResult, SchedulePlan, SubmissionRecord, SubmissionArchiveOptions, SubmissionArchiveResult, TaskRecord } from "./types.js";
+export interface RegisterTaskInput {
+    id: string;
+    title?: string;
+    agent?: string;
+    base?: string;
+    expectedPaths?: string[];
+    dependsOn?: string[];
+    priority?: number;
+    worktree?: string;
+}
+export interface ClaimTaskInput extends RegisterTaskInput {
+    holder: string;
+    storeToken?: boolean;
+    tokenFile?: string;
+}
+export interface AdoptCandidateInput {
+    ref: string;
+}
+export interface RegisterCandidateAuthorityOptions {
+    replace?: boolean;
+}
+export declare class MergeBroker {
+    readonly config: BrokerConfig;
+    private constructor();
+    static open(cwd?: string, options?: {
+        publisher?: ForgePublisher;
+    }): Promise<MergeBroker>;
+    static inspectStorage(cwd?: string): Promise<StorageReport>;
+    static compactAuditStorage(cwd?: string, options?: StorageCompactionOptions): Promise<StorageCompactionResult>;
+    static migrate(cwd?: string, options?: {
+        apply?: boolean;
+    }): Promise<MigrationReport>;
+    static initialize(cwd?: string, options?: {
+        baseBranch?: string;
+        baseRef?: string;
+        remote?: string;
+        force?: boolean;
+        detect?: boolean;
+        agentContract?: boolean;
+    }): Promise<{
+        repoRoot: string;
+        configPath: string;
+        created: boolean;
+        updated: boolean;
+        operational: boolean;
+        signingConfigured: boolean;
+        bootstrap?: BootstrapPlan;
+        agentContract?: AgentContractResult;
+    }>;
+    setupProvenanceSigning(options?: {
+        privateKeyFile?: string;
+        rotate?: boolean;
+    }): Promise<{
+        publicKey: string;
+        keyId: string;
+        keyPath: string;
+    }>;
+    registerTask(input: RegisterTaskInput): Promise<TaskRecord>;
+    claimTask(input: ClaimTaskInput): Promise<{
+        task: TaskRecord;
+        token: string;
+        tokenPath?: string;
+    }>;
+    heartbeat(taskId: string, token: string): Promise<TaskRecord>;
+    extendTask(taskId: string, expectedPaths: string[], token: string): Promise<TaskRecord>;
+    releaseTask(taskId: string, token?: string, options?: {
+        force?: boolean;
+    }): Promise<TaskRecord>;
+    cancelTask(taskId: string, token?: string, options?: {
+        force?: boolean;
+    }): Promise<TaskRecord>;
+    retryTask(taskId: string, token?: string): Promise<TaskRecord>;
+    submitTask(taskId: string, commits: string[], token: string, options?: {
+        sinceBase?: boolean;
+    }): Promise<{
+        task: TaskRecord;
+        receiptPath: string;
+    }>;
+    state(): Promise<CurrentBrokerState>;
+    registerCandidateAuthority(options?: RegisterCandidateAuthorityOptions): Promise<GateAuthorityRegistration>;
+    candidateAuthority(): Promise<GateAuthorityRegistration | undefined>;
+    adoptCandidate(input: AdoptCandidateInput): Promise<SubmissionRecord>;
+    submission(id: string): Promise<SubmissionRecord>;
+    submissions(options?: {
+        includeArchived?: boolean;
+    }): Promise<SubmissionRecord[]>;
+    abandonSubmission(id: string, reason: string): Promise<SubmissionRecord>;
+    archiveSubmissions(options?: SubmissionArchiveOptions): Promise<SubmissionArchiveResult>;
+    attestSubmission(id: string): Promise<SubmissionAttestationEnvelope>;
+    candidateReadiness(): Promise<Record<string, unknown>>;
+    task(taskId: string): Promise<TaskRecord>;
+    plan(options?: {
+        taskIds?: string[];
+        maxTasks?: number;
+    }): Promise<SchedulePlan>;
+    validateWorkingTree(options?: {
+        taskId?: string;
+        scope?: "focused" | "authoritative" | "all";
+        base?: string;
+        files?: string[];
+        cwd?: string;
+    }): Promise<LocalValidationResult>;
+    integrate(options?: IntegrationOptions): Promise<IntegrationResult>;
+    recoverAbandonedIntegrations(): Promise<RecoveryResult>;
+    publishBatch(id: string): Promise<BatchRecord>;
+    recordVerification(id: string, input: {
+        name: string;
+        status: "passed" | "failed";
+        candidateSha: string;
+        baseSha: string;
+        policyRevision?: string;
+        actor: string;
+        evidenceUrl?: string;
+        notes?: string;
+    }): Promise<BatchRecord>;
+    requestChanges(id: string, input: {
+        candidateSha: string;
+        baseSha: string;
+        policyRevision?: string;
+        actor: string;
+        reason: string;
+    }): Promise<BatchRecord>;
+    approveBatch(id: string, input: {
+        candidateSha: string;
+        baseSha: string;
+        policyRevision?: string;
+        actor: string;
+    }): Promise<BatchRecord>;
+    reopenTaskForRevision(taskId: string, input: {
+        holder: string;
+        expectedPaths?: string[];
+        worktree?: string;
+        reason?: string;
+        storeToken?: boolean;
+        tokenFile?: string;
+    }): Promise<{
+        task: TaskRecord;
+        batch: BatchRecord;
+        token: string;
+        tokenPath?: string;
+    }>;
+    reviseTask(taskId: string, commits: string[], token: string, options?: {
+        sinceBase?: boolean;
+    }): Promise<RevisionResult>;
+    syncBatch(id: string): Promise<BatchRecord>;
+    syncPublishedBatches(): Promise<{
+        synced: BatchRecord[];
+        closed: BatchRecord[];
+        unchanged: BatchRecord[];
+        errors: Array<{
+            batchId: string;
+            error: string;
+        }>;
+    }>;
+    closeBatch(id: string, reason: string): Promise<BatchRecord>;
+    refreshBatch(id: string, options?: {
+        publish?: boolean;
+    }): Promise<RefreshResult>;
+    markBatchMerged(id: string, mergedAt?: string, mergeCommitSha?: string): Promise<BatchRecord>;
+    auditWorktrees(): Promise<{
+        worktrees: Array<{
+            path: string;
+            branch?: string;
+            registeredTaskIds: string[];
+            registeredSubmissionIds: string[];
+            clean: boolean;
+        }>;
+        staleLeases: string[];
+        unregisteredWorktrees: string[];
+    }>;
+    prune(options?: PruneOptions): Promise<PruneResult>;
+    installHooks(options?: {
+        force?: boolean;
+        uninstall?: boolean;
+    }): Promise<HookInstallation>;
+    installService(options?: {
+        uninstall?: boolean;
+        intervalSeconds?: number;
+        eager?: boolean;
+        nodePath?: string;
+        cliPath?: string;
+        pathEntries?: string[];
+        logFile?: string;
+    }): Promise<ServiceInstallation | {
+        name: string;
+        file: string;
+        removed: boolean;
+    }>;
+    inspectLocks(): Promise<LockStatus[]>;
+    releaseLock(name: string, options?: {
+        force?: boolean;
+    }): Promise<LockStatus>;
+    metrics(): Promise<Record<string, unknown>>;
+    doctor(options?: {
+        gate?: boolean;
+    }): Promise<Record<string, unknown>>;
+}
+
+// types.d.ts
+export declare const STATE_VERSION: 1;
+export declare const CONFIG_VERSION: 1;
+export declare const SUBMISSION_VERSION: 1;
+export declare const GATE_AUTHORITY_VERSION: 1;
+export declare const ARCHIVED_STATE_VERSION: 1;
+export type UnexpectedPathPolicy = "error" | "warn" | "allow";
+export type PublishMode = "none" | "branch" | "pull-request";
+export type ValidationAuthority = "broker" | "required-ci";
+export type HistoryMode = "preserve" | "squash";
+export type MergeMethod = "squash" | "merge" | "rebase";
+export type CandidateState = "verifying" | "ready_for_approval" | "approved" | "merging" | "changes_requested" | "verification_failed" | "superseded" | "blocked" | "abandoned" | "merged";
+export type VerificationStatus = "passed" | "failed";
+export type VerificationSource = "manual" | "github-check";
+export type TaskStatus = "registered" | "claimed" | "submitted" | "integrating" | "batched" | "published" | "merged" | "failed" | "cancelled";
+export type BatchStatus = "running" | "verified" | "prepared" | "published" | "merged" | "closed" | "failed";
+export type SubmissionStatus = "received" | "validating" | "validated" | "rejected" | "failed" | "abandoned";
+export interface ValidatorConfig {
+    name: string;
+    command: string;
+    workingDirectory?: string;
+    paths?: string[];
+    filesInput?: "inline" | "json";
+    timeoutSeconds?: number;
+    env?: Record<string, string>;
+    executionArchitecture?: "process" | "native";
+}
+export interface BrokerConfig {
+    version: typeof CONFIG_VERSION;
+    baseBranch: string;
+    baseRef: string;
+    remote: string;
+    stateDirectory: string;
+    leases: {
+        ttlSeconds: number;
+        lockTimeoutSeconds: number;
+        serializedPatterns: string[];
+    };
+    policies: {
+        unexpectedPaths: UnexpectedPathPolicy;
+        requireCleanWorktree: boolean;
+        requireDependencies: boolean;
+    };
+    scheduling: {
+        maxTasks: number;
+        maxCommits: number;
+        maxWaitSeconds: number;
+        allowPathOverlap: boolean;
+    };
+    integration: {
+        branchPrefix: string;
+        history: HistoryMode;
+        keepFailedWorktrees: boolean;
+        refreshBase: boolean;
+        maxAttempts: number;
+        provenance?: {
+            enabled: boolean;
+            directory: string;
+            requireSignature?: boolean;
+            publicKey?: string;
+        };
+    };
+    validation: {
+        shell?: string;
+        authority: ValidationAuthority;
+        focused: ValidatorConfig[];
+        authoritative: ValidatorConfig[];
+    };
+    approval?: {
+        required: boolean;
+        policyRevision: string;
+        requiredVerifications: string[];
+        requiredChecks: string[];
+        authorizedActors: string[];
+    };
+    publish: {
+        mode: PublishMode;
+        repository?: string;
+        draft: boolean;
+        autoMerge: boolean;
+        mergeMethod: MergeMethod;
+        labels: string[];
+        titleTemplate: string;
+    };
+}
+export interface VerificationEvidence {
+    name: string;
+    source: VerificationSource;
+    status: VerificationStatus;
+    candidateSha: string;
+    baseSha: string;
+    policyRevision: string;
+    actor: string;
+    recordedAt: string;
+    evidenceUrl?: string;
+    notes?: string;
+}
+export interface ApprovalRecord {
+    candidateSha: string;
+    baseSha: string;
+    policyRevision: string;
+    actor: string;
+    approvedAt: string;
+    confirmedAt?: string;
+    revocationRequestedAt?: string;
+    revocationReason?: string;
+}
+export interface CandidateRecord {
+    revision: number;
+    sha: string;
+    baseSha: string;
+    policyRevision: string;
+    state: CandidateState;
+    requiredVerifications: string[];
+    verifications: VerificationEvidence[];
+    createdAt: string;
+    approval?: ApprovalRecord;
+    reason?: string;
+}
+export interface LeaseRecord {
+    tokenHash: string;
+    holder: string;
+    acquiredAt: string;
+    heartbeatAt: string;
+    expiresAt: string;
+}
+export interface ValidationResult {
+    name: string;
+    command: string;
+    scope: "focused" | "authoritative";
+    taskId?: string;
+    startedAt: string;
+    finishedAt: string;
+    durationMs: number;
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+}
+export interface TaskRecord {
+    id: string;
+    title?: string;
+    agent?: string;
+    status: TaskStatus;
+    priority: number;
+    baseSha: string;
+    expectedPaths: string[];
+    actualPaths: string[];
+    dependsOn: string[];
+    commits: string[];
+    worktree?: string;
+    lease?: LeaseRecord;
+    warnings: string[];
+    validations: ValidationResult[];
+    createdAt: string;
+    updatedAt: string;
+    submittedAt?: string;
+    batchedAt?: string;
+    publishedAt?: string;
+    mergedAt?: string;
+    batchId?: string;
+    lastError?: string;
+    attempts?: number;
+}
+export interface BatchRecord {
+    id: string;
+    status: BatchStatus;
+    taskIds: string[];
+    validationAuthority?: ValidationAuthority;
+    remote?: string;
+    publicationMode?: PublishMode;
+    remoteUrlFingerprint?: string;
+    forgeRepository?: string;
+    baseBranch: string;
+    baseSha: string;
+    branchName?: string;
+    headSha?: string;
+    candidate?: CandidateRecord;
+    candidateHistory?: CandidateRecord[];
+    integratedHeadSha?: string;
+    provenancePath?: string;
+    worktree?: string;
+    validations: ValidationResult[];
+    createdAt: string;
+    finishedAt?: string;
+    publishedAt?: string;
+    pullRequestUrl?: string;
+    autoMergeEnabled?: boolean;
+    autoMergePending?: boolean;
+    changeRequestIntent?: {
+        candidateSha: string;
+        baseSha: string;
+        policyRevision?: string;
+        actor: string;
+        reason: string;
+        requestedAt: string;
+    };
+    publishWarning?: string;
+    refreshRequired?: boolean;
+    refreshCloseIntent?: {
+        pullRequestUrl: string;
+        targetBaseSha: string;
+        startedAt: string;
+        nonce?: string;
+    };
+    closedAt?: string;
+    error?: string;
+    revisionIntent?: CandidateRevisionIntent;
+}
+export interface LocalRefSubmissionSource {
+    kind: "local-ref";
+    ref: string;
+}
+export interface SubmissionArtifactIdentity {
+    kind: "git-commit";
+    sha: string;
+    treeSha: string;
+    retainedRef: string;
+}
+export interface SubmissionBaseIdentity {
+    ref: string;
+    baseBranch: string;
+    remote: string;
+    fetchUrlFingerprint?: string;
+    sha: string;
+}
+export interface SubmissionPolicyIdentity {
+    baseSha: string;
+    configPath: string;
+    configBlobSha: string;
+    digest: string;
+    revision: string;
+    evaluatorVersion: string;
+    configVersion: number;
+}
+export interface SubmissionWorktreeIdentity {
+    device: string;
+    inode: string;
+}
+export interface GateAuthorityTarget {
+    baseRef: string;
+    baseBranch: string;
+    remote: string;
+    refreshBase: boolean;
+    fetchUrlFingerprint?: string;
+}
+export interface GateAuthorityRegistration {
+    version: typeof GATE_AUTHORITY_VERSION;
+    kind: "trusted-local-ref";
+    digest: string;
+    target: GateAuthorityTarget;
+    stateDirectory: string;
+    registeredAt: string;
+}
+export interface SubmissionRecord {
+    version: typeof SUBMISSION_VERSION;
+    id: string;
+    status: SubmissionStatus;
+    authorityDigest: string;
+    source: LocalRefSubmissionSource;
+    artifact: SubmissionArtifactIdentity;
+    base: SubmissionBaseIdentity;
+    policy: SubmissionPolicyIdentity;
+    commits: string[];
+    paths: string[];
+    validations: ValidationResult[];
+    worktree?: string;
+    worktreeIdentity?: SubmissionWorktreeIdentity;
+    retentionEstablishedAt?: string;
+    retentionCompromisedAt?: string;
+    abandonedAt?: string;
+    abandonReason?: string;
+    archiveIntent?: {
+        requestedAt: string;
+        releaseArtifact: boolean;
+    };
+    archivedAt?: string;
+    artifactReleasedAt?: string;
+    createdAt: string;
+    updatedAt: string;
+    validationStartedAt?: string;
+    finishedAt?: string;
+    errorCode?: string;
+    error?: string;
+}
+export interface CandidateRevisionIntent {
+    revision: number;
+    taskId: string;
+    previousCandidateSha: string;
+    candidateSha: string;
+    branchName: string;
+    createdAt: string;
+    nextBatch: Omit<BatchRecord, "revisionIntent">;
+    revisedTask: {
+        commits: string[];
+        actualPaths: string[];
+        warnings: string[];
+        submittedAt: string;
+    };
+}
+export interface BatchProvenance {
+    version: 1;
+    generator: "agent-merge-broker";
+    batchId: string;
+    baseBranch: string;
+    history?: HistoryMode;
+    baseSha: string;
+    integratedHeadSha: string;
+    taskIds: string[];
+    tasks: Array<{
+        id: string;
+        commits: string[];
+        actualPaths: string[];
+        dependsOn: string[];
+    }>;
+    validations: Array<{
+        name: string;
+        scope: "focused" | "authoritative";
+        taskId?: string;
+        exitCode: number;
+        durationMs: number;
+    }>;
+    createdAt: string;
+    signature?: {
+        algorithm: "ed25519";
+        keyId: string;
+        value: string;
+    };
+}
+export interface AuditEvent {
+    sequence: number;
+    at: string;
+    event: string;
+    actor?: string;
+    taskId?: string;
+    batchId?: string;
+    submissionId?: string;
+    details?: Record<string, unknown>;
+}
+export interface ArchivedStateSlice {
+    version?: typeof ARCHIVED_STATE_VERSION;
+    archivedAt?: string;
+    cutoff?: string;
+    tasks: BrokerState["tasks"];
+    batches: BrokerState["batches"];
+}
+export interface BrokerState {
+    version: typeof STATE_VERSION;
+    sequence: number;
+    tasks: Record<string, TaskRecord>;
+    batches: Record<string, BatchRecord>;
+    submissions?: Record<string, SubmissionRecord>;
+}
+export interface CurrentBrokerState extends BrokerState {
+    submissions: Record<string, SubmissionRecord>;
+}
+export interface CommitReceipt {
+    version: 1;
+    taskId: string;
+    agent?: string;
+    baseSha: string;
+    commits: string[];
+    expectedPaths: string[];
+    actualPaths: string[];
+    dependsOn: string[];
+    worktree?: string;
+    submittedAt: string;
+    warnings: string[];
+}
+export interface ScheduleRejection {
+    taskId: string;
+    reason: string;
+    conflictsWith?: string;
+}
+export interface SchedulePlan {
+    selected: TaskRecord[];
+    rejected: ScheduleRejection[];
+    totalCommits: number;
+}
+export interface IntegrationOptions {
+    dryRun?: boolean;
+    publish?: boolean;
+    taskIds?: string[];
+    maxTasks?: number;
+    force?: boolean;
+}
+export interface IntegrationResult {
+    batch: BatchRecord;
+    selected: string[];
+    rejected: ScheduleRejection[];
+    dryRun: boolean;
+}
+export interface LocalValidationResult {
+    ok: boolean;
+    baseRef: string;
+    baseSha: string;
+    headSha: string;
+    files: string[];
+    validations: ValidationResult[];
+    error?: string;
+}
+export interface RefreshResult {
+    refreshed: boolean;
+    reason?: "already_current" | "already_terminal" | "pull_request_closed";
+    baseSha: string;
+    closed: BatchRecord;
+    integration?: IntegrationResult;
+    pullRequestClosed?: boolean;
+}
+export interface PruneOptions {
+    olderThanDays?: number;
+    dryRun?: boolean;
+}
+export interface SubmissionArchiveOptions {
+    ids?: string[];
+    olderThanDays?: number;
+    dryRun?: boolean;
+    releaseArtifacts?: boolean;
+}
+export interface SubmissionArchiveResult {
+    submissions: string[];
+    retainedPending: string[];
+    cutoff: string;
+    dryRun: boolean;
+    releaseArtifacts: boolean;
+    archivePaths: string[];
+}
+export type SavedFormatName = "config" | "state" | "archived-state" | "submission" | "gate-authority" | "receipt";
+export interface SavedFormatFinding {
+    format: SavedFormatName;
+    path: string;
+    version: number | null;
+    status: "current" | "upgradable" | "unsupported" | "unreadable";
+    migration?: string;
+    reason?: string;
+}
+export interface MigrationReport {
+    applied: boolean;
+    findings: SavedFormatFinding[];
+    pending: number;
+    blocked: number;
+    migrated: number;
+    backupDirectory?: string;
+    complete: boolean;
+}
+export interface PruneResult {
+    tasks: string[];
+    batches: string[];
+    retainedForDependencies: string[];
+    cutoff: string;
+    archivePath?: string;
+    dryRun: boolean;
+}
+export interface RecoveryResult {
+    batches: string[];
+    tasks: string[];
+    worktreesRemoved: string[];
+    branchesRemoved: string[];
+    cleanupWarnings: string[];
+    candidateRevisionsRecovered?: string[];
+    candidateRevisionWarnings?: string[];
+    submissionsRecovered?: string[];
+    submissionsArchived?: string[];
+    submissionsAbandonedCleaned?: string[];
+    submissionWarnings?: string[];
+}
+export interface RevisionResult {
+    batch: BatchRecord;
+    task: TaskRecord;
+    previousCandidate: CandidateRecord;
+}
+
+// mcp.d.ts
+import { McpServer } from "@modelcontextprotocol/server";
+export type McpProfile = "worker" | "operator";
+export declare function mcpToolNames(profile: McpProfile): string[];
+export declare function createMcpServer(options?: {
+    cwd?: string;
+    profile?: McpProfile;
+    version?: string;
+    agent?: string;
+    actor?: string;
+}): McpServer;
+
+// config.d.ts
+export declare function defaultConfig(baseBranch?: string, remote?: string, baseRef?: string): BrokerConfig;
+export declare function validateConfig(value: unknown): BrokerConfig;
+export declare function loadConfig(repoRoot: string): Promise<BrokerConfig>;
+
+// publisher.d.ts
+export interface PublicationResult {
+    mode: "branch" | "pull-request";
+    branchName: string;
+    pullRequestUrl?: string;
+    reusedPullRequest?: boolean;
+}
+export interface ForgePublisher {
+    publishBatch(options: {
+        repo: GitRepository;
+        config: BrokerConfig;
+        batch: BatchRecord;
+        tasks: TaskRecord[];
+    }): Promise<PublicationResult>;
+    closePullRequest(repoRoot: string, pullRequestUrl: string, comment: string): Promise<boolean>;
+    updatePullRequestBody(repoRoot: string, pullRequestUrl: string, batch: BatchRecord, tasks: TaskRecord[]): Promise<void>;
+    enableAutoMerge(repoRoot: string, pullRequestUrl: string, config: BrokerConfig, expectedHeadSha?: string): Promise<boolean>;
+    disableAutoMerge(repoRoot: string, pullRequestUrl: string): Promise<boolean>;
+    inspectPullRequest(repoRoot: string, pullRequestUrl: string): Promise<PullRequestState>;
+}
+export interface PullRequestState {
+    state: string;
+    autoMergeEnabled: boolean | undefined;
+    mergedAt?: string;
+    mergeCommitSha?: string;
+    headRefOid: string;
+    baseRefOid?: string;
+    baseRefName: string;
+    mergeStateStatus?: string;
+    mergeable?: string;
+    reviewDecision?: string;
+    checks: PullRequestCheck[];
+}
+export declare const githubCliPublisher: ForgePublisher;
+
+// verify.d.ts
+export interface VerifyProvenanceOptions {
+    repo: GitRepository;
+    branch: string;
+    headSha: string;
+    baseSha: string;
+    baseBranch: string;
+    branchPrefix?: string;
+    provenanceDirectory?: string;
+    publicKey?: string;
+    requireSignature?: boolean;
+    validationAuthority?: ValidationAuthority;
+}
+export interface ProvenanceVerification {
+    batchId: string;
+    manifestPath: string;
+    manifest: BatchProvenance;
+    provenanceSha: string;
+    parentSha: string;
+    taskIds: string[];
+    authenticated: boolean;
+    signatureKeyId?: string;
+}
+export declare function policyFromBase(repo: GitRepository, baseSha: string): Promise<{
+    baseBranch?: string;
+    branchPrefix?: string;
+    provenanceDirectory?: string;
+    publicKey?: string;
+    requireSignature?: boolean;
+    validationAuthority?: ValidationAuthority;
+}>;
+export declare function batchIdFromBranch(branch: string, prefix: string): string;
+export declare function verifyProvenance(options: VerifyProvenanceOptions): Promise<ProvenanceVerification>;
+
+// provenance.d.ts
+export declare function provenanceKeyId(publicKey: string): string;
+export declare function verifyBatchProvenanceSignature(manifest: BatchProvenance, trustedPublicKey: string): boolean;
+export declare function provenancePath(directory: string, batchId: string): string;
+
+// submission-attestation.d.ts
+export declare const SUBMISSION_ATTESTATION_PAYLOAD_TYPE: "application/vnd.in-toto+json";
+export declare const SUBMISSION_ATTESTATION_PREDICATE_TYPE: "urn:agent-merge-broker:gate-validation:v1";
+export declare const submissionAttestationStatementSchema: z.ZodObject<{
+    _type: z.ZodLiteral<"https://in-toto.io/Statement/v1">;
+    subject: z.ZodTuple<[z.ZodObject<{
+        name: z.ZodLiteral<"git-commit">;
+        digest: z.ZodUnion<readonly [z.ZodObject<{
+            sha1: z.ZodString;
+        }, z.core.$strict>, z.ZodObject<{
+            sha256: z.ZodString;
+        }, z.core.$strict>]>;
+    }, z.core.$strip>, z.ZodObject<{
+        name: z.ZodLiteral<"git-tree">;
+        digest: z.ZodUnion<readonly [z.ZodObject<{
+            sha1: z.ZodString;
+        }, z.core.$strict>, z.ZodObject<{
+            sha256: z.ZodString;
+        }, z.core.$strict>]>;
+    }, z.core.$strip>], null>;
+    predicateType: z.ZodLiteral<"urn:agent-merge-broker:gate-validation:v1">;
+    predicate: z.ZodObject<{
+        version: z.ZodLiteral<1>;
+        purpose: z.ZodLiteral<"validation-evidence">;
+        mergeAuthorized: z.ZodLiteral<false>;
+        submissionId: z.ZodString;
+        authorityDigest: z.ZodString;
+        base: z.ZodObject<{
+            sha: z.ZodString;
+            ref: z.ZodString;
+            baseBranch: z.ZodString;
+            remote: z.ZodString;
+            fetchUrlFingerprint: z.ZodOptional<z.ZodString>;
+        }, z.core.$strict>;
+        policy: z.ZodObject<{
+            baseSha: z.ZodString;
+            configPath: z.ZodString;
+            configBlobSha: z.ZodString;
+            digest: z.ZodString;
+            revision: z.ZodString;
+            evaluatorVersion: z.ZodString;
+            configVersion: z.ZodNumber;
+        }, z.core.$strict>;
+        outcome: z.ZodEnum<{
+            failed: "failed";
+            rejected: "rejected";
+            validated: "validated";
+        }>;
+        validators: z.ZodArray<z.ZodObject<{
+            name: z.ZodString;
+            scope: z.ZodEnum<{
+                authoritative: "authoritative";
+                focused: "focused";
+            }>;
+            startedAt: z.ZodString;
+            finishedAt: z.ZodString;
+            durationMs: z.ZodNumber;
+            exitCode: z.ZodNumber;
+        }, z.core.$strict>>;
+        createdAt: z.ZodString;
+        validationStartedAt: z.ZodOptional<z.ZodString>;
+        finishedAt: z.ZodString;
+        retentionCompromisedAt: z.ZodOptional<z.ZodString>;
+        errorCode: z.ZodOptional<z.ZodString>;
+    }, z.core.$strict>;
+}, z.core.$strip>;
+export declare const submissionAttestationEnvelopeSchema: z.ZodObject<{
+    payloadType: z.ZodLiteral<"application/vnd.in-toto+json">;
+    payload: z.ZodString;
+    signatures: z.ZodArray<z.ZodObject<{
+        keyid: z.ZodOptional<z.ZodString>;
+        sig: z.ZodString;
+    }, z.core.$strip>>;
+}, z.core.$strip>;
+export type SubmissionAttestationStatement = z.infer<typeof submissionAttestationStatementSchema>;
+export type SubmissionAttestationEnvelope = z.infer<typeof submissionAttestationEnvelopeSchema>;
+export interface SubmissionAttestationVerificationOptions {
+    publicKey: string;
+    expected: {
+        candidateSha: string;
+        treeSha: string;
+        baseSha: string;
+        policyDigest: string;
+        authorityDigest: string;
+        configBlobSha?: string;
+        evaluatorVersion?: string;
+    };
+}
+export interface SubmissionAttestationVerificationResult {
+    verified: true;
+    validationPassed: boolean;
+    outcome: "validated" | "rejected" | "failed";
+    keyId: string;
+    purpose: "validation-evidence";
+    mergeAuthorized: false;
+    statement: SubmissionAttestationStatement;
+}
+export declare function verifySubmissionAttestation(envelope: unknown, options: SubmissionAttestationVerificationOptions): SubmissionAttestationVerificationResult;
+
+// schema-identity.d.ts
+export declare function schemaFingerprint(schema: Record<string, unknown>): string;
+export declare function schemaSnapshotIdentity(name: string, schema: Record<string, unknown>): {
+    id: string;
+    fingerprint: string;
+    path: string;
+};
+
+// errors.d.ts
+export declare class BrokerError extends Error {
+    readonly code: BrokerErrorCode;
+    readonly details: Record<string, unknown> | undefined;
+    constructor(code: BrokerErrorCode, message: string, details?: Record<string, unknown>);
+}
+
+// error-codes.d.ts
+export type BrokerErrorCategory = "input" | "lease" | "integration" | "gate" | "state" | "storage" | "signing" | "publication" | "forge" | "approval" | "host" | "internal";
+export declare const BROKER_ERROR_CATEGORIES: Readonly<Record<BrokerErrorCategory, string>>;
+export declare const BROKER_ERROR_CODES: {
+    readonly NOT_INITIALIZED: "input";
+    readonly INVALID_CONFIG: "input";
+    readonly INVALID_ARGUMENTS: "input";
+    readonly OUTPUT_EXISTS: "input";
+    readonly ACTOR_REQUIRED: "input";
+    readonly INVALID_INTERVAL: "input";
+    readonly INVALID_LIMIT: "input";
+    readonly INVALID_MCP_PROFILE: "input";
+    readonly INVALID_AGENT_CONTRACT: "input";
+    readonly INVALID_PULL_REQUEST_URL: "input";
+    readonly INVALID_SIGNING_KEY: "input";
+    readonly INVALID_TASK: "input";
+    readonly PATHS_REQUIRED: "input";
+    readonly UNSAFE_PATH: "input";
+    readonly TASK_EXISTS: "input";
+    readonly UNKNOWN_TASK: "input";
+    readonly UNKNOWN_BATCH: "input";
+    readonly UNKNOWN_COMMIT: "input";
+    readonly UNKNOWN_DEPENDENCY: "input";
+    readonly UNKNOWN_LOCK: "input";
+    readonly LEASE_REQUIRED: "lease";
+    readonly LEASE_CONFLICT: "lease";
+    readonly LEASE_EXPIRED: "lease";
+    readonly LEASE_TOKEN: "lease";
+    readonly LEASE_NOT_OWNED: "lease";
+    readonly TASK_CHANGED: "lease";
+    readonly TASK_NOT_CLAIMABLE: "lease";
+    readonly TASK_NOT_SUBMITTABLE: "lease";
+    readonly TASK_NOT_CANCELLABLE: "lease";
+    readonly TASK_NOT_RETRYABLE: "lease";
+    readonly TASK_NOT_REVISABLE: "lease";
+    readonly COMMITS_REQUIRED: "integration";
+    readonly DUPLICATE_COMMIT: "integration";
+    readonly EMPTY_COMMIT: "integration";
+    readonly MERGE_COMMIT: "integration";
+    readonly DIRTY_WORKTREE: "integration";
+    readonly UNEXPECTED_PATHS: "integration";
+    readonly DEPENDENCY_CYCLE: "integration";
+    readonly EMPTY_BATCH: "integration";
+    readonly BATCH_OUTSTANDING: "integration";
+    readonly CHERRY_PICK_CONFLICT: "integration";
+    readonly VALIDATION_FAILED: "integration";
+    readonly VALIDATOR_MUTATED_WORKTREE: "integration";
+    readonly INVALID_SUBMISSION_REF: "gate";
+    readonly UNKNOWN_SUBMISSION: "gate";
+    readonly EMPTY_SUBMISSION: "gate";
+    readonly BASE_NOT_ANCESTOR: "gate";
+    readonly NON_LINEAR_HISTORY: "gate";
+    readonly HISTORY_INSPECTION_FAILED: "gate";
+    readonly SUBMISSION_TOO_LARGE: "gate";
+    readonly SUBMISSION_GIT_UNSUPPORTED: "gate";
+    readonly SUBMISSION_OBJECT_STORE_UNSUPPORTED: "gate";
+    readonly GIT_OBJECT_READ_FAILED: "gate";
+    readonly SUBMISSION_VALIDATION_UNAVAILABLE: "gate";
+    readonly SUBMISSION_POLICY_UNAVAILABLE: "gate";
+    readonly SUBMISSION_POLICY_INVALID: "gate";
+    readonly SUBMISSION_POLICY_CHANGED: "gate";
+    readonly SUBMISSION_IDENTITY_CHANGED: "gate";
+    readonly SUBMISSION_REF_CHANGED: "gate";
+    readonly SUBMISSION_CHANGED: "gate";
+    readonly SUBMISSION_EXISTS: "gate";
+    readonly SUBMISSION_FAILED: "gate";
+    readonly SUBMISSION_MANIFEST_WRITE_FAILED: "gate";
+    readonly VALIDATION_CACHE_CLEANUP_FAILED: "gate";
+    readonly PINNED_REF_EXISTS: "gate";
+    readonly PIN_REF_FAILED: "gate";
+    readonly TEMPORARY_REF_CONFLICT: "gate";
+    readonly FETCH_REF_INVALID: "gate";
+    readonly TEMPORARY_REF_CLEANUP_FAILED: "gate";
+    readonly GIT_HOOK_ISOLATION_FAILED: "gate";
+    readonly WORKTREE_IDENTITY_UNAVAILABLE: "gate";
+    readonly GATE_AUTHORITY_REQUIRED: "gate";
+    readonly GATE_AUTHORITY_EXISTS: "gate";
+    readonly GATE_AUTHORITY_CORRUPT: "gate";
+    readonly GATE_AUTHORITY_VERSION: "gate";
+    readonly GATE_AUTHORITY_MISMATCH: "gate";
+    readonly GATE_AUTHORITY_CHANGED: "gate";
+    readonly SUBMISSION_NOT_PENDING: "gate";
+    readonly SUBMISSION_NOT_TERMINAL: "gate";
+    readonly SUBMISSION_ARCHIVE_PENDING: "gate";
+    readonly INVALID_SUBMISSION_ARCHIVE: "gate";
+    readonly SUBMISSION_REF_RELEASE_FAILED: "gate";
+    readonly SUBMISSION_ABANDONED: "gate";
+    readonly LOCK_HELD: "state";
+    readonly LOCK_TIMEOUT: "state";
+    readonly STATE_CORRUPT: "state";
+    readonly STATE_VERSION: "state";
+    readonly AUDIT_ARCHIVE_TOO_LARGE: "state";
+    readonly MIGRATION_BLOCKED: "state";
+    readonly LOCK_LOST: "state";
+    readonly STORAGE_CHANGED: "storage";
+    readonly STORAGE_VERIFICATION_FAILED: "storage";
+    readonly SIGNING_KEY_REQUIRED: "signing";
+    readonly SIGNING_KEY_MISMATCH: "signing";
+    readonly SIGNING_KEY_EXISTS: "signing";
+    readonly PROVENANCE_INVALID: "signing";
+    readonly PROVENANCE_KEY_MISSING: "signing";
+    readonly SUBMISSION_NOT_ATTESTABLE: "signing";
+    readonly SUBMISSION_ATTESTATION_INELIGIBLE: "signing";
+    readonly SUBMISSION_ATTESTATION_INVALID: "signing";
+    readonly SUBMISSION_ATTESTATION_SIGNATURE_INVALID: "signing";
+    readonly SUBMISSION_ATTESTATION_IDENTITY_MISMATCH: "signing";
+    readonly REMOTE_URL_UNKNOWN: "publication";
+    readonly REMOTE_REPOSITORY_UNKNOWN: "publication";
+    readonly REMOTE_TARGET_CHANGED: "publication";
+    readonly FORGE_TARGET_MISMATCH: "publication";
+    readonly BATCH_TARGET_UNBOUND: "publication";
+    readonly BASE_REFRESH_FAILED: "publication";
+    readonly BATCH_BASE_STALE: "publication";
+    readonly NO_BRANCH: "publication";
+    readonly NO_CANDIDATE: "publication";
+    readonly BRANCH_EXISTS: "publication";
+    readonly BRANCH_DELETE_FAILED: "publication";
+    readonly WORKTREE_REMOVE_FAILED: "publication";
+    readonly PUBLISH_DISABLED: "publication";
+    readonly PUBLISH_FAILED: "publication";
+    readonly BATCH_NOT_PUBLISHABLE: "publication";
+    readonly PULL_REQUEST_LOOKUP_FAILED: "publication";
+    readonly PULL_REQUEST_UPDATE_FAILED: "publication";
+    readonly PULL_REQUEST_REF_LOOKUP_FAILED: "forge";
+    readonly PULL_REQUEST_IDENTITY_UNKNOWN: "forge";
+    readonly PULL_REQUEST_BASE_UNKNOWN: "forge";
+    readonly PULL_REQUEST_CHANGED_DURING_INSPECTION: "forge";
+    readonly PULL_REQUEST_STILL_OPEN: "forge";
+    readonly PULL_REQUEST_ALREADY_CLOSED: "forge";
+    readonly PULL_REQUEST_CLOSE_FAILED: "forge";
+    readonly AUTO_MERGE_FAILED: "forge";
+    readonly AUTO_MERGE_DISABLE_FAILED: "forge";
+    readonly AUTO_MERGE_STATE_UNKNOWN: "forge";
+    readonly MERGE_PROOF_UNAVAILABLE: "forge";
+    readonly BATCH_NOT_SYNCABLE: "forge";
+    readonly BATCH_NOT_MERGED: "forge";
+    readonly APPROVAL_DISABLED: "approval";
+    readonly APPROVAL_FORBIDDEN: "approval";
+    readonly VERIFICATION_NOT_REQUIRED: "approval";
+    readonly BATCH_NOT_VERIFIABLE: "approval";
+    readonly BATCH_NOT_APPROVABLE: "approval";
+    readonly CANDIDATE_MISMATCH: "approval";
+    readonly CANDIDATE_NOT_READY: "approval";
+    readonly CANDIDATE_BLOCKED: "approval";
+    readonly CANDIDATE_STATE_INVALID: "approval";
+    readonly CANDIDATE_CHANGED: "approval";
+    readonly CANDIDATE_FINAL: "approval";
+    readonly CANDIDATE_NOT_APPROVED: "approval";
+    readonly CANDIDATE_POLICY_STALE: "approval";
+    readonly APPROVAL_REVOCATION_REQUIRED: "approval";
+    readonly CHANGE_REQUEST_PENDING: "approval";
+    readonly NO_CHANGE_REQUEST: "approval";
+    readonly CHANGES_NOT_REQUESTED: "approval";
+    readonly BATCH_NOT_REVISABLE: "approval";
+    readonly REVISION_IN_PROGRESS: "approval";
+    readonly REVISION_INTENT_CHANGED: "approval";
+    readonly REFRESH_PENDING: "approval";
+    readonly REFRESH_CHANGED: "approval";
+    readonly BATCH_NOT_REFRESHABLE: "approval";
+    readonly BATCH_CHANGED: "approval";
+    readonly BATCH_SUPERSEDED: "approval";
+    readonly BATCH_NOT_CLOSABLE: "approval";
+    readonly HOOKS_PATH_CONFLICT: "host";
+    readonly INVALID_SERVICE_PATH: "host";
+    readonly INVALID_SERVICE_USER: "host";
+    readonly SERVICE_CLI_PATH: "host";
+    readonly SERVICE_FILE_CONFLICT: "host";
+    readonly SERVICE_PUBLISH_DISABLED: "host";
+    readonly SERVICE_USER_ID: "host";
+    readonly UNSUPPORTED_PLATFORM: "host";
+    readonly COMMAND_FAILED: "host";
+    readonly INTERNAL_ERROR: "internal";
+};
+export type BrokerErrorCode = keyof typeof BROKER_ERROR_CODES;
+
+// store.d.ts
+export interface LockStatus {
+    name: string;
+    held: boolean;
+    path: string;
+    owner?: {
+        pid?: number;
+        host?: string;
+        platform?: string;
+        createdAt?: string;
+        nonce?: string;
+    };
+    ageMs?: number;
+    abandoned?: boolean;
+}
+
+// hooks.d.ts
+export interface HookInstallation {
+    hooksPath: string;
+    hookFile: string;
+    installed: boolean;
+    previousHooksPath?: string;
+}
+
+// service.d.ts
+export interface ServiceInstallation extends ServiceDefinition {
+    installed: boolean;
+    loaded: boolean;
+    loaderMessage?: string;
+}
+
+// bootstrap.d.ts
+export interface BootstrapPlan {
+    ecosystems: string[];
+    focused: ValidatorConfig[];
+    authoritative: ValidatorConfig[];
+    serializedPatterns: string[];
+    unresolved: string[];
+}
+export interface AgentContractResult {
+    path: string;
+    changed: boolean;
+}
+
+// storage.d.ts
+export type StorageCategory = "state" | "audit" | "archives" | "worktrees" | "credentials" | "receipts" | "manifests" | "service-logs" | "other" | "provenance";
+interface StorageSkip {
+    path: string;
+    reason: string;
+}
+export interface StorageReport {
+    runtimeDirectory: string;
+    provenanceDirectory?: string;
+    logicalBytes: number;
+    files: number;
+    categories: {
+        category: StorageCategory;
+        logicalBytes: number;
+        files: number;
+    }[];
+    skipped: StorageSkip[];
+    complete: boolean;
+}
+export interface StorageCompactionOptions {
+    apply?: boolean;
+    olderThanDays?: number;
+}
+export interface StorageCompactionResult {
+    applied: boolean;
+    olderThanDays: number;
+    eligibleFiles: number;
+    eligibleBytes: number;
+    compressedFiles: number;
+    savedBytes: number;
+    entries: {
+        path: string;
+        bytes: number;
+        status: "eligible" | "compressed" | "unchanged" | "skipped";
+        compressedBytes?: number;
+        reason?: string;
+    }[];
+    skipped: StorageSkip[];
+}

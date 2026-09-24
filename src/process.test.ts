@@ -104,6 +104,17 @@ test("bounds command output while retaining the beginning and end", async () => 
   assert.ok(Buffer.byteLength(result.stdout, "utf8") < 1_100);
 });
 
+test("supervised commands preserve literal arguments, stdin, exit status, and bounded output", async () => {
+  const args = ["spaces and & symbols", 'literal "quotes"', "backslash\\", "日本語 café 🧪"];
+  const script = `let input=''; for await (const value of process.stdin) input+=value; console.log(JSON.stringify({args:process.argv.slice(1),input})); console.error('x'.repeat(10000)+'TAIL'); process.exitCode=7;`;
+  const result = await runCommand(process.execPath, ["--input-type=module", "-e", script, ...args], {
+    cwd: process.cwd(), input: "first\nsecond 日本語 café 🧪\n", allowFailure: true, killProcessTree: true, maxOutputBytes: 1024,
+  });
+  assert.equal(result.exitCode, 7);
+  assert.deepEqual(JSON.parse(result.stdout), { args, input: "first\nsecond 日本語 café 🧪\n" });
+  assert.match(result.stderr, /output truncated.*[\s\S]*TAIL/u);
+});
+
 test(
   "kills validator descendants when the command times out",
   async (context) => {

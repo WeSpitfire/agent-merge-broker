@@ -299,7 +299,8 @@ test("releases an abandoned lock but refuses one that may still be live", async 
 
   // Another operating system instance can share this hostname: WSL2 beside Windows, or a container
   // with host networking. Its process IDs mean nothing here, so its lock is never assumed dead.
-  await write({ pid: 4_294_967_295, host: hostname(), platform: "win32-x64", createdAt: new Date().toISOString() });
+  const foreignPlatform = process.platform === "win32" ? "linux-x64" : "win32-x64";
+  await write({ pid: 4_294_967_295, host: hostname(), platform: foreignPlatform, createdAt: new Date().toISOString() });
   const otherPlatform = await store.inspectLock("integration");
   assert.equal(otherPlatform.held, true);
   assert.equal(otherPlatform.abandoned, false);

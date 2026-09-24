@@ -2,7 +2,42 @@
 
 ## Unreleased
 
+### Added
+
+- Release candidates publish to npm's `next` channel for both distributions. The release resolver
+  rejects mismatched version/prerelease metadata before publication; stable versions continue to
+  use `latest`.
+- Reviewed public declaration, representative CLI JSON, and MCP input-schema baselines detect
+  accidental interface changes. Historical migration fixtures retain bytes produced by released
+  source with recorded provenance, alongside original-byte backup and continuation checks.
+- Fresh-process Coordinate recovery tests interrupt branch push, PR creation, approval recording,
+  auto-merge enable/disable, candidate revision, and stale-base refresh at their durable boundaries.
+  Fixtures and harnesses remain development-only and are excluded from published packages.
+- A reusable development-only forge-adapter contract suite exercises all six publisher methods,
+  including exact-head/target binding, lost responses, unknown outcomes, and idempotent retries.
+
+### Changed
+
+- The intended 1.0 scope is explicitly Coordinate plus trusted local-ref Gate validation/evidence.
+  Compatibility rules now distinguish each format's versioning and extension rules, immutable
+  evidence from mutable state, and the current migration, audit, and filesystem durability limits.
+
 ### Fixed
+
+- The foreign-platform lock fixture now chooses a platform different from the test host, fixing
+  the Windows verification failure without weakening the lock's live-owner checks.
+- `migrate --apply` refuses incomplete scans before any migration writes, including when the file
+  inventory exceeds the scan budget between preview and the locked rescan. Incomplete CLI previews
+  exit nonzero and no longer claim every saved format is current.
+- Auto-merge recovery now verifies the expected head from one coherent forge observation after a
+  guarded command loses or rejects its response. A different queued or merged head is never treated
+  as successful authorization of the recorded candidate.
+- Broker validators start under a registered execution supervisor. Recovery and cleanup wait until
+  the old execution is proven stopped, including after the broker dies. POSIX uses a process group;
+  Windows uses a native kill-on-close job and an observed empty-job marker. Ambiguous supervisor
+  failure preserves recovery state and requires operator inspection before explicit force-unlock.
+  This is lifecycle supervision for trusted validators, not a sandbox; deliberately daemonized or
+  detached POSIX work remains unsupported.
 
 - The pre-push guard now inspects the remote ref a push would update, not the local ref. A mapped
   push such as `git push origin HEAD:main` previously bypassed it.

@@ -63,6 +63,8 @@ export const MIGRATIONS: readonly Migration[] = [
 export interface SavedFormatLocations {
   repositoryRoot: string;
   store: StateStore;
+  /** Internal scan budget; may lower, but never raise, the production limit. */
+  maxScannedFiles?: number;
 }
 
 interface ScannedFile {
@@ -136,6 +138,10 @@ async function scanFile(
 
 async function scanSavedFormats(locations: SavedFormatLocations): Promise<{ files: ScannedFile[]; complete: boolean }> {
   const { store } = locations;
+  const maxScannedFiles = Math.min(locations.maxScannedFiles ?? MAX_SCANNED_FILES, MAX_SCANNED_FILES);
+  if (!Number.isSafeInteger(maxScannedFiles) || maxScannedFiles <= 0) {
+    throw new BrokerError("INVALID_ARGUMENTS", "Saved-format scan budget must be a positive safe integer.");
+  }
   const plan: Array<[SavedFormatName, string, (value: JsonObject) => void]> = [
     ["state", path.join(store.directory, "state.json"), (value) => void decodeBrokerState(value)],
     ["gate-authority", path.join(store.commonGitDirectory, GATE_AUTHORITY_FILENAME), (value) => void validateGateAuthority(value)],
@@ -153,9 +159,9 @@ async function scanSavedFormats(locations: SavedFormatLocations): Promise<{ file
       }
     }]);
   }
-  const complete = plan.length <= MAX_SCANNED_FILES;
+  const complete = plan.length <= maxScannedFiles;
   const files: ScannedFile[] = [];
-  for (const [format, file, decode] of plan.slice(0, MAX_SCANNED_FILES)) {
+  for (const [format, file, decode] of plan.slice(0, maxScannedFiles)) {
     const scanned = await scanFile(format, file, decode);
     if (scanned) files.push(scanned);
   }
@@ -202,13 +208,16 @@ export async function inspectSavedFormats(locations: SavedFormatLocations): Prom
 
 /**
  * Apply every pending migration under the state lock. Refuses when any file is unsupported or
- * unreadable: a partial upgrade next to a file from a newer release would leave a repository that
- * neither release can fully read.
+ * unreadable, or the scan is incomplete: a partial upgrade next to an unseen file from a newer
+ * release would leave a repository that neither release can fully read.
  */
 export async function applySavedFormatMigrations(locations: SavedFormatLocations): Promise<MigrationReport> {
   const { store } = locations;
   const configuration = await configFinding(locations.repositoryRoot);
   const preview = await inspectSavedFormats(locations);
+  if (!preview.complete) {
+    throw new BrokerError("MIGRATION_BLOCKED", "Saved-format scan limit reached; not every file was inspected and nothing was migrated.");
+  }
   if (preview.blocked > 0) {
     throw new BrokerError("MIGRATION_BLOCKED", "Saved formats include unsupported or unreadable files; nothing was migrated.", {
       findings: preview.findings.filter((finding) => finding.status === "unsupported" || finding.status === "unreadable"),
@@ -220,6 +229,9 @@ export async function applySavedFormatMigrations(locations: SavedFormatLocations
     // Rescan under the lock: another process may have written or upgraded files since the preview.
     const { files, complete } = await scanSavedFormats(locations);
     const report = summarize(files, complete, [configuration]);
+    if (!report.complete) {
+      throw new BrokerError("MIGRATION_BLOCKED", "Saved formats changed and now exceed the scan limit; not every file was inspected and nothing was migrated.");
+    }
     if (report.blocked > 0) {
       throw new BrokerError("MIGRATION_BLOCKED", "Saved formats changed and now include unsupported or unreadable files; nothing was migrated.");
     }

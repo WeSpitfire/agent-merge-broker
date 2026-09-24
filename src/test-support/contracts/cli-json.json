@@ -1,0 +1,98 @@
+{
+  "invalidArguments": {
+    "exitCode": 2,
+    "stderr": {
+      "error": {
+        "code": "INVALID_ARGUMENTS",
+        "message": "<message>"
+      }
+    },
+    "stdout": null
+  },
+  "migrate": {
+    "exitCode": 0,
+    "stderr": null,
+    "stdout": {
+      "applied": false,
+      "blocked": 0,
+      "complete": true,
+      "findings": [
+        {
+          "format": "config",
+          "path": "<repo>/.merge-broker/config.json",
+          "status": "current",
+          "version": 1
+        },
+        {
+          "format": "state",
+          "path": "<repo>/.git/merge-broker/state.json",
+          "status": "current",
+          "version": 1
+        }
+      ],
+      "migrated": 0,
+      "pending": 0
+    }
+  },
+  "missingTask": {
+    "exitCode": 2,
+    "stderr": {
+      "error": {
+        "code": "UNKNOWN_TASK",
+        "message": "<message>"
+      }
+    },
+    "stdout": null
+  },
+  "plan": {
+    "exitCode": 0,
+    "stderr": null,
+    "stdout": {
+      "rejected": [],
+      "selected": [],
+      "totalCommits": 0
+    }
+  },
+  "register": {
+    "exitCode": 0,
+    "stderr": null,
+    "stdout": {
+      "actualPaths": [],
+      "baseSha": "<commit>",
+      "commits": [],
+      "createdAt": "<timestamp>",
+      "dependsOn": [],
+      "expectedPaths": [
+        "src/**"
+      ],
+      "id": "CONTRACT",
+      "priority": 0,
+      "status": "registered",
+      "title": "Compatibility fixture",
+      "updatedAt": "<timestamp>",
+      "validations": [],
+      "warnings": []
+    }
+  },
+  "task": {
+    "exitCode": 0,
+    "stderr": null,
+    "stdout": {
+      "actualPaths": [],
+      "baseSha": "<commit>",
+      "commits": [],
+      "createdAt": "<timestamp>",
+      "dependsOn": [],
+      "expectedPaths": [
+        "src/**"
+      ],
+      "id": "CONTRACT",
+      "priority": 0,
+      "status": "registered",
+      "title": "Compatibility fixture",
+      "updatedAt": "<timestamp>",
+      "validations": [],
+      "warnings": []
+    }
+  }
+}

@@ -54,7 +54,7 @@ test(
   async (context) => {
     await fakeProcess(context, "gh", `
       if (args.includes("--auto")) { console.error("response lost"); process.exitCode = 1; }
-      else if (command.startsWith("pr view")) console.log(JSON.stringify({ state: "OPEN", autoMergeRequest: { enabledAt: "2026-01-01T00:00:00Z" } }));
+      else if (command.startsWith("pr view")) console.log(JSON.stringify({ state: "OPEN", headRefOid: "${"1".repeat(40)}", baseRefOid: "${"0".repeat(40)}", baseRefName: "main", autoMergeRequest: { enabledAt: "2026-01-01T00:00:00Z" } }));
       else process.exitCode = 1;
     `);
 

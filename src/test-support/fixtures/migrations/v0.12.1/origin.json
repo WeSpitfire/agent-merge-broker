@@ -1,0 +1,33 @@
+{
+  "package": "agent-merge-broker",
+  "version": "0.12.1",
+  "source": "released Git tag source executed locally, not an npm tarball capture",
+  "tag": "v0.12.1",
+  "commit": "3b51f22b844fab42ba8190768fac4cdeede162bb",
+  "sourceBlobs": {
+    "src/broker.ts": "3debfc03c4f98b808bc3a13970fa67bc61a02d33",
+    "src/store.ts": "276df680d7180ec187783872f3246a30741476d1",
+    "src/config.ts": "fa2e48bdbb4092dc8bdb9a16625032f9b6c96233"
+  },
+  "generatedAt": "2026-09-24T18:25:07.650Z",
+  "runtime": {
+    "node": "v22.23.1",
+    "tsx": "4.23.12",
+    "dependencies": "Existing development checkout dependencies; historical dependencies were not reinstalled."
+  },
+  "generation": [
+    "Extract src/ and package.json from v0.12.1 into a temporary directory.",
+    "Initialize a temporary Git repository on main and create one empty commit.",
+    "Run the extracted MergeBroker.initialize(repo, { detect: false, agentContract: false }).",
+    "Open the extracted MergeBroker and register HISTORICAL-ACTIVE with expectedPaths [src/active.ts].",
+    "Register HISTORICAL-CANCELLED with expectedPaths [src/cancelled.ts], then cancelTask(HISTORICAL-CANCELLED).",
+    "Run prune({ olderThanDays: 0 }).",
+    "Capture config.json, state.json, and the returned archive file without modifying their bytes."
+  ],
+  "filesSha256": {
+    "config.json": "83c64b26537ba101c11dd4c6dbdd515c1bc7b92b01d764be15a33c95ccfe6e5f",
+    "state.json": "d3a96bbab848c0dcbd1ba2e07cf47f9984dea124869537de5aa5db4cb1247253",
+    "archived-state.json": "acee36dea565d3be9ef1781d65ca9391504e9c4d6e32f56e1a31749f9532db26"
+  },
+  "limits": "Covers recorded formats, migrations, original-byte backups, and subsequent new task registration. The original Git object graph, audit stream, and signing private key are not included; this is not a historical integration or signature-recovery fixture."
+}

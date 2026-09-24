@@ -21,6 +21,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
+import { forceClearExecutions, waitForExecutions, withExecutionGuards } from "./execution-guard.js";
 import { MAX_COMPACT_AUDIT_BYTES, syncDirectory } from "./storage.js";
 import {
   decodeArchivedStateSlice,
@@ -328,7 +329,10 @@ export class StateStore {
   }
 
   async withIntegrationLock<T>(operation: () => Promise<T>): Promise<T> {
-    return await this.withLock("integration", operation);
+    return await this.withLock("integration", async () => {
+      await waitForExecutions(this.directory, this.lockTimeoutMs);
+      return await withExecutionGuards(this.directory, operation);
+    });
   }
 
   /** Serializes audit compaction with state writes and audit rotation, without rewriting state. */
@@ -803,7 +807,13 @@ export class StateStore {
    * removing a live lock allows two integrations to run against the same repository at once.
    */
   async releaseLock(name: string, options: { force?: boolean } = {}): Promise<LockStatus> {
-    return await this.releaseLockAt(name, options, this.directory);
+    const released = await this.releaseLockAt(name, options, this.directory);
+    if (name === "integration" && options.force && !released.held) {
+      // Hold a fresh integration lock while clearing execution records, so a new holder cannot
+      // register a validator between release of the old lock and the explicit operator override.
+      await this.withLock("integration", async () => await forceClearExecutions(this.directory));
+    }
+    return released;
   }
 
   private async releaseLockAt(

@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { CommandError } from "./errors.js";
+import { registerExecution, retireExecution, type ExecutionGuard } from "./execution-guard.js";
+import { POSIX_SUPERVISOR, WINDOWS_SUPERVISOR, windowsSupervisorInput } from "./process-supervisor.js";
 
 export interface CommandResult {
   command: string;
@@ -204,6 +206,7 @@ export async function runCommand(
 ): Promise<CommandResult> {
   const command = commandForArchitecture(executable, args, options.executionArchitecture);
   const rendered = [command.executable, ...command.args].map(quoteForDisplay).join(" ");
+  if (options.killProcessTree) return await runSupervisedCommand(command, rendered, options);
 
   // Snapshot the inherited environment before the Windows search guard touches process.env.
   const env = options.env ?? { ...process.env };
@@ -267,6 +270,138 @@ export async function runCommand(
     if (options.input !== undefined) child.stdin.end(options.input);
     else child.stdin.end();
   });
+}
+
+async function runSupervisedCommand(
+  command: { executable: string; args: string[] },
+  rendered: string,
+  options: RunOptions,
+): Promise<CommandResult> {
+  const windows = process.platform === "win32";
+  const environment = options.env ?? { ...process.env };
+  // Bootstraps must not load a validator's preload/module/library before execution is registered.
+  // Keep the host tool lookup, then send the intended validator environment only in the handoff.
+  const bootstrapEnvironment = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !/^(?:NODE_OPTIONS|NODE_PATH|NODE_REPL_EXTERNAL_MODULE|PSModulePath|LD_.*|DYLD_.*)$/iu.test(name)));
+  const child = withoutCurrentDirectoryExecutableSearch(() => spawn(
+    windows ? "powershell.exe" : process.execPath,
+    windows
+      ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_SUPERVISOR]
+      : ["--input-type=commonjs", "-e", POSIX_SUPERVISOR],
+    {
+      cwd: options.cwd, env: bootstrapEnvironment, shell: false, detached: !windows, windowsHide: true,
+      stdio: windows ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "ipc"],
+    },
+  ));
+  const stdout = new OutputCapture(options.maxOutputBytes);
+  const stderr = new OutputCapture(options.maxOutputBytes);
+  let guard: ExecutionGuard | undefined;
+  let resultCode: number | undefined;
+  let launchError: Error | undefined;
+  let timedOut = false;
+  let ready = false;
+  let startupError = "";
+  let timer: NodeJS.Timeout | undefined;
+  let forceTimer: NodeJS.Timeout | undefined;
+  let starting: Promise<void> | undefined;
+  const stop = (): void => {
+    if (windows) child.stdin?.write("terminate\n");
+    else if (child.connected) child.send({ type: "terminate" });
+    forceTimer = setTimeout(() => {
+      // These are fresh handles from this launch, never PIDs read from recovery state.
+      if (windows) child.kill("SIGKILL");
+      else if (child.pid) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { /* Already gone. */ }
+      }
+    }, windows ? 5_000 : 2_500);
+    forceTimer.unref();
+  };
+  const start = (): void => {
+    if (ready) return;
+    ready = true;
+    clearTimeout(startupTimer);
+    starting = (async () => {
+      if (!child.pid) throw new Error("Validator supervisor has no process identity.");
+      guard = await registerExecution(child.pid, options.cwd);
+      const input = {
+        type: "start", ...command, cwd: options.cwd, env: environment,
+        ...(options.input !== undefined ? { input: options.input } : {}),
+        ...(guard ? { guardFile: guard.file, guardNonce: guard.nonce } : {}),
+      };
+      if (windows) child.stdin?.write(windowsSupervisorInput(input));
+      else if (child.connected) child.send(input);
+      else throw new Error("Validator supervisor exited before command handoff.");
+      if (options.timeoutMs) {
+        timer = setTimeout(() => { timedOut = true; stop(); }, options.timeoutMs);
+      }
+    })().catch((error: unknown) => {
+      launchError = error instanceof Error ? error : new Error(String(error));
+      if (windows) child.stdin?.end();
+      else if (child.connected) child.disconnect();
+    });
+  };
+  const startupTimer = setTimeout(() => {
+    launchError = new Error("Validator supervisor did not initialize within 30 seconds.");
+    child.kill("SIGKILL");
+  }, 30_000);
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => stdout.append(chunk));
+  child.stderr?.on("data", (chunk: string) => {
+    if (!windows || ready) { stderr.append(chunk); return; }
+    startupError = (startupError + chunk).slice(-8_192);
+    const marker = "MERGE_BROKER_SUPERVISOR_READY";
+    const index = startupError.indexOf(marker);
+    if (index >= 0) {
+      stderr.append(startupError.slice(0, index));
+      stderr.append(startupError.slice(index + marker.length).replace(/^\r?\n/u, ""));
+      startupError = "";
+      start();
+    }
+  });
+  child.stdin?.on("error", () => {});
+  child.on("message", (message: { type?: string; exitCode?: number; error?: string; errorCode?: string }) => {
+    if (message.type === "ready") start();
+    if (message.type === "result") {
+      resultCode = message.exitCode;
+      if (message.error) launchError = Object.assign(new Error(message.error), { code: message.errorCode });
+    }
+  });
+  child.once("exit", () => {
+    if (!windows && resultCode === undefined && child.pid) {
+      // A supervisor can itself be killed while its owner remains alive. Stop the group belonging
+      // to this current child handle before returning control to cleanup in the caller.
+      try { process.kill(-child.pid, "SIGKILL"); } catch { /* Already gone. */ }
+    }
+  });
+  try {
+    const code = await new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    await starting;
+    if (startupError) stderr.append(startupError);
+    // close observes the supervisor's pipes, while its POSIX group can take a little longer to
+    // disappear. Keep the durable guard if an unexpected supervisor death left any child alive.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (await retireExecution(guard)) { guard = undefined; break; }
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+    if (launchError) throw launchError;
+    const exitCode = timedOut ? 128 : resultCode ?? code ?? 128;
+    const result = {
+      command: rendered, exitCode, stdout: stdout.value(),
+      stderr: stderr.value() + (timedOut ? `\nTimed out after ${options.timeoutMs}ms` : ""),
+    };
+    if (exitCode !== 0 && !options.allowFailure) {
+      throw new CommandError(rendered, exitCode, result.stdout, result.stderr);
+    }
+    return result;
+  } finally {
+    clearTimeout(startupTimer);
+    if (timer) clearTimeout(timer);
+    if (forceTimer) clearTimeout(forceTimer);
+  }
 }
 
 export async function runShell(
