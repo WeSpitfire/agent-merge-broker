@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
+import { pathToFileURL } from "node:url";
 import { MergeBroker } from "./broker.js";
 import { configPath, loadConfig } from "./config.js";
 import { runCommand } from "./process.js";
@@ -166,7 +167,7 @@ function startChild(context: TestContext, repo: string, batchId: string, preload
   `;
   const runtime = extension === ".ts" ? ["--import", "tsx"] : [];
   const child: ChildProcess = spawn(process.execPath, [
-    ...runtime, "--import", preload, "--input-type=module", "-e", script, repo, batchId,
+    ...runtime, "--import", pathToFileURL(preload).href, "--input-type=module", "-e", script, repo, batchId,
   ], { stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true });
   let output = "";
   child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });

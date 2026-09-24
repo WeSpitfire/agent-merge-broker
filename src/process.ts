@@ -289,7 +289,9 @@ async function runSupervisedCommand(
       ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_SUPERVISOR]
       : ["--input-type=commonjs", "-e", POSIX_SUPERVISOR],
     {
-      cwd: options.cwd, env: bootstrapEnvironment, shell: false, detached: !windows, windowsHide: true,
+      // libuv puts non-detached Windows children in its own kill-on-parent-exit job. The supervisor
+      // must survive broker death long enough to empty its separate validator job and persist proof.
+      cwd: options.cwd, env: bootstrapEnvironment, shell: false, detached: true, windowsHide: true,
       stdio: windows ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "ipc"],
     },
   ));

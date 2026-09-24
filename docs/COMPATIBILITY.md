@@ -295,6 +295,14 @@ The broker has no transactional audit outbox and does not reconstruct those miss
 state, retained Git objects, and fresh forge observations for recovery; the audit stream is useful
 diagnostic history, not a complete event log from which all state can be rebuilt.
 
+Linux recovery requires matching recorded kernel boot and PID-namespace identities before probing
+a saved lock-owner PID or validator process group. Legacy records without that identity, malformed
+identities, a changed boot/namespace, or unreadable current identity cannot establish termination.
+Inspect the old operation and independently confirm it cannot still progress before using
+`unlock <name> --force`; validator execution records require `unlock integration --force`. This also
+applies to legacy Linux locks left across an upgrade. New Linux validator execution requires readable
+`/proc/sys/kernel/random/boot_id` and `/proc/self/ns/pid`; force unlock does not bypass that requirement.
+
 Validator supervision is a recovery control for trusted commands, not a sandbox. On POSIX hosts,
 validators and their ordinary descendants must remain in the supervisor's process group. Validators
 must not daemonize, call `setsid()`, spawn detached processes, or hand work to an external service that

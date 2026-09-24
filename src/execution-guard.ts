@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { lstat, mkdir, open, opendir, readFile, rename, rm } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
+import { canProbeProcessIdentity, linuxProcessIdentity } from "./process-identity.js";
 
 // A command may outlive the broker PID that owns integration.lock. These separate records are
 // published before a supervisor receives permission to execute. Recovery never signals saved PIDs:
@@ -22,6 +23,7 @@ interface ExecutionRecord {
   pid: number;
   host: string;
   platform: string;
+  processIdentity?: string;
   kind: "process-group" | "windows-job";
   cwd: string;
 }
@@ -33,6 +35,11 @@ export async function withExecutionGuards<T>(directory: string, operation: () =>
 export async function registerExecution(pid: number, cwd: string): Promise<ExecutionGuard | undefined> {
   const directory = executions.getStore();
   if (!directory) return undefined;
+  const processIdentity = linuxProcessIdentity();
+  if (process.platform === "linux" && !processIdentity) {
+    throw new BrokerError("LOCK_HELD",
+      "Linux boot and PID namespace identity are unavailable; the validator was not started.");
+  }
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const status = await lstat(directory);
   if (!status.isDirectory() || status.isSymbolicLink()) {
@@ -43,6 +50,7 @@ export async function registerExecution(pid: number, cwd: string): Promise<Execu
   const temporary = `${file}.tmp`;
   const record: ExecutionRecord = {
     version: 1, nonce, pid, host: hostname(), platform: `${process.platform}-${process.arch}`,
+    ...(processIdentity ? { processIdentity } : {}),
     kind: process.platform === "win32" ? "windows-job" : "process-group",
     cwd,
   };
@@ -107,6 +115,7 @@ async function executionFinished(file: string): Promise<boolean> {
     return false;
   }
   if (record.kind !== "process-group" || process.platform === "win32") return false;
+  if (!canProbeProcessIdentity(record.processIdentity, process.platform, linuxProcessIdentity())) return false;
   try {
     process.kill(-record.pid, 0);
     return false;

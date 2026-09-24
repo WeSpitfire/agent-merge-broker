@@ -38,6 +38,9 @@
   failure preserves recovery state and requires operator inspection before explicit force-unlock.
   This is lifecycle supervision for trusted validators, not a sandbox; deliberately daemonized or
   detached POSIX work remains unsupported.
+- Windows supervision survives broker termination long enough to record an empty validator job,
+  and suppresses PowerShell bootstrap progress so validator output remains intact. Recovery tests
+  use portable module URLs and compare canonical paths across Windows short-name aliases.
 
 - The pre-push guard now inspects the remote ref a push would update, not the local ref. A mapped
   push such as `git push origin HEAD:main` previously bypassed it.
@@ -45,10 +48,12 @@
   `$`. systemd does not strip quotes from those settings, so the generated unit could fail to load or
   silently drop its log. A test runs `systemd-analyze verify` where systemd is available.
 - State transactions prove they still hold the state lock immediately before writing, and report the
-  new `LOCK_LOST` code instead of writing under a lock that was reclaimed. Lock owners record their
-  operating system instance, so a process in a WSL2 or container namespace that shares a hostname is
-  never treated as a dead holder. Lock owner files are parsed in one place; a second parser had
-  silently dropped the fields reclaim safety depends on.
+  new `LOCK_LOST` code instead of writing under a lock that was reclaimed. Linux lock-owner and
+  validator execution records bind saved PID probes to the kernel boot and PID namespace, not just
+  hostname and platform. Missing, malformed, mismatched, or unreadable identity blocks automatic
+  recovery; legacy Linux records require inspected force unlock. Only `ESRCH` proves a probed owner
+  dead. Lock owner files are parsed in one place; a second parser had silently dropped the fields
+  reclaim safety depends on.
 - `doctor` reports the supported Node.js version as 22, matching the package's engines range.
 - Support bundles redact private keys, bearer and authorization credentials in free text, URLs of any
   scheme, scp-style Git locators for any user, and fields named for signing keys, API keys,

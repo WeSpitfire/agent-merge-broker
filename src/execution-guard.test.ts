@@ -144,7 +144,7 @@ test("Node preloads execute only inside a durably registered validator, includin
       const result = await runCommand(process.execPath, ["--input-type=commonjs", "-e", "console.log(process.cwd())"], {
         cwd: directory, killProcessTree: true, env: { ...process.env },
       });
-      assert.equal(result.stdout.trim(), await realpath(directory));
+      assert.equal(await realpath(result.stdout.trim()), await realpath(directory));
     });
   } finally {
     if (previous === undefined) delete process.env.NODE_OPTIONS;

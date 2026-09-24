@@ -154,7 +154,7 @@ public static class MergeBrokerSupervisor {
 `;
 
 export const WINDOWS_SUPERVISOR = Buffer.from(
-  `$ErrorActionPreference = 'Stop'\nAdd-Type -ReferencedAssemblies 'System.Web.Extensions' -TypeDefinition @'\n${WINDOWS_SOURCE}\n'@\nexit ([MergeBrokerSupervisor]::Run())`,
+  `$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\nAdd-Type -ReferencedAssemblies 'System.Web.Extensions' -TypeDefinition @'\n${WINDOWS_SOURCE}\n'@\nexit ([MergeBrokerSupervisor]::Run())`,
   "utf16le",
 ).toString("base64");
 

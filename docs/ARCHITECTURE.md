@@ -127,10 +127,17 @@ outbox or replay repair for that gap. Audit sequence numbers order recorded obse
 guarantee a gap-free history. Recovery derives authority from saved intents, retained Git objects,
 and current forge observations rather than replaying audit events. Backups remain necessary.
 
-A lock contender first builds an owner directory containing its process ID, hostname, creation time,
-and random nonce, then
+A lock contender first builds an owner directory containing its process ID, hostname, platform,
+creation time, and random nonce, then
 atomically renames that complete directory into the active lock path. The nonce is a fencing identity:
 an old holder can neither release nor reclaim a successor's lock.
+
+On Linux, saved lock-owner and validator process-group probes additionally require an exact match
+with the current kernel boot ID and PID-namespace identity. Hostname and platform alone cannot
+distinguish containers sharing a Git common directory. Missing, malformed, mismatched, or unreadable
+identity is not proof of termination; legacy Linux records without it require inspected force unlock.
+Only `ESRCH` from an identity-matched probe proves the saved process or group absent. Linux validator
+registration refuses to release the command when the current identity cannot be read.
 
 Validator commands are handed to a supervisor only after its execution record is saved. POSIX
 supervisors own a process group; Windows supervisors assign a waiting executor to a kill-on-close
