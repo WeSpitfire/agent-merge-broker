@@ -80,12 +80,13 @@ stream is append-only by convention, not cryptographically tamper-evident.
 State, integration, fixed Gate-authority, and per-batch locks are correctness controls between
 cooperating local processes, not authorization boundaries. A state transaction re-proves its
 ownership nonce immediately before writing and fails with `LOCK_LOST` rather than writing under a
-reclaimed lock, and a lock whose owner recorded a different operating system instance is never
-treated as abandoned, because a process in another PID namespace can share this hostname. Their owner nonces prevent an old process
-from releasing a successor's lock, and only a provably dead same-host process is reclaimed
-automatically. An operator with filesystem access can force-unlock, edit state, or replace Git objects; the security model
-already trusts that operator and host. A shared Git directory does not provide distributed consensus
-or protect against a hostile second machine.
+reclaimed lock. Automatic dead-owner checks require compatible platform identity; on Linux they
+also require the same boot and PID namespace before probing a saved PID. A missing or mismatched
+Linux identity requires inspected force-unlock, and only `ESRCH` proves that a probed process is
+gone. Owner nonces prevent an old process from releasing a successor's lock. An operator with
+filesystem access can force-unlock, edit state, or replace Git objects; the security model already
+trusts that operator and host. A shared Git directory does not provide distributed consensus or
+protect against a hostile second machine.
 
 ## Git safety
 
