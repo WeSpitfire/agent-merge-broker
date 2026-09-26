@@ -8,6 +8,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { assertPackageFootprint, CORE_PACKAGE_NAME, stageCorePackage } from "./package-layout.mjs";
+import { releaseChannel } from "./release-channel.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const fullMetadata = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
@@ -152,10 +153,12 @@ async function verifyPackage(source, metadata, packDestination, consumer) {
     console.log(`${metadata.name}@${metadata.version} is already on npm; skipping the publication dry-run.`);
   } else {
     // A bare directory/file.tgz can be parsed as GitHub shorthand. Exercise publication's
-    // explicit local-file form without publishing, running lifecycle scripts, or requesting OIDC.
+    // explicit local-file form and exact channel without publishing, running lifecycle scripts,
+    // or requesting OIDC. Recent npm refuses a prerelease dry-run without --tag.
+    const channel = releaseChannel(metadata.version, metadata.version.includes("-") ? "true" : "false");
     const publishOutput = JSON.parse(await runNpm([
       "publish", `./${packed.filename}`, "--dry-run", "--ignore-scripts", "--json",
-      "--access=public", "--provenance=false", `--registry=${registry}`,
+      "--access=public", "--provenance=false", `--tag=${channel}`, `--registry=${registry}`,
     ], packDestination));
     const publishPreview = publishOutput[metadata.name] ?? publishOutput;
     assert.equal(publishPreview.name, metadata.name);
