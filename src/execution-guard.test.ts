@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -24,7 +25,7 @@ async function until<T>(read: () => Promise<T | undefined>): Promise<T> {
 
 async function runningValidator(context: TestContext): Promise<{
   store: StateStore; broker: ReturnType<typeof spawn>; exited: Promise<unknown>;
-  validatorPid: number; supervisorPid: number; directory: string;
+  validatorPid: number; supervisorPid: number; directory: string; guardFile: string; guardNonce: string;
 }> {
   const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-execution-"));
   const extension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
@@ -65,8 +66,11 @@ async function runningValidator(context: TestContext): Promise<{
   const guards = path.join(directory, "state", "validator-executions");
   const name = (await readdir(guards)).find((entry) => entry.endsWith(".json"));
   assert.ok(name);
-  supervisorPid = (JSON.parse(await readFile(path.join(guards, name), "utf8")) as { pid: number }).pid;
-  return { store: new StateStore(directory, "state", 0.2), broker, exited, validatorPid, supervisorPid, directory };
+  const guardFile = path.join(guards, name);
+  const guard = JSON.parse(await readFile(guardFile, "utf8")) as { pid: number; nonce: string };
+  supervisorPid = guard.pid;
+  return { store: new StateStore(directory, "state", 0.2), broker, exited, validatorPid, supervisorPid,
+    directory, guardFile, guardNonce: guard.nonce };
 }
 
 function alive(pid: number): boolean {
@@ -117,7 +121,7 @@ test("recovery waits for a stopped supervisor and fails closed if it dies with a
   assert.equal(entered, true);
 });
 
-test("Windows supervisor death kills its job but requires inspected recovery without completion proof", {
+test("Windows relay death kills its job and recovery requires completion proof or inspection", {
   skip: process.platform !== "win32" ? "Windows kernel job lifecycle" : false,
   timeout: 60_000,
 }, async (context) => {
@@ -125,10 +129,35 @@ test("Windows supervisor death kills its job but requires inspected recovery wit
   process.kill(fixture.supervisorPid, "SIGKILL");
   await fixture.exited;
   await until(async () => !alive(fixture.validatorPid) ? true : undefined);
-  await assert.rejects(fixture.store.withIntegrationLock(async () => assert.fail("missing completion proof")),
-    (error: unknown) => error instanceof BrokerError && error.code === "LOCK_HELD");
-  await fixture.store.releaseLock("integration", { force: true });
+  const guardRemains = await access(fixture.guardFile).then(() => true, () => false);
+  const completion = await readFile(`${fixture.guardFile}.done`, "utf8").catch(() => undefined);
+  if (guardRemains && completion !== fixture.guardNonce) {
+    await assert.rejects(fixture.store.withIntegrationLock(async () => assert.fail("missing completion proof")),
+      (error: unknown) => error instanceof BrokerError && error.code === "LOCK_HELD");
+    await fixture.store.releaseLock("integration", { force: true });
+  }
   await fixture.store.withIntegrationLock(async () => {});
+});
+
+test("Windows execution guard without empty-job proof requires inspected force unlock", {
+  skip: process.platform !== "win32" ? "Windows kernel job completion proof" : false,
+}, async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-windows-unproven-"));
+  context.after(async () => await rm(directory, { recursive: true, force: true }));
+  const store = new StateStore(directory, "state", 0.2);
+  await store.initialize();
+  const guards = path.join(directory, "state", "validator-executions");
+  await mkdir(guards);
+  const nonce = randomUUID();
+  const guard = path.join(guards, `${nonce}.json`);
+  await writeFile(guard, `${JSON.stringify({
+    version: 1, nonce, pid: process.pid, host: hostname(), platform: `${process.platform}-${process.arch}`,
+    kind: "windows-job", cwd: directory,
+  })}\n`);
+  await assert.rejects(store.withIntegrationLock(async () => assert.fail("missing completion proof")),
+    (error: unknown) => error instanceof BrokerError && error.code === "LOCK_HELD");
+  await store.releaseLock("integration", { force: true });
+  await store.withIntegrationLock(async () => {});
 });
 
 test("Node preloads execute only inside a durably registered validator, including Unicode paths", async (context) => {
