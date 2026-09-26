@@ -14,6 +14,12 @@ Version `0.14.2` extends Gate with diagnostics, abandonment, journaled retiremen
 validation evidence, and offline verification. These extensions do not give Gate publication or
 merge authority.
 
+The intended `1.0` product boundary is complete Coordinate transactions plus these trusted local
+Gate validation and evidence operations. Gate merge authorization and remote admission remain later
+capabilities. `ForgePublisher` is currently a Coordinate boundary: it consumes a `BatchRecord` and
+its tasks. A future Gate publication interface must preserve the separate submission origin rather
+than manufacture Coordinate history to fit this interface.
+
 **Packaging in 0.15.0:** `src/core.ts` defines the shared Node API; `src/index.ts` re-exports it
 and adds the full package's MCP adapter. `agent-merge-broker-core` packages the same broker and CLI
 implementation without MCP code/dependencies. The existing `agent-merge-broker` entry points remain
@@ -27,9 +33,10 @@ compatible. This is a distribution boundary, not a fork of transaction or valida
 4. The retained branch is created only after every configured broker-side validator succeeds. When
    `validation.authority` is `required-ci`, protected pull-request checks make the complete decision.
 5. A task is `merged` only after reconciliation or an explicit operator completion.
-6. State writes are atomic. The integration lock serializes batch construction, the state lock
-   serializes short mutations, and a per-batch lock serializes normal side-effecting commands for
-   one retained batch.
+6. Replacement of an existing state file is atomic on the supported local filesystem. State and
+   audit are separate writes, not a single atomic transaction. The integration lock serializes batch
+   construction, the state lock serializes short mutations, and a per-batch lock serializes normal
+   side-effecting commands for one retained batch.
 7. Broker state persists only a lease-token digest; the optional local token vault is a separate
    owner-readable convenience store and is never committed.
 8. When the broker's configured signature policy is enabled, every retained provenance manifest is
@@ -83,6 +90,7 @@ $(git rev-parse --git-common-dir)/merge-broker/
 ├── state.lock/
 ├── integration.lock/
 ├── batch-<safe-batch-id>.lock/
+├── validator-executions/
 ├── archive/
 └── worktrees/
     ├── <batch-id>/
@@ -104,10 +112,46 @@ each physical component below the physical common directory instead of following
 junction. Gate worktree identities use full-width device/inode strings so recovery refuses a
 different directory or file moved into a recorded pathname.
 
-JSON state writes use a temporary sibling followed by an atomic rename. A lock contender first
-builds an owner directory containing its process ID, hostname, creation time, and random nonce, then
+JSON state writes sync a temporary sibling before atomic rename, then sync the parent directory
+where the filesystem supports it. Unsupported directory syncing is tolerated. Initialization uses
+a synced temporary file and create-only hard link; on filesystems that cannot create that link, the
+create-only write fallback can expose an incomplete initial file if interrupted. These details limit
+sudden-power-loss guarantees on those filesystems. The tested recovery model is a stopped process on
+one trusted host, not arbitrary disk corruption, lost storage, multi-host network-filesystem
+coordination, or all hardware/filesystem failure modes.
+
+A state transaction replaces `state.json` before appending and syncing its recorded audit events.
+An interruption or audit append failure in that gap can commit state without the corresponding
+events; an append failure may report an error even though state changed. There is no transactional
+outbox or replay repair for that gap. Audit sequence numbers order recorded observations but do not
+guarantee a gap-free history. Recovery derives authority from saved intents, retained Git objects,
+and current forge observations rather than replaying audit events. Backups remain necessary.
+
+A lock contender first builds an owner directory containing its process ID, hostname, platform,
+creation time, and random nonce, then
 atomically renames that complete directory into the active lock path. The nonce is a fencing identity:
 an old holder can neither release nor reclaim a successor's lock.
+
+On Linux, saved lock-owner and validator process-group probes additionally require an exact match
+with the current kernel boot ID and PID-namespace identity. Hostname and platform alone cannot
+distinguish containers sharing a Git common directory. Missing, malformed, mismatched, or unreadable
+identity is not proof of termination; legacy Linux records without it require inspected force unlock.
+Only `ESRCH` from an identity-matched probe proves the saved process or group absent. Linux validator
+registration refuses to release the command when the current identity cannot be read.
+
+Validator commands are handed to a supervisor only after its execution record is saved. POSIX
+supervisors own a process group; Windows supervisors assign a waiting executor to a kill-on-close
+kernel job before handing it the command. Bootstrap runtimes do not inherit validator preload
+settings. Integration/recovery checks retained execution records before proceeding, and unresolved
+execution also blocks guarded cleanup. Windows completion requires the supervisor's nonce-bound
+marker written after it observes an empty job; supervisor PID death alone is not that proof.
+
+This mechanism assumes trusted, cooperating validators. On POSIX, ordinary child processes remain
+in the owned group, but a validator can escape it with `setsid()`, `detached: true`, or daemonization.
+Validators must not do so or delegate continuing work to an external service. The broker does not
+promise containment or discovery of those escaped workloads. An execution record that cannot prove
+termination stays for operator inspection; `unlock integration --force` clears the barrier only
+after the operator has independently established that the old workload is stopped.
 
 Local-ref submissions are an additive collection in state version 1. A reader normalizes a legacy
 file with no `submissions` member to `{}` and persists that collection on the next ordinary state

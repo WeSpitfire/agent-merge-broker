@@ -236,33 +236,41 @@ and both current and historical snapshots without writing.
 
 ## Saved formats
 
-Every file the broker reads back across releases has a `version` field or a documented default, and
-a JSON Schema in `schemas/`:
+These supported saved formats have JSON Schemas in `schemas/`. They do not all carry a top-level
+integer version, and their readers do not all accept unknown fields:
 
-| Format | Location | Schema |
-| --- | --- | --- |
-| Repository configuration | `.merge-broker/config.json` | `config.schema.json` |
-| Broker state | `state.json` in the runtime state directory | `state.schema.json` |
-| Archived state slice | `archive/state-*.json` written by `prune` | `archived-state.schema.json` |
-| Audit event | `audit.jsonl` and rotated `archive/audit-*.jsonl[.gz]`, one JSON object per line | `audit-event.schema.json` |
-| Submission record | `submissions/*.json` and `archive/submissions/*.json` | `submission.schema.json` |
-| Gate authority registration | fixed path in Git's common directory | `gate-authority.schema.json` |
-| Commit receipt | `receipts/*.json` | `receipt.schema.json` |
-| Exact candidate | `candidate` in batch records | `candidate.schema.json` |
-| Batch provenance manifest | integration branch | `provenance.schema.json` |
-| Gate attestation | detached DSSE file | `submission-attestation-envelope.schema.json`, `submission-attestation-statement.schema.json` |
+| Format | Location | Format identity and extension rule | Schema |
+| --- | --- | --- | --- |
+| Repository configuration | `.merge-broker/config.json` | Integer `version`; unknown policy keys rejected | `config.schema.json` |
+| Broker state | `state.json` in the runtime state directory | Integer `version`; unknown additive fields preserved; unknown lifecycle values rejected | `state.schema.json` |
+| Archived state slice | `archive/state-*.json` written by `prune` | Integer `version`, absent means 1 for legacy slices; extensible state records | `archived-state.schema.json` |
+| Audit event | `audit.jsonl` and rotated `archive/audit-*.jsonl[.gz]`, one JSON object per line | Schema identity; no per-event `version`; extensible envelope | `audit-event.schema.json` |
+| Submission record | `submissions/*.json` and `archive/submissions/*.json` | Integer `version`; standalone schema is strict, state decoder preserves additive fields | `submission.schema.json` |
+| Gate authority registration | fixed path in Git's common directory | Integer `version`; exact allowed keys and digest | `gate-authority.schema.json` |
+| Commit receipt | `receipts/*.json` | Integer `version`; schema has a closed shape | `receipt.schema.json` |
+| Exact candidate | `candidate` in batch records | Containing state format; `revision` identifies the candidate revision, not a format version | `candidate.schema.json` |
+| Batch provenance manifest | integration branch | Integer `version`; schema has a closed shape; original signed bytes retained | `provenance.schema.json` |
+| Gate attestation | detached DSSE file | DSSE envelope has no broker version; in-toto statement type, predicate type and `predicate.version` select the statement format | `submission-attestation-envelope.schema.json`, `submission-attestation-statement.schema.json` |
 
 The state, archived-state, and audit-event schemas are generated from the decoders the broker uses to
-read those files, so the schema and the reader cannot disagree. Readers additionally require each task,
+read those files. Readers additionally require each task,
 batch, and submission record's `id` to equal its collection key, which JSON Schema cannot express.
-Unknown fields are preserved on read and write, and an unsupported `version` is refused rather than
-reinterpreted: `STATE_VERSION` for state, and an ignored slice for archived state. Archived state
+Those state decoders preserve unknown fields on read and write; this does not apply to configuration
+or every other format in the table. An unsupported `version` is not reinterpreted: `STATE_VERSION`
+for state, and an ignored slice for archived state. Archived state
 slices written before 0.16.0 have no `version` and are version 1.
 
 For audit events, the envelope (`sequence`, `at`, `event`, and the optional `actor`, `taskId`,
 `batchId`, `submissionId`, and `details`) is stable. Event names and the contents of `details` are
 informational and may gain values in minor releases. Readers skip lines that are not valid JSON or
-lack the envelope.
+lack the envelope. Audit writes follow the state write and are not atomic with it. Sequence gaps can
+reflect a stop or append failure after state committed; there is no outbox that replays the missing
+events. The stream is not a complete state-reconstruction protocol.
+
+The Gate verifier accepts permitted DSSE envelope and in-toto wrapper extensions, but its broker
+predicate and nested policy, base, validator, and digest shapes are strict. Verification authenticates
+the original payload bytes before interpreting the supported statement. It neither preserves all
+unknown wrapper fields in its result nor converts old signed evidence into a new predicate.
 
 Batch manifests under `batches/`, lock owner files, token and key files, and disposable worktrees are
 implementation details. Use `batch show --json`, `status --json`, and `doctor --json` instead.
@@ -288,6 +296,21 @@ original file under `archive/migrations/<run>/` with its path relative to Git's 
 rewrites it durably, and records a `formats.migrated` audit event. It refuses with
 `MIGRATION_BLOCKED`, exit status `3`, and writes nothing when any file is unsupported or unreadable.
 Committed configuration is reported but never rewritten.
+
+The current transformations are deliberately limited:
+
+- `state-v1-add-submissions` adds an empty `submissions` collection to version-1 state that omits it;
+- `archived-state-record-version-1` records version 1 in an archived state slice that omits `version`.
+
+Other inspected formats are checked for readability, not upgraded by a registered transformation.
+Audit segments, embedded candidate records as independent files, provenance in Git, DSSE evidence,
+signing keys, and forge state are not rewritten by this command. A current report is not a proof that
+every historical artifact or in-flight remote operation is compatible. Current tests exercise the
+two legacy shapes above and frozen configuration/state/archive bytes emitted by the `v0.12.1`
+release-tag source. That fixture uses current development dependencies and omits the original Git
+object graph, audit stream, and private signing key; it proves saved-format migration and continued
+task registration, not an entire historical repository upgrade. Upgrade tests against installed
+released packages and in-flight workflows remain a separate release check.
 
 Stop every other broker process that uses the repository before applying: services, `serve` loops,
 MCP servers, and agents. A release that predates a format version cannot read files migrated to it.

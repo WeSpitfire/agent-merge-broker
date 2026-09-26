@@ -18,6 +18,13 @@ From `1.0.0`, Agent Merge Broker follows [Semantic Versioning](https://semver.or
 interfaces. Before `1.0.0`, a minor release may still break them; every break is listed under
 **Breaking** in the changelog with its migration.
 
+The intended `1.0` scope is the Coordinate workflow and trusted local-ref Gate validation,
+retention, diagnostics, and detached validation evidence. Gate approval, publication, merge
+authorization, remote intake, and general Verify-mode admission are outside that scope. The shipped
+Gate validation interfaces are part of the compatibility promise; deferring Gate merging does not
+make those existing interfaces disposable. This is a release target, not a statement that `1.0` or
+its acceptance checks have shipped.
+
 **Stable interfaces:**
 
 - CLI commands and options, `--json` success documents, the JSON error envelope, and
@@ -27,7 +34,7 @@ interfaces. Before `1.0.0`, a minor release may still break them; every break is
 - the root exports of `agent-merge-broker` and `agent-merge-broker-core`, described in
   [programmatic use](PROTOCOL.md#programmatic-use);
 - MCP profiles, tool names, and tool input schemas;
-- the [saved formats](PROTOCOL.md#saved-formats) and their `version` fields: configuration, broker
+- the [saved formats](PROTOCOL.md#saved-formats) and their format-specific identities: configuration, broker
   state, archived state slices, the audit event envelope, submission records, Gate authority
   registrations, receipts, provenance manifests, attestation envelopes and predicates, and the
   immutable schema snapshots in `schemas/identities.json`; and
@@ -35,28 +42,42 @@ interfaces. Before `1.0.0`, a minor release may still break them; every break is
 
 **Not stable:** human-readable CLI output and log text, `serve` progress messages, module paths below
 the package root, internal `MergeBroker` members, and the layout of runtime files under Git's common
-directory other than the documented formats. Consumers must ignore unknown JSON fields; new fields
-may be added in any minor release.
+directory other than the documented formats. Consumers of CLI/Node/MCP result documents must ignore
+unknown fields; result fields may be added in a minor release. This output rule does not permit
+unknown policy keys, arbitrary signed-predicate fields, or unknown lifecycle values in saved state.
 
 **Change rules:** adding a command, option, JSON field, error code, MCP tool, or export is a minor
 change. Removing, renaming, or changing the meaning of a stable interface is a major change. A
-persisted format change increments that format's `version` field and ships an upgrade path; a
-release never silently reinterprets existing state. A security fix may tighten behavior that was
+breaking saved-format change needs an explicit format identity change and a documented compatibility
+path; a release never silently reinterprets existing state. A security fix may tighten behavior that was
 unsafe, and the changelog says so.
 
-**Saved format rules:** every saved format records an integer `version`.
+**Saved format rules:** identities and extension behavior differ by format; see the
+[format table](PROTOCOL.md#saved-formats).
 
-- Adding an optional field does not change the version. Readers preserve unknown fields.
-- Removing or renaming a field, changing a field's type or meaning, adding a required field, or
-  adding a value to a closed set such as a status bumps the version. Older readers reject unknown
-  values rather than guess, so a new status is a format change.
-- Changing how a file is encoded, such as compressing it, is a format change too. The reader ships in
-  one release before any release writes the new encoding.
-- Every version bump ships a forward-only migration in `merge-broker migrate` from each version
-  still within the support window, publishes a new immutable schema snapshot, and keeps earlier
-  snapshots.
-- A release refuses files from a newer version instead of reinterpreting them. There is no downgrade
-  migration; `migrate --apply` keeps the original bytes so an operator can restore them.
+- State and archived-state decoders preserve unknown fields, including nested records. This is an
+  extension allowance, not permission to invent a new status or reinterpret a known field. Candidate
+  records inherit their containing state format and have no separate integer `version`.
+- Configuration and Gate authority registration reject unknown policy keys. Their strict schemas
+  must remain strict. Adding a field to these formats requires a reader/writer compatibility plan;
+  an older reader is not promised to accept a newer configuration.
+- Receipts, provenance, and standalone submission schemas describe their own accepted shapes.
+  Submission records embedded in state are read by the extensible state decoder; that does not make
+  the standalone submission schema extensible. Do not infer a universal extension rule from either.
+- Audit events have no per-event integer version. Their envelope is identified by its schema;
+  event names and `details` are informational. DSSE envelopes also have no broker integer version.
+  Gate statements use the in-toto type, predicate type, and predicate's integer version; the predicate
+  is strict, while permitted envelope extensions are ignored rather than preserved in verifier output.
+- Removing or changing required meaning, types, or closed-set values requires a new applicable
+  format version or schema/predicate identity. Every schema change publishes a new immutable
+  snapshot and retains prior snapshots. Signed evidence is verified under its original format,
+  never rewritten by migration to manufacture a new signature.
+- Encoding changes require explicit reader compatibility. Gzip audit reading and opt-in compaction
+  first shipped together in `0.15.0`; all readers must be upgraded before compaction is applied.
+- `migrate` only transforms the formats and legacy shapes listed in the
+  [upgrade contract](PROTOCOL.md#upgrading-saved-formats). It is not a universal converter for every
+  schema or signed artifact. State rejects newer versions; archive reading skips unsupported slices
+  while migration inspection reports them. There is no automatic downgrade migration.
 
 **Deprecation:** a stable interface is deprecated in a minor release with documentation and, where
 possible, a warning on stderr or in the JSON result. It is removed no earlier than the next major
@@ -67,12 +88,26 @@ release.
 supported. A Node.js major that has reached end of life may be dropped in a minor release, and the
 changelog announces it.
 
+The support window for fixing software is distinct from the supported starting formats of a
+migration. Current migration tests cover version-1 state missing `submissions` and archived state
+without a `version`. In addition to constructed cases, a frozen fixture contains configuration,
+active state, and an archive emitted by the `v0.12.1` Git-tag source. Its provenance records the exact
+commit and file hashes; it was generated with current development dependencies, not captured from an
+installed historical npm tarball. Tests cover migration, original-byte backups, preserved task
+history, and subsequent registration. A separate [published-package upgrade rehearsal](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-published-upgrades.md)
+exercised exact npm tarballs from `0.12.0` through `0.16.0` against a source checkout, including
+continuation and exact-byte restore. Neither result certifies historical signing, integration,
+in-flight publication, earlier starting versions, or an exact 1.0 release candidate. Drain work
+before upgrading as directed in [Getting started](GETTING_STARTED.md#upgrade-the-broker). See the
+[1.0 checklist](../ROADMAP.md#conditions-for-10).
+
 ## Installation footprint — 0.15.0
 
 The companion `agent-merge-broker-core` package shares the Coordinate/Gate CLI and core Node API
 without the MCP server, SDK dependency, or `createMcpServer` export. `agent-merge-broker` retains
 its existing MCP entry points and API. The packages share CLI aliases; choose one per installation.
-The core package is published separately; confirm its version in npm's version history.
+Core registry publication has a separate bootstrap and release gate; the existence of a source
+tarball does not establish that the package is available from npm.
 These packaging changes are introduced in `0.15.0`.
 
 Both tarballs retain runtime code, TypeScript definitions, schemas, templates, README, and license;
@@ -123,9 +158,10 @@ empty and rejects `{files}`.
 ## Windows behavior
 
 Windows uses the built-in `powershell.exe` with `-NoProfile` and `-NonInteractive` for validators.
-Placeholder values are quoted as PowerShell literals, validator timeouts terminate descendant
-processes with `taskkill`, and repository-relative configuration rejects drive-qualified, UNC, and
-escaping paths before execution.
+Placeholder values are quoted as PowerShell literals. The source implementation supervises validator
+commands in a Windows kernel job, assigning the executor before giving it the command; timeout and
+owner-disconnect cleanup terminate that job. Repository-relative configuration rejects
+drive-qualified, UNC, and escaping paths before execution.
 
 Recorded validator `exitCode` is the configured shell's process status, not necessarily the native
 program's exact status. Windows PowerShell `-Command` can report a native nonzero status such as `7`
@@ -246,6 +282,37 @@ multi-host consensus layer, high-availability leader election, hosted control pl
 receiver, or web dashboard. If workers run on separate machines, an external orchestrator must
 route their task and lease operations to the one authoritative broker state and make the submitted
 Git commit objects available to its integration repository deliberately.
+
+Recovery assumes one trusted host and filesystem semantics that preserve atomic sibling-file
+replacement. State contents are synced before replacement and the parent directory is synced where
+supported. Filesystems that reject directory syncing, and the create-only initialization fallback on
+filesystems without hard links, have weaker sudden-power-loss guarantees. Multi-host access through a
+network filesystem or file-sync product is not a supported distributed authority. Recovery tests do
+not establish protection against storage corruption, disk loss, or every filesystem's power-loss
+behavior; back up state and signing keys independently.
+
+State and audit are separate writes: state is replaced before audit events are appended. A process
+stop or append failure between them can leave committed state without its corresponding audit event.
+The broker has no transactional audit outbox and does not reconstruct those missing events. Use saved
+state, retained Git objects, and fresh forge observations for recovery; the audit stream is useful
+diagnostic history, not a complete event log from which all state can be rebuilt.
+
+Linux recovery requires matching recorded kernel boot and PID-namespace identities before probing
+a saved lock-owner PID or validator process group. Legacy records without that identity, malformed
+identities, a changed boot/namespace, or unreadable current identity cannot establish termination.
+Inspect the old operation and independently confirm it cannot still progress before using
+`unlock <name> --force`; validator execution records require `unlock integration --force`. This also
+applies to legacy Linux locks left across an upgrade. New Linux validator execution requires readable
+`/proc/sys/kernel/random/boot_id` and `/proc/self/ns/pid`; force unlock does not bypass that requirement.
+
+Validator supervision is a recovery control for trusted commands, not a sandbox. On POSIX hosts,
+validators and their ordinary descendants must remain in the supervisor's process group. Validators
+must not daemonize, call `setsid()`, spawn detached processes, or hand work to an external service that
+continues after they exit. Such work can escape the group and is outside the no-overlap guarantee.
+Windows uses a kernel job; an absent completion marker after an unexpected supervisor death leaves
+execution unresolved even when the supervisor PID is gone. Pending or malformed execution records
+block integration and recovery. Inspect and stop the old workload before using
+`unlock integration --force` to clear that barrier.
 
 The broker also does not start coding agents, write their prompts, create their implementation
 worktrees, sandbox their tools, or provide agent-to-agent messaging. It begins at the coordination

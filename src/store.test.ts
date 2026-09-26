@@ -19,6 +19,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { StateStore } from "./store.js";
 import { BrokerError } from "./errors.js";
+import { linuxProcessIdentity } from "./process-identity.js";
 import { STATE_VERSION, SUBMISSION_VERSION, type BrokerState, type SubmissionRecord } from "./types.js";
 
 function submissionRecord(id = "submission-one"): SubmissionRecord {
@@ -299,7 +300,8 @@ test("releases an abandoned lock but refuses one that may still be live", async 
 
   // Another operating system instance can share this hostname: WSL2 beside Windows, or a container
   // with host networking. Its process IDs mean nothing here, so its lock is never assumed dead.
-  await write({ pid: 4_294_967_295, host: hostname(), platform: "win32-x64", createdAt: new Date().toISOString() });
+  const foreignPlatform = process.platform === "win32" ? "linux-x64" : "win32-x64";
+  await write({ pid: 4_294_967_295, host: hostname(), platform: foreignPlatform, createdAt: new Date().toISOString() });
   const otherPlatform = await store.inspectLock("integration");
   assert.equal(otherPlatform.held, true);
   assert.equal(otherPlatform.abandoned, false);
@@ -310,7 +312,7 @@ test("releases an abandoned lock but refuses one that may still be live", async 
   assert.equal((await store.releaseLock("integration", { force: true })).held, false);
 
   // A holder on this machine whose process is gone is provably abandoned.
-  await write({ pid: 4_294_967_295, host: hostname(), createdAt: new Date().toISOString() });
+  await write({ pid: 2_147_483_647, host: hostname(), processIdentity: linuxProcessIdentity(), createdAt: new Date().toISOString() });
   assert.equal((await store.inspectLock("integration")).abandoned, true);
   assert.equal((await store.releaseLock("integration")).held, false);
   assert.equal((await store.inspectLock("integration")).held, false);
@@ -403,8 +405,9 @@ test("reclaims a provably crashed batch lock without exposing its successor", as
   const staleNonce = "stale-owner-nonce";
   await mkdir(lockDirectory, { mode: 0o700 });
   await writeFile(path.join(lockDirectory, "owner.json"), `${JSON.stringify({
-    pid: 4_294_967_295,
+    pid: 2_147_483_647,
     host: hostname(),
+    processIdentity: linuxProcessIdentity(),
     createdAt: "2026-01-01T00:00:00.000Z",
     nonce: staleNonce,
   })}\n`, "utf8");

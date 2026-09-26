@@ -21,6 +21,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { BrokerError } from "./errors.js";
+import { canProbeProcessIdentity, linuxProcessIdentity } from "./process-identity.js";
+import { forceClearExecutions, waitForExecutions, withExecutionGuards } from "./execution-guard.js";
 import { MAX_COMPACT_AUDIT_BYTES, syncDirectory } from "./storage.js";
 import {
   decodeArchivedStateSlice,
@@ -62,7 +64,10 @@ export interface LockStatus {
   abandoned?: boolean;
 }
 
-/** Identifies the operating system instance a lock owner's process ID belongs to. */
+// Runtime ownership metadata is additive; keep the exported LockStatus interface unchanged.
+type LockOwner = NonNullable<LockStatus["owner"]> & { processIdentity?: string };
+
+/** Platform compatibility; Linux additionally requires the recorded boot/PID-namespace identity. */
 function lockPlatform(): string {
   return `${process.platform}-${process.arch}`;
 }
@@ -328,7 +333,10 @@ export class StateStore {
   }
 
   async withIntegrationLock<T>(operation: () => Promise<T>): Promise<T> {
-    return await this.withLock("integration", operation);
+    return await this.withLock("integration", async () => {
+      await waitForExecutions(this.directory, this.lockTimeoutMs);
+      return await withExecutionGuards(this.directory, operation);
+    });
   }
 
   /** Serializes audit compaction with state writes and audit rotation, without rewriting state. */
@@ -803,7 +811,13 @@ export class StateStore {
    * removing a live lock allows two integrations to run against the same repository at once.
    */
   async releaseLock(name: string, options: { force?: boolean } = {}): Promise<LockStatus> {
-    return await this.releaseLockAt(name, options, this.directory);
+    const released = await this.releaseLockAt(name, options, this.directory);
+    if (name === "integration" && options.force && !released.held) {
+      // Hold a fresh integration lock while clearing execution records, so a new holder cannot
+      // register a validator between release of the old lock and the explicit operator override.
+      await this.withLock("integration", async () => await forceClearExecutions(this.directory));
+    }
+    return released;
   }
 
   private async releaseLockAt(
@@ -846,10 +860,12 @@ export class StateStore {
     const lockDirectory = path.join(options.directory ?? this.directory, `${name}.lock`);
     const startedAt = Date.now();
     const ownerNonce = randomUUID();
+    const processIdentity = linuxProcessIdentity();
     const owner = {
       pid: process.pid,
       host: hostname(),
       platform: lockPlatform(),
+      ...(processIdentity ? { processIdentity } : {}),
       createdAt: new Date().toISOString(),
       nonce: ownerNonce,
     };
@@ -886,7 +902,7 @@ export class StateStore {
   /** Builds a complete owner directory before atomically publishing it as the active lock. */
   private async tryAcquireLock(
     lockDirectory: string,
-    owner: { pid: number; host: string; platform: string; createdAt: string; nonce: string },
+    owner: { pid: number; host: string; platform: string; processIdentity?: string; createdAt: string; nonce: string },
   ): Promise<boolean> {
     const candidate = `${lockDirectory}.candidate-${owner.nonce}`;
     await mkdir(candidate, { mode: 0o700 });
@@ -919,12 +935,13 @@ export class StateStore {
     }
   }
 
-  private async readLockOwner(lockDirectory: string): Promise<LockStatus["owner"]> {
+  private async readLockOwner(lockDirectory: string): Promise<LockOwner | undefined> {
     try {
       const parsed = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as {
         pid?: unknown;
         host?: unknown;
         platform?: unknown;
+        processIdentity?: unknown;
         createdAt?: unknown;
         nonce?: unknown;
       };
@@ -932,6 +949,7 @@ export class StateStore {
         ...(Number.isInteger(parsed.pid) ? { pid: parsed.pid as number } : {}),
         ...(typeof parsed.host === "string" ? { host: parsed.host } : {}),
         ...(typeof parsed.platform === "string" ? { platform: parsed.platform } : {}),
+        ...(typeof parsed.processIdentity === "string" ? { processIdentity: parsed.processIdentity } : {}),
         ...(typeof parsed.createdAt === "string" ? { createdAt: parsed.createdAt } : {}),
         ...(typeof parsed.nonce === "string" ? { nonce: parsed.nonce } : {}),
       };
@@ -978,7 +996,7 @@ export class StateStore {
    * Atomically moves a provably dead owner aside. Its nonce-specific, non-empty tombstone is kept so
    * a delayed second reclaimer cannot later move a newly acquired lock into the same destination.
    */
-  private async reclaimLock(lockDirectory: string, owner: LockStatus["owner"]): Promise<boolean> {
+  private async reclaimLock(lockDirectory: string, owner: LockOwner | undefined): Promise<boolean> {
     const identity = lockOwnerIdentity(owner);
     if (!identity) return false;
     const reclaimed = `${lockDirectory}.reclaimed-${identity}`;
@@ -1000,12 +1018,12 @@ export class StateStore {
    * gone. An unreadable owner file is not proof -- it is also what a lock looks like in the instant
    * between creating the directory and recording its owner.
    */
-  private lockOwnerCrashed(owner: LockStatus["owner"]): boolean {
+  private lockOwnerCrashed(owner: LockOwner | undefined): boolean {
     if (!owner) return false;
-    // A WSL2 or container process can share this hostname while running in another PID namespace,
-    // where its PID means nothing here. Records written before platforms were recorded fall back to
-    // the host and process check.
+    // A container can share this hostname and platform while using an unrelated PID namespace.
+    // Linux legacy records without boot/namespace provenance deliberately require force unlock.
     if (owner.platform !== undefined && owner.platform !== lockPlatform()) return false;
+    if (!canProbeProcessIdentity(owner.processIdentity, process.platform, linuxProcessIdentity())) return false;
     // Records written before owners carried a hostname fall back to the process check. Treating them
     // as foreign instead would strand a crashed holder's lock for the full stale timeout.
     if (owner.host !== undefined && owner.host !== hostname()) return false;
@@ -1014,7 +1032,7 @@ export class StateStore {
       process.kill(owner.pid as number, 0);
       return false;
     } catch (error) {
-      return (error as NodeJS.ErrnoException).code !== "EPERM";
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
     }
   }
 

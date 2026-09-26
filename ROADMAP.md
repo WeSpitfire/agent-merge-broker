@@ -56,7 +56,7 @@ The broker selects the protected target and policy; a producer-supplied base or 
 chooses the authority that evaluates it. The source ref must already be available locally, and this
 trusted-host increment requires `validation.authority: "broker"`.
 
-## Next — turn a validated submission into a merge-authorized Gate candidate
+## Later Gate increment — outside the 1.0 scope
 
 Validation is not merge authorization. The next Gate slice is **planned** and must deliberately
 connect the retained submission to the exact-candidate lifecycle while preserving its separate
@@ -109,15 +109,38 @@ consensus system, or automatic conflict-resolution engine.
 
 ## Conditions for `1.0`
 
-The project reaches `1.0` when adopters can depend on the contract, including:
+The `1.0` target is the Coordinate workflow plus trusted local-ref Gate validation, retention,
+diagnostics, and detached evidence. It does not require Gate merge authorization, remote submission,
+another forge, another database, HTTP hosting, a dashboard, or a workload sandbox. Existing Gate
+validation formats and commands are included in the intended stable contract.
 
-- stable and documented repository, candidate, and attestation formats;
-- immutable schema identifiers and published compatibility rules;
-- migration tooling for supported older formats;
-- conformance fixtures and adapter contract tests;
-- explicit authentication and authorization semantics for every supported transport;
-- recovery guarantees tested across every supported external side effect; and
-- a stated support window for public CLI, JSON, Node, and protocol interfaces.
+The project reaches `1.0` when adopters can depend on that scope. The checklist below is release
+qualification work, not a claim that a release candidate has already passed:
+
+- Freeze the documented CLI/JSON, root Node API, MCP inputs, errors, and format-specific compatibility
+  rules. Reviewed declaration, representative CLI JSON, and MCP input-schema baselines guard changes;
+  they are not a full cross-implementation conformance suite.
+- Retain immutable schema identities and document which formats are strict, extensible, nested, or
+  signed. Preserve strict policy validation; do not promise that every format tolerates new keys or
+  has its own integer version.
+- Exercise upgrades from named released packages using their actual saved bytes and document required
+  drain steps. Current migration tests cover version-1 state without `submissions` and unversioned
+  archived slices, including a frozen `v0.12.1` release-source fixture generated with current
+  development dependencies. A [published-package rehearsal](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-published-upgrades.md)
+  exercised idle state from every npm release between `0.12.0` and `0.16.0` against source-built
+  code, but it is not an exact-RC qualification or an in-flight repository upgrade. Migration never
+  rewrites signed evidence or invents missing publication target bindings.
+- Publish portable accepted/rejected conformance fixtures and reusable `ForgePublisher` contract
+  cases for exact identity, retries, ambiguous responses, revocation, and terminal reconciliation.
+- Preserve the documented OS-account authority of CLI/Node and launch-bound local MCP profiles.
+  Remote authentication is required only if a remote transport is added later.
+- Map every supported external side effect to recovery tests, including selected fresh-process
+  interruption/restart tests. State and audit are not one transaction; document that audit events
+  may be missing after committed state and that unsupported filesystem durability is not promised.
+- Pass the complete supported OS/Node matrix on the exact release revision, install and exercise
+  the tested tarballs, and complete an adopter walkthrough of publication, approval, reconciliation,
+  restart, and upgrade. Confirm registry/provenance facts only after publication succeeds.
+- Publish the support window and a concise operational recovery/backup procedure for that scope.
 
 Software versions, repository protocol versions, and attestation predicate versions will remain
 separate so one can evolve without implying that the others changed.

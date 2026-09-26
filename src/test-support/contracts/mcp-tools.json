@@ -1,0 +1,831 @@
+{
+  "operator": [
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "actor": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "baseSha": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "batchId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "candidateSha": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "policyRevision": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "batchId",
+          "candidateSha",
+          "baseSha"
+        ],
+        "type": "object"
+      },
+      "name": "batch_approve"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "type": "object"
+      },
+      "name": "batch_list"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "batchId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "batchId"
+        ],
+        "type": "object"
+      },
+      "name": "batch_publish"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "actor": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "baseSha": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "batchId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "candidateSha": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidenceUrl": {
+            "format": "uri",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "policyRevision": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "batchId",
+          "candidateSha",
+          "baseSha",
+          "name",
+          "status"
+        ],
+        "type": "object"
+      },
+      "name": "batch_record_verification"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "batchId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "publish": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batchId"
+        ],
+        "type": "object"
+      },
+      "name": "batch_refresh"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "actor": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "baseSha": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "batchId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "candidateSha": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "policyRevision": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "batchId",
+          "candidateSha",
+          "baseSha",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "name": "batch_request_changes"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "batchId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "batchId"
+        ],
+        "type": "object"
+      },
+      "name": "batch_show"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "batchId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "batch_sync"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "type": "object"
+      },
+      "name": "broker_audit"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "dryRun": {
+            "type": "boolean"
+          },
+          "maxTasks": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "publish": {
+            "type": "boolean"
+          },
+          "taskIds": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "broker_integrate"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "type": "object"
+      },
+      "name": "broker_metrics"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "maxTasks": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "taskIds": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "broker_plan"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "type": "object"
+      },
+      "name": "broker_recover"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "type": "object"
+      },
+      "name": "broker_status"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_cancel"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "commits": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sinceBase": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_candidate"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "base": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "dependsOn": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "holder": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "priority": {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "worktree": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId",
+          "paths"
+        ],
+        "type": "object"
+      },
+      "name": "task_claim"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "paths": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId",
+          "paths"
+        ],
+        "type": "object"
+      },
+      "name": "task_extend"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_heartbeat"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_release"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "holder": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "worktree": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_reopen"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_retry"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "commits": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sinceBase": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_revise"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_show"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "base": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "scope": {
+            "enum": [
+              "focused",
+              "authoritative",
+              "all"
+            ],
+            "type": "string"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "worktree": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "task_validate"
+    }
+  ],
+  "worker": [
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "type": "object"
+      },
+      "name": "broker_status"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "commits": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sinceBase": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_candidate"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "base": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "dependsOn": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "holder": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "priority": {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "worktree": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId",
+          "paths"
+        ],
+        "type": "object"
+      },
+      "name": "task_claim"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "paths": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId",
+          "paths"
+        ],
+        "type": "object"
+      },
+      "name": "task_extend"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_heartbeat"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_release"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "holder": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "worktree": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_reopen"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "commits": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sinceBase": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_revise"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "name": "task_show"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "base": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "scope": {
+            "enum": [
+              "focused",
+              "authoritative",
+              "all"
+            ],
+            "type": "string"
+          },
+          "taskId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "worktree": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "task_validate"
+    }
+  ]
+}

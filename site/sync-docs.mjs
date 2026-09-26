@@ -33,7 +33,7 @@ const SITE_PAGES = {
 };
 const INTERNAL = [
   [
-    new RegExp(`\\]\\((?:docs\\/)?(${Object.keys(SITE_PAGES).join("|")})\\.md(#[^)]+)?\\)`, "g"),
+    new RegExp(`\\]\\((?:\\.\\.\\/)?(?:docs\\/)?(${Object.keys(SITE_PAGES).join("|")})\\.md(#[^)]+)?\\)`, "g"),
     // VitePress prefixes heading slugs that start with a digit, such as "2. Install", with "_".
     (_match, name, anchor = "") => `](/docs/${SITE_PAGES[name]}${anchor.replace(/^#(\d)/u, "#_$1")})`,
   ],

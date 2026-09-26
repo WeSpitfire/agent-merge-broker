@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "sequence": 4,
+  "tasks": {
+    "HISTORICAL-ACTIVE": {
+      "id": "HISTORICAL-ACTIVE",
+      "title": "Registered work survives upgrade",
+      "status": "registered",
+      "priority": 0,
+      "baseSha": "a32880c7c09828e6ac4b621e9085ba4a7ce4a467",
+      "expectedPaths": [
+        "src/active.ts"
+      ],
+      "actualPaths": [],
+      "dependsOn": [],
+      "commits": [],
+      "warnings": [],
+      "validations": [],
+      "createdAt": "2026-09-24T18:25:07.583Z",
+      "updatedAt": "2026-09-24T18:25:07.583Z"
+    }
+  },
+  "batches": {}
+}

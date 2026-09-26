@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as core from "./core.js";
 import * as full from "./index.js";
+import { publicDeclarationsSnapshot } from "./test-support/public-contracts.js";
 
 // The root exports are the supported Node API. Adding a name is a minor change that needs docs;
 // removing or renaming one is a breaking change. Update this list only deliberately.
@@ -57,4 +58,10 @@ test("published declarations hide MergeBroker implementation fields", async (con
   for (const member of ["repo", "store", "publisher"]) {
     assert.doesNotMatch(broker, new RegExp(`readonly ${member}:`, "u"), `MergeBroker.${member} is internal`);
   }
+});
+
+test("root public declarations match the reviewed compatibility baseline", async () => {
+  const expected = await readFile(new URL("../src/test-support/contracts/public-api.txt", import.meta.url), "utf8");
+  assert.equal(await publicDeclarationsSnapshot(), expected,
+    "Public declarations changed. Review compatibility and deliberately update the baseline with the documented change.");
 });

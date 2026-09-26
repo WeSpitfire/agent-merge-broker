@@ -41,6 +41,13 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       # Dependabot reports advisories; every lane must exercise the same locked dependencies.
       - run: npm ci --no-audit --no-fund
+      # Exercise native supervision before the long repository suite so a Windows launcher failure
+      # is diagnosed immediately. This is additional coverage ordering, not a reduced full suite.
+      - if: runner.os == 'Windows'
+        run: npm run build
+      - name: Verify Windows validator supervision early
+        if: runner.os == 'Windows'
+        run: node --test --test-reporter=spec dist/process.test.js dist/execution-guard.test.js dist/validation.test.js
       - run: npm run verify
       - run: node scripts/update-schema-snapshots.mjs --check
       - run: npm run example

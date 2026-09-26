@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { MergeBroker } from "./broker.js";
 import { configPath } from "./config.js";
 import { BrokerError } from "./errors.js";
-import { MIGRATIONS } from "./migrations.js";
+import { applySavedFormatMigrations, inspectSavedFormats, MIGRATIONS } from "./migrations.js";
 import { runCommand } from "./process.js";
 
 async function git(repo: string, ...args: string[]): Promise<string> {
@@ -128,6 +129,51 @@ test("apply upgrades legacy state and archive slices after backing up their orig
   assert.equal(migrated?.details?.migrated, 2);
 });
 
+test("the frozen v0.12.1 release-source fixture upgrades with original bytes and task history preserved", async (context) => {
+  // This path works from source tests and compiled tests; fixtures are not part of published packages.
+  const fixture = new URL("../src/test-support/fixtures/migrations/v0.12.1/", import.meta.url);
+  const origin = JSON.parse(await readFile(new URL("origin.json", fixture), "utf8")) as {
+    version: string; commit: string; filesSha256: Record<string, string>;
+  };
+  assert.equal(origin.version, "0.12.1");
+  assert.equal(origin.commit, "3b51f22b844fab42ba8190768fac4cdeede162bb");
+  const originals: Record<string, string> = {};
+  for (const [name, digest] of Object.entries(origin.filesSha256)) {
+    const bytes = await readFile(new URL(name, fixture), "utf8");
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), digest, name);
+    originals[name] = bytes;
+  }
+  const repo = await repository(context);
+  const broker = await MergeBroker.open(repo);
+  const statePath = path.join(broker.store.directory, "state.json");
+  const archivePath = path.join(broker.store.archiveDirectory, "state-v0.12.1.json");
+  await writeFile(configPath(repo), originals["config.json"]!);
+  await writeFile(statePath, originals["state.json"]!);
+  await writeFile(archivePath, originals["archived-state.json"]!);
+  const preview = await MergeBroker.migrate(repo);
+  assert.equal(preview.complete, true);
+  assert.equal(preview.blocked, 0);
+  assert.equal(preview.pending, 2);
+
+  const applied = await MergeBroker.migrate(repo, { apply: true });
+  assert.equal(applied.migrated, 2);
+  assert.ok(applied.backupDirectory);
+  for (const [target, name] of [[statePath, "state.json"], [archivePath, "archived-state.json"]] as const) {
+    const backup = path.join(applied.backupDirectory, path.relative(broker.store.commonGitDirectory, target));
+    assert.equal(await readFile(backup, "utf8"), originals[name]);
+  }
+  assert.equal(await readFile(configPath(repo), "utf8"), originals["config.json"]);
+  const reopened = await MergeBroker.open(repo);
+  const activeBefore = (JSON.parse(originals["state.json"]!) as { tasks: Record<string, unknown> }).tasks;
+  assert.deepEqual((await reopened.state()).tasks, activeBefore);
+  const archivedBefore = JSON.parse(originals["archived-state.json"]!) as Record<string, unknown>;
+  assert.deepEqual(await reopened.store.readArchivedState(), [{ version: 1, ...archivedBefore }]);
+  await reopened.registerTask({ id: "AFTER-UPGRADE", expectedPaths: ["src/after.ts"] });
+  assert.equal((await reopened.task("AFTER-UPGRADE")).status, "registered");
+  assert.deepEqual((await reopened.state()).tasks["HISTORICAL-ACTIVE"], activeBefore["HISTORICAL-ACTIVE"]);
+  assert.equal((await MergeBroker.migrate(repo)).pending, 0);
+});
+
 test("apply refuses, and writes nothing, when a file comes from a newer release or is unreadable", async (context) => {
   const repo = await repository(context);
   const { broker, slicePath } = await withArchivedSlice(repo);
@@ -179,6 +225,97 @@ test("configuration from a newer release is reported and blocks apply", async (c
   );
 });
 
+test("an incomplete preflight blocks apply even when the inspected prefix has no pending migrations", async (context) => {
+  const repo = await repository(context);
+  const broker = await MergeBroker.open(repo);
+  const statePath = path.join(broker.store.directory, "state.json");
+  const unseen = path.join(broker.store.receiptsDirectory, "future.json");
+  await writeJson(unseen, { version: 2, taskId: "FUTURE" });
+  const unseenBytes = await readFile(unseen, "utf8");
+  const lock = context.mock.method(broker.store, "withStorageLock");
+  // State and the optional authority path exhaust this budget before receipts are inspected.
+  const locations = { repositoryRoot: repo, store: broker.store, maxScannedFiles: 2 };
+  for (const pending of [false, true]) {
+    if (pending) {
+      const legacy = await readJson(statePath);
+      delete legacy.submissions;
+      await writeJson(statePath, legacy);
+    }
+    const stateBytes = await readFile(statePath, "utf8");
+    const preview = await inspectSavedFormats(locations);
+    assert.equal(preview.complete, false);
+    assert.equal(preview.blocked, 0, "the incompatible receipt lies beyond the scan budget");
+    assert.equal(preview.pending, pending ? 1 : 0);
+    await assert.rejects(
+      applySavedFormatMigrations(locations),
+      (error: unknown) => error instanceof BrokerError && error.code === "MIGRATION_BLOCKED" && /scan limit/u.test(error.message),
+    );
+    assert.equal(await readFile(statePath, "utf8"), stateBytes);
+    assert.equal(await readFile(unseen, "utf8"), unseenBytes);
+    await assert.rejects(access(path.join(broker.store.archiveDirectory, "migrations")));
+  }
+  assert.equal(lock.mock.callCount(), 0, "an incomplete initial scan must not enter the write phase");
+});
+
+test("an incomplete locked rescan blocks migration when files appear after preflight", async (context) => {
+  const repo = await repository(context);
+  const broker = await MergeBroker.open(repo);
+  const statePath = path.join(broker.store.directory, "state.json");
+  const legacy = await readJson(statePath);
+  delete legacy.submissions;
+  await writeJson(statePath, legacy);
+  const stateBytes = await readFile(statePath, "utf8");
+  const locations = { repositoryRoot: repo, store: broker.store, maxScannedFiles: 2 };
+  const preview = await inspectSavedFormats(locations);
+  assert.equal(preview.complete, true);
+  assert.equal(preview.pending, 1);
+
+  const unseen = path.join(broker.store.receiptsDirectory, "future.json");
+  const withStorageLock = broker.store.withStorageLock.bind(broker.store);
+  const lock = context.mock.method(broker.store, "withStorageLock", async <T>(operation: (ownerNonce: string) => Promise<T> | T): Promise<T> => {
+    return await withStorageLock(async (ownerNonce) => {
+      await writeJson(unseen, { version: 2, taskId: "FUTURE" });
+      return await operation(ownerNonce);
+    });
+  });
+  await assert.rejects(
+    applySavedFormatMigrations(locations),
+    (error: unknown) => error instanceof BrokerError && error.code === "MIGRATION_BLOCKED" && /scan limit/u.test(error.message),
+  );
+  assert.equal(lock.mock.callCount(), 1);
+  assert.equal(await readFile(statePath, "utf8"), stateBytes);
+  assert.deepEqual(await readJson(unseen), { version: 2, taskId: "FUTURE" });
+  await assert.rejects(access(path.join(broker.store.archiveDirectory, "migrations")));
+});
+
+test("an incomplete clean migrate preview exits 1 in JSON and human modes without claiming compatibility", async (context) => {
+  const sourceTest = fileURLToPath(import.meta.url).endsWith(".ts");
+  const extension = sourceTest ? "ts" : "js";
+  const cli = new URL(`./cli.${extension}`, import.meta.url);
+  const broker = new URL(`./broker.${extension}`, import.meta.url);
+  const report = { applied: false, findings: [], pending: 0, blocked: 0, migrated: 0, complete: false };
+  const directory = await mkdtemp(path.join(tmpdir(), "merge-broker-migrate-cli-"));
+  context.after(async () => await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const preload = path.join(directory, "incomplete-report.mjs");
+  await writeFile(preload, [
+    `import { MergeBroker } from ${JSON.stringify(broker.href)};`,
+    `MergeBroker.migrate = async () => (${JSON.stringify(report)});`,
+  ].join("\n"));
+  for (const json of [false, true]) {
+    const result = await runCommand(process.execPath, [
+      ...(sourceTest ? ["--import", "tsx"] : []), "--import", pathToFileURL(preload).href,
+      fileURLToPath(cli), ...(json ? ["--json"] : []), "migrate",
+    ], { cwd: fileURLToPath(new URL("..", import.meta.url)), allowFailure: true });
+    assert.equal(result.exitCode, 1, result.stderr);
+    assert.equal(result.stderr, "");
+    if (json) assert.deepEqual(JSON.parse(result.stdout), report);
+    else {
+      assert.match(result.stdout, /inspection is incomplete/u);
+      assert.doesNotMatch(result.stdout, /All saved formats are current|Run migrate --apply/u);
+    }
+  }
+});
+
 test("the migrate command exits 1 while migrations are pending and 3 when apply is blocked", async (context) => {
   const repo = await repository(context);
   const { broker, slicePath } = await withArchivedSlice(repo);
@@ -190,7 +327,7 @@ test("the migrate command exits 1 while migrations are pending and 3 when apply 
   const run = async (...args: string[]) => await runCommand(
     process.execPath,
     [...(sourceTest ? ["--import", "tsx"] : []), cli, "--cwd", repo, "--json", "migrate", ...args],
-    { cwd: repo, allowFailure: true },
+    { cwd: fileURLToPath(new URL("..", import.meta.url)), allowFailure: true },
   );
 
   const pending = await run();

@@ -6,12 +6,13 @@ import {
   type JSONRPCMessage,
 } from "@modelcontextprotocol/server";
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createMcpServer, mcpToolNames } from "./mcp.js";
 import { MergeBroker } from "./broker.js";
 import { BrokerError } from "./errors.js";
 import { runCommand } from "./process.js";
+import { canonicalJson } from "./test-support/public-contracts.js";
 
 async function request(transport: InMemoryTransport, message: JSONRPCMessage): Promise<JSONRPCMessage> {
   return await new Promise<JSONRPCMessage>((resolve, reject) => {
@@ -67,7 +68,7 @@ async function callTool(
   };
 }
 
-async function listedTools(profile: "worker" | "operator"): Promise<string[]> {
+async function toolContracts(profile: "worker" | "operator"): Promise<Array<{ name: string; inputSchema: unknown }>> {
   const server = createMcpServer({ profile, version: "test" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await clientTransport.start();
@@ -86,9 +87,20 @@ async function listedTools(profile: "worker" | "operator"): Promise<string[]> {
   const response = await request(clientTransport, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   await server.close();
   assert.ok("result" in response && response.result && typeof response.result === "object");
-  const tools = (response.result as { tools: Array<{ name: string }> }).tools;
-  return tools.map((tool) => tool.name).sort();
+  const tools = (response.result as { tools: Array<{ name: string; inputSchema: unknown }> }).tools;
+  return tools.map(({ name, inputSchema }) => ({ name, inputSchema })).sort((a, b) => a.name.localeCompare(b.name, "en"));
 }
+
+async function listedTools(profile: "worker" | "operator"): Promise<string[]> {
+  return (await toolContracts(profile)).map((tool) => tool.name).sort();
+}
+
+test("MCP profile names and complete input schemas match the reviewed baseline", async () => {
+  const actual = { worker: await toolContracts("worker"), operator: await toolContracts("operator") };
+  const expected = await readFile(new URL("../src/test-support/contracts/mcp-tools.json", import.meta.url), "utf8");
+  assert.equal(canonicalJson(actual), expected,
+    "MCP inputs changed. Review profile authority and compatibility before deliberately updating the baseline.");
+});
 
 test("worker MCP profile cannot integrate, publish, verify, or approve", async () => {
   const tools = await listedTools("worker");

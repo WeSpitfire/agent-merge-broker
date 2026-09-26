@@ -28,6 +28,7 @@ import {
 } from "./git-locators.js";
 export { remoteUrlFingerprint, isHostQualifiedForgeRepository } from "./git-locators.js";
 import { BrokerError } from "./errors.js";
+import { assertExecutionsStopped } from "./execution-guard.js";
 import type { BrokerErrorCode } from "./error-codes.js";
 import { runCommand, withoutCurrentDirectoryExecutableSearch, type CommandResult } from "./process.js";
 import type { SubmissionWorktreeIdentity } from "./types.js";
@@ -2753,6 +2754,7 @@ export class GitRepository {
       expectedRootIdentity?: SubmissionWorktreeIdentity;
     } = {},
   ): Promise<void> {
+    await assertExecutionsStopped();
     const key = path.resolve(destination);
     const capturedGateAdministration = this.rawWorktreeAdministrations.get(key);
     const strictGateCleanup = options.strictGateCleanup === true || capturedGateAdministration !== undefined;

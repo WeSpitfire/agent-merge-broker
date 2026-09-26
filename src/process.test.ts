@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
+import childProcess, { type SpawnOptions } from "node:child_process";
 import { access, mkdtemp, rm } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import {
   commandForArchitecture,
@@ -102,6 +104,46 @@ test("bounds command output while retaining the beginning and end", async () => 
   assert.ok(result.stdout.endsWith("TAIL"));
   assert.match(result.stdout, /output truncated by Merge Broker/u);
   assert.ok(Buffer.byteLength(result.stdout, "utf8") < 1_100);
+});
+
+test("supervised commands preserve literal arguments, stdin, exit status, and bounded output", async () => {
+  const args = ["spaces and & symbols", 'literal "quotes"', "backslash\\", "日本語 café 🧪"];
+  const script = `let input=''; for await (const value of process.stdin) input+=value; console.log(JSON.stringify({args:process.argv.slice(1),input})); console.error('x'.repeat(10000)+'TAIL'); process.exitCode=7;`;
+  const result = await runCommand(process.execPath, ["--input-type=module", "-e", script, ...args], {
+    cwd: process.cwd(), input: "first\nsecond 日本語 café 🧪\n", allowFailure: true, killProcessTree: true, maxOutputBytes: 1024,
+  });
+  assert.equal(result.exitCode, 7);
+  assert.deepEqual(JSON.parse(result.stdout), { args, input: "first\nsecond 日本語 café 🧪\n" });
+  assert.match(result.stderr, /output truncated.*[\s\S]*TAIL/u);
+});
+
+test("zero-exit supervisors cannot pass validation before initialization or command completion", async (context) => {
+  for (const stage of ["initializing", "reporting command completion"] as const) {
+    await context.test(stage, async (subcontext) => {
+      const originalSpawn = childProcess.spawn;
+      const source = stage === "initializing" ? "process.exit(0);" : process.platform === "win32"
+        ? `process.stderr.write("MERGE_BROKER_SUPERVISOR_READY\\n"); process.stdin.once("data", () => process.exit(0));`
+        : `process.send({type:"ready"}); process.once("message", () => process.exit(0));`;
+      const replacement = ((_executable: string, argsOrOptions?: readonly string[] | SpawnOptions, options?: SpawnOptions) =>
+        originalSpawn(process.execPath, ["--input-type=commonjs", "-e", source],
+          (Array.isArray(argsOrOptions) ? options : argsOrOptions as SpawnOptions | undefined) ?? {})) as typeof childProcess.spawn;
+      const mocked = subcontext.mock.method(childProcess, "spawn", replacement);
+      syncBuiltinESMExports();
+      subcontext.after(() => { mocked.mock.restore(); syncBuiltinESMExports(); });
+      for (const allowFailure of [false, true]) {
+        await assert.rejects(runCommand(process.execPath, ["-e", "throw new Error('must not execute')"], {
+          cwd: process.cwd(), killProcessTree: true, allowFailure,
+        }), new RegExp(`Validator supervisor exited before ${stage}`, "u"));
+      }
+    });
+  }
+});
+
+test("a supervised empty successful command reports its completion explicitly", async () => {
+  const result = await runCommand(process.execPath, ["-e", ""], { cwd: process.cwd(), killProcessTree: true });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
 });
 
 test(

@@ -12,6 +12,8 @@ publishable; adding a second package must not interrupt its established publishi
 
 1. Protect `main` and require CI, authoritative repository validation, and the provenance verifier
    where the broker is enforced.
+   Require every `verify / verify (<os>, <node>)` check in the nine-lane matrix before merging;
+   a successful Linux lane is not a substitute for a failing Windows or macOS lane.
 2. Keep npm trusted publishing scoped to this repository and `release.yml`; do not add a fallback
    `NPM_TOKEN`.
 3. Enable GitHub private vulnerability reporting and periodically test the reporting link in
@@ -112,6 +114,42 @@ The composite action is documented with the same exact release tag, for example
 actually exists and is maintained deliberately.
 
 Do not reuse or move a published version tag. If a release is incorrect, deprecate it and publish a corrected patch version.
+
+### Release candidates
+
+Use a prerelease version such as `1.0.0-rc.1` and mark its GitHub release as a prerelease.
+The release resolver validates both pieces of metadata before any publishing job is authorized:
+prereleases publish to npm's `next` dist-tag, and normal versions publish to `latest`. A missing or
+contradictory prerelease flag fails the release. Release versions with SemVer build metadata are
+not accepted, so the package version and immutable Git tag remain unambiguous.
+
+Both packages use the same resolved channel. A core bootstrap must also explicitly pass
+`--tag next` when its approved version is a prerelease; do not accidentally make an RC the default
+installation. Verify both dist-tags after publication. The packaged consumers always install exact
+tarball bytes, not whichever version a mutable dist-tag points to.
+
+### 1.0 acceptance evidence
+
+The [roadmap](../ROADMAP.md) defines the supported scope. Before publishing
+`1.0.0`, record an acceptance result for the exact candidate version and source SHA covering:
+
+- all nine verification lanes and both installed tarballs, including frozen public contracts and
+  released-format migration fixtures;
+- process death during active validation, and crash/lost-response recovery at the documented
+  Coordinate publication and authorization boundaries;
+- a clean installation and upgrade/backup-restore rehearsal from each supported starting version;
+- a disposable protected GitHub repository workflow: two workers, rejected and accepted validation,
+  exact-candidate approval, publication, merge reconciliation, and restart;
+- a guide-following trial by someone other than the implementer; and
+- npm availability, intended dist-tags, and provenance for every distribution advertised for 1.0.
+
+The live GitHub rehearsal requires explicit permission for its repository, credentials, pushes,
+pull requests, and merges. Use synthetic content, never an adopter's working repository. Local fake
+forge tests do not count as this live result. A pending or unavailable check remains a release
+blocker in the acceptance record; do not silently mark it complete or promote an RC.
+
+Keep contract fixtures and harnesses in development/test-only paths. Completing this checklist does
+not require new runtime dependencies, a hosted service, or a second forge adapter.
 
 ## Schema compatibility
 

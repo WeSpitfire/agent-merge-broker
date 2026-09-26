@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "baseBranch": "main",
+  "baseRef": "main",
+  "remote": "origin",
+  "stateDirectory": "merge-broker",
+  "leases": {
+    "ttlSeconds": 1800,
+    "lockTimeoutSeconds": 15,
+    "serializedPatterns": [
+      "package-lock.json",
+      "pnpm-lock.yaml",
+      "yarn.lock"
+    ]
+  },
+  "policies": {
+    "unexpectedPaths": "error",
+    "requireCleanWorktree": false,
+    "requireDependencies": true
+  },
+  "scheduling": {
+    "maxTasks": 6,
+    "maxCommits": 12,
+    "maxWaitSeconds": 600,
+    "allowPathOverlap": false
+  },
+  "integration": {
+    "branchPrefix": "merge-broker/",
+    "history": "preserve",
+    "keepFailedWorktrees": false,
+    "refreshBase": true,
+    "maxAttempts": 3,
+    "provenance": {
+      "enabled": true,
+      "directory": ".merge-broker/attestations",
+      "requireSignature": true,
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEArYKpUkrx6wjKzXoknJnxpkOy3RL/2IH3Iy6CRDcqbdQ=\n-----END PUBLIC KEY-----\n"
+    }
+  },
+  "validation": {
+    "authority": "broker",
+    "focused": [],
+    "authoritative": []
+  },
+  "approval": {
+    "required": false,
+    "policyRevision": "default",
+    "requiredVerifications": [],
+    "requiredChecks": [],
+    "authorizedActors": []
+  },
+  "publish": {
+    "mode": "none",
+    "draft": false,
+    "autoMerge": false,
+    "mergeMethod": "squash",
+    "labels": [],
+    "titleTemplate": "Integration batch {batchId}"
+  }
+}

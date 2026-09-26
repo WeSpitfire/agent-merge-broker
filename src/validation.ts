@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolveShell, runShell, type ResolvedShell } from "./process.js";
 import { matchesAny } from "./patterns.js";
 import { ValidationError } from "./errors.js";
+import { assertExecutionsStopped } from "./execution-guard.js";
 import { isGateGitEnvironmentOverride } from "./git.js";
 import type { ValidationResult, ValidatorConfig } from "./types.js";
 
@@ -77,6 +78,7 @@ async function repairCacheDirectoryPermissions(
 }
 
 export async function removeValidationCacheDirectory(directory: string): Promise<void> {
+  await assertExecutionsStopped();
   const resolved = path.resolve(directory);
   const expected = validationCacheIdentities.get(resolved);
   if (!expected) {
