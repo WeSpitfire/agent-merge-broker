@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.0.0-rc.1 — 2026-09-26
+
+First 1.0 release candidate. This is a prerelease for qualification, not the final
+`1.0.0` compatibility or acceptance sign-off.
 
 ### Added
 
