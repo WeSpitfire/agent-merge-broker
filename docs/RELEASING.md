@@ -110,7 +110,7 @@ attestation for the expected source repository and commit. A tarball publication
 binding. A successful local check or pushed Git commit alone is not proof of npm publication.
 
 The composite action is documented with the same exact release tag, for example
-`WeSpitfire/agent-merge-broker/verify@v0.16.0`. Do not document a floating major tag unless that tag
+`WeSpitfire/agent-merge-broker/verify@v1.0.0-rc.1`. Do not document a floating major tag unless that tag
 actually exists and is maintained deliberately.
 
 Do not reuse or move a published version tag. If a release is incorrect, deprecate it and publish a corrected patch version.
@@ -142,6 +142,10 @@ The [roadmap](../ROADMAP.md) defines the supported scope. Before publishing
   exact-candidate approval, publication, merge reconciliation, and restart;
 - a guide-following trial by someone other than the implementer; and
 - npm availability, intended dist-tags, and provenance for every distribution advertised for 1.0.
+
+Give the independent adopter the [walkthrough record](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/ADOPTER-TRIAL.md) and ask them to
+follow the published guide without implementation help. Keep their completed record and evidence
+links with the exact candidate's acceptance result; an unfilled template is not a passing trial.
 
 The live GitHub rehearsal requires explicit permission for its repository, credentials, pushes,
 pull requests, and merges. Use synthetic content, never an adopter's working repository. Local fake

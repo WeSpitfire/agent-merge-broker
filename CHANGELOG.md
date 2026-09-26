@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.0.0-rc.1 — 2026-09-26
+
+First 1.0 release candidate. This is a prerelease for qualification, not the final
+`1.0.0` compatibility or acceptance sign-off.
 
 ### Added
 
@@ -27,6 +30,8 @@
 
 ### Fixed
 
+- Package publication dry-runs now pass the resolved npm dist-tag, as newer npm versions
+  require an explicit `--tag` for prerelease tarballs even when no publication occurs.
 - The foreign-platform lock fixture now chooses a platform different from the test host, fixing
   the Windows verification failure without weakening the lock's live-owner checks.
 - `migrate --apply` refuses incomplete scans before any migration writes, including when the file

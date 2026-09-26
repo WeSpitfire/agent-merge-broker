@@ -8,8 +8,8 @@ The documentation site tracks the `main` branch and may be ahead of npm. Compare
 with the topmost entry in the
 [changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md); if that current
 entry is **Unreleased**, it is source-checkout behavior until the next release is published. This
-page covers version `0.16.0`; npm's version history
-confirms published availability. The `v0.14.0` and `v0.14.1` GitHub tags exist, but neither was
+page covers release candidate `1.0.0-rc.1`; npm's version history must confirm its publication
+before installation. The `v0.14.0` and `v0.14.1` GitHub tags exist, but neither was
 published to npm.
 
 ## Interface stability and support
@@ -106,8 +106,8 @@ before upgrading as directed in [Getting started](GETTING_STARTED.md#upgrade-the
 The companion `agent-merge-broker-core` package shares the Coordinate/Gate CLI and core Node API
 without the MCP server, SDK dependency, or `createMcpServer` export. `agent-merge-broker` retains
 its existing MCP entry points and API. The packages share CLI aliases; choose one per installation.
-Core registry publication has a separate bootstrap and release gate; the existence of a source
-tarball does not establish that the package is available from npm.
+Core registry publication has a separate bootstrap and release gate. Core is not yet published to
+npm; the existence of a source tarball does not establish registry availability.
 These packaging changes are introduced in `0.15.0`.
 
 Both tarballs retain runtime code, TypeScript definitions, schemas, templates, README, and license;

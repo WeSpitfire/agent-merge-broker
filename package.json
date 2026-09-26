@@ -1,6 +1,6 @@
 {
   "name": "agent-merge-broker",
-  "version": "0.16.0",
+  "version": "1.0.0-rc.1",
   "description": "Crash-recoverable repository transactions, validation, provenance, and exact-candidate approval for agents and humans.",
   "type": "module",
   "bin": {

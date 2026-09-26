@@ -42,7 +42,7 @@ test("release surfaces run the exact npm package version they advertise", () => 
   assert.match(releaseGuide, new RegExp(`verify@v${version}`, "u"));
   // Every documented action reference must move with the release; an older action may not run.
   for (const [name, document] of [["README", readme], ["RELEASING", releaseGuide], ["GETTING_STARTED", gettingStarted]]) {
-    for (const [reference] of document!.matchAll(/verify@v\d+\.\d+\.\d+/gu)) {
+    for (const [reference] of document!.matchAll(/verify@v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/gu)) {
       assert.equal(reference, `verify@v${packageMetadata.version}`, `${name} pins ${reference}`);
     }
   }
