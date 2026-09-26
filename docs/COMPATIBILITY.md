@@ -94,7 +94,7 @@ without a `version`. In addition to constructed cases, a frozen fixture contains
 active state, and an archive emitted by the `v0.12.1` Git-tag source. Its provenance records the exact
 commit and file hashes; it was generated with current development dependencies, not captured from an
 installed historical npm tarball. Tests cover migration, original-byte backups, preserved task
-history, and subsequent registration. A separate [published-package upgrade rehearsal](acceptance/2026-09-26-published-upgrades.md)
+history, and subsequent registration. A separate [published-package upgrade rehearsal](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-published-upgrades.md)
 exercised exact npm tarballs from `0.12.0` through `0.16.0` against a source checkout, including
 continuation and exact-byte restore. Neither result certifies historical signing, integration,
 in-flight publication, earlier starting versions, or an exact 1.0 release candidate. Drain work

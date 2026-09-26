@@ -126,7 +126,7 @@ qualification work, not a claim that a release candidate has already passed:
 - Exercise upgrades from named released packages using their actual saved bytes and document required
   drain steps. Current migration tests cover version-1 state without `submissions` and unversioned
   archived slices, including a frozen `v0.12.1` release-source fixture generated with current
-  development dependencies. A [published-package rehearsal](docs/acceptance/2026-09-26-published-upgrades.md)
+  development dependencies. A [published-package rehearsal](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-published-upgrades.md)
   exercised idle state from every npm release between `0.12.0` and `0.16.0` against source-built
   code, but it is not an exact-RC qualification or an in-flight repository upgrade. Migration never
   rewrites signed evidence or invents missing publication target bindings.
