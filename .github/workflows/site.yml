@@ -37,7 +37,7 @@ jobs:
       - name: Install site dependencies
         working-directory: site
         run: npm ci
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         id: pages
       # sync-docs copies the canonical documentation from the repository root, so the site can
       # never drift from the files contributors actually edit.
