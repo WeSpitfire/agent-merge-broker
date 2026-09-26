@@ -5,8 +5,9 @@ path. Start locally, prove the Coordinate workflow with a small task, then enabl
 publication. A separate section covers validation-only intake for a trusted Git ref assembled
 outside that workflow.
 
-This guide covers candidate version `1.0.0-rc.1`. The documentation tracks source; check npm's
-version history before using the RC commands below. The companion core package is not yet
+This guide covers [published candidate version `1.0.0-rc.1`](https://www.npmjs.com/package/agent-merge-broker/v/1.0.0-rc.1)
+on npm's `next` channel. Pin that exact version for a trial; `latest` still points to `0.16.0`.
+The companion core package is not yet
 published to npm; check its [version history](https://www.npmjs.com/package/agent-merge-broker-core?activeTab=versions)
 before attempting a core registry install.
 
