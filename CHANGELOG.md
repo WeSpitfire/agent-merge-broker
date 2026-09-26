@@ -4,6 +4,9 @@
 
 ### Added
 
+- Published npm tarballs from `0.12.0` through `0.16.0` were exercised in an isolated
+  source-level upgrade, continuation, and exact-byte restore rehearsal. The acceptance
+  record names the tested versions and limits; exact-release-candidate qualification remains.
 - Release candidates publish to npm's `next` channel for both distributions. The release resolver
   rejects mismatched version/prerelease metadata before publication; stable versions continue to
   use `latest`.

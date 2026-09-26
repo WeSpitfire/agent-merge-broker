@@ -94,10 +94,12 @@ without a `version`. In addition to constructed cases, a frozen fixture contains
 active state, and an archive emitted by the `v0.12.1` Git-tag source. Its provenance records the exact
 commit and file hashes; it was generated with current development dependencies, not captured from an
 installed historical npm tarball. Tests cover migration, original-byte backups, preserved task
-history, and subsequent registration. They do not certify historical signing, integration, in-flight
-publication, or an end-to-end upgrade from every older release. Release qualification must name the
-actual released starting versions it has exercised, including any requirement to drain work before
-upgrading. See the [1.0 checklist](../ROADMAP.md#conditions-for-10).
+history, and subsequent registration. A separate [published-package upgrade rehearsal](acceptance/2026-09-26-published-upgrades.md)
+exercised exact npm tarballs from `0.12.0` through `0.16.0` against a source checkout, including
+continuation and exact-byte restore. Neither result certifies historical signing, integration,
+in-flight publication, earlier starting versions, or an exact 1.0 release candidate. Drain work
+before upgrading as directed in [Getting started](GETTING_STARTED.md#upgrade-the-broker). See the
+[1.0 checklist](../ROADMAP.md#conditions-for-10).
 
 ## Installation footprint — 0.15.0
 
