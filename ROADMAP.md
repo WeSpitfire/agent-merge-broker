@@ -6,8 +6,8 @@ This roadmap is organized by capability rather than promised release numbers or 
 
 ## Now — consolidate the recoverable transaction core
 
-Version `0.16.0` is the current npm `latest` baseline; prerelease `1.0.0-rc.2` is the candidate
-under [qualification](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-rc1.md)
+Version `0.16.0` is the current npm `latest` baseline; published prerelease `1.0.0-rc.2`
+is on npm `next` and remains under [qualification](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-29-rc2.md)
 for the remaining 1.0 gates.
 The baseline includes Coordinate mode: leases and commit receipts,
 deterministic batching, disposable-worktree validation, optional exact-candidate approval, signed

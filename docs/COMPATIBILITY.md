@@ -8,9 +8,9 @@ The documentation site tracks the `main` branch and may be ahead of npm. Compare
 with the topmost entry in the
 [changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md); if that current
 entry is **Unreleased**, it is source-checkout behavior until the next release is published. This
-page covers release candidate `1.0.0-rc.2`; [npm's version history](https://www.npmjs.com/package/agent-merge-broker?activeTab=versions)
-must confirm its publication before installation, while `0.16.0` remains on `latest`. The
-[`1.0.0-rc.1` acceptance record](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-rc1.md)
+page covers [published release candidate `1.0.0-rc.2`](https://www.npmjs.com/package/agent-merge-broker/v/1.0.0-rc.2),
+which is on npm `next`, while `0.16.0` remains on `latest`. Its
+[acceptance record](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-29-rc2.md)
 lists the remaining 1.0 gates. The `v0.14.0` and `v0.14.1` GitHub tags exist, but neither was
 published to npm.
 
