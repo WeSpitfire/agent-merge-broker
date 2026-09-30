@@ -25,9 +25,10 @@ It proposes the interfaces final `1.0` will freeze: a curated Node API, document
 exit statuses, schemas for every saved format, `merge-broker migrate`, and stated principals for each
 transport. It contains breaking changes; read the upgrade notes in the
 [changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md) first.
-An RC does not itself complete the 1.0 acceptance checklist. The documentation tracks source;
-check the [npm version history](https://www.npmjs.com/package/agent-merge-broker?activeTab=versions)
-for published availability.
+The [RC is published on npm `next`](https://www.npmjs.com/package/agent-merge-broker/v/1.0.0-rc.1),
+while `latest` remains `0.16.0`. An RC does not itself complete the 1.0 acceptance
+checklist; the [acceptance record](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-rc1.md)
+distinguishes verified evidence from pending gates.
 
 The `v0.14.0` and `v0.14.1` GitHub tags remain available, but neither version was published to npm.
 The companion core package has not yet had its first npm publication. Its source tarball is

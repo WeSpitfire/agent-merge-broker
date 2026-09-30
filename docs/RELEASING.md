@@ -152,6 +152,10 @@ pull requests, and merges. Use synthetic content, never an adopter's working rep
 forge tests do not count as this live result. A pending or unavailable check remains a release
 blocker in the acceptance record; do not silently mark it complete or promote an RC.
 
+The current [`1.0.0-rc.1` acceptance record](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-rc1.md)
+separates verified tagged-release evidence from the still-open live trial, adopter,
+and core-publication requirements.
+
 Keep contract fixtures and harnesses in development/test-only paths. Completing this checklist does
 not require new runtime dependencies, a hosted service, or a second forge adapter.
 
