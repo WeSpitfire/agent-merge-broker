@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.0-rc.2 — 2026-09-29
+
+Second 1.0 release candidate. It changes no interface, saved format, or behavior; it refreshes
+dependencies so the final `1.0.0` does not ship with stale requirements. Interface and format
+compatibility are unchanged from `1.0.0-rc.1`.
+
+### Changed
+
+- Runtime dependencies: zod 4.5.4 → 4.6.5 and picomatch 4.0.5 → 4.0.7. Neither change alters a
+  documented interface; the full verification matrix runs on the updated tree.
+- Development dependencies: `@types/node` 26.2.0 → 26.6.3, tsx 4.23.12 → 4.23.15, and a patched
+  development-only `fast-uri` (required transitively by ajv) resolving a high-severity advisory.
+  Production dependencies carry no known advisories.
+
 ## 1.0.0-rc.1 — 2026-09-26
 
 First 1.0 release candidate. This is a prerelease for qualification, not the final

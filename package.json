@@ -1,6 +1,6 @@
 {
   "name": "agent-merge-broker",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0-rc.2",
   "description": "Crash-recoverable repository transactions, validation, provenance, and exact-candidate approval for agents and humans.",
   "type": "module",
   "bin": {
@@ -67,8 +67,8 @@
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
     "commander": "^14.0.3",
-    "picomatch": "^4.0.2",
-    "zod": "^4.5.4"
+    "picomatch": "^4.0.7",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
