@@ -110,7 +110,7 @@ attestation for the expected source repository and commit. A tarball publication
 binding. A successful local check or pushed Git commit alone is not proof of npm publication.
 
 The composite action is documented with the same exact release tag, for example
-`WeSpitfire/agent-merge-broker/verify@v1.0.0-rc.1`. Do not document a floating major tag unless that tag
+`WeSpitfire/agent-merge-broker/verify@v1.0.0-rc.2`. Do not document a floating major tag unless that tag
 actually exists and is maintained deliberately.
 
 Do not reuse or move a published version tag. If a release is incorrect, deprecate it and publish a corrected patch version.
@@ -152,9 +152,10 @@ pull requests, and merges. Use synthetic content, never an adopter's working rep
 forge tests do not count as this live result. A pending or unavailable check remains a release
 blocker in the acceptance record; do not silently mark it complete or promote an RC.
 
-The current [`1.0.0-rc.1` acceptance record](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-rc1.md)
+The [`1.0.0-rc.1` acceptance record](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-rc1.md)
 separates verified tagged-release evidence from the still-open live trial, adopter,
-and core-publication requirements.
+and core-publication requirements; a new candidate repeats affected checks and records
+its own result.
 
 Keep contract fixtures and harnesses in development/test-only paths. Completing this checklist does
 not require new runtime dependencies, a hosted service, or a second forge adapter.

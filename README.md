@@ -18,16 +18,17 @@ protection, or forge merge queue.
 
 ## Release status
 
-Version **1.0.0-rc.1** is a prerelease candidate for the Coordinate workflow and trusted local-ref Gate validation,
+Version **1.0.0-rc.2** is a prerelease candidate for the Coordinate workflow and trusted local-ref Gate validation,
 with Gate diagnostics, abandonment and archival, detached signed validation evidence, offline
 verification, stricter state diagnostics, leaner packaging, storage maintenance, and release safeguards.
 It proposes the interfaces final `1.0` will freeze: a curated Node API, documented error codes and
 exit statuses, schemas for every saved format, `merge-broker migrate`, and stated principals for each
 transport. It contains breaking changes; read the upgrade notes in the
 [changelog](https://github.com/WeSpitfire/agent-merge-broker/blob/main/CHANGELOG.md) first.
-The [RC is published on npm `next`](https://www.npmjs.com/package/agent-merge-broker/v/1.0.0-rc.1),
-while `latest` remains `0.16.0`. An RC does not itself complete the 1.0 acceptance
-checklist; the [acceptance record](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-rc1.md)
+A release candidate publishes to npm `next` while `latest` remains `0.16.0`; confirm the
+candidate's availability in [npm's version history](https://www.npmjs.com/package/agent-merge-broker?activeTab=versions)
+before installing it. An RC does not itself complete the 1.0 acceptance
+checklist; the [`1.0.0-rc.1` acceptance record](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-26-rc1.md)
 distinguishes verified evidence from pending gates.
 
 The `v0.14.0` and `v0.14.1` GitHub tags remain available, but neither version was published to npm.
@@ -67,7 +68,7 @@ offline, and previews archival.
 Keep the tool outside your project's dependencies with a version-pinned global installation:
 
 ```bash
-npm install --global agent-merge-broker@1.0.0-rc.1
+npm install --global agent-merge-broker@1.0.0-rc.2
 # From the repository you want to coordinate:
 merge-broker init --base main --base-ref origin/main --remote origin
 git add .merge-broker AGENTS.md
@@ -174,7 +175,7 @@ Upgrade all audit readers first: versions before 0.15.0 cannot read compressed r
 See the [storage recipe](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/GETTING_STARTED.md#inspect-and-compact-storage).
 
 For protected-branch enforcement of Coordinate provenance, pin the composite action to the matching
-release tag: `WeSpitfire/agent-merge-broker/verify@v1.0.0-rc.1`. Configuration examples are in
+release tag: `WeSpitfire/agent-merge-broker/verify@v1.0.0-rc.2`. Configuration examples are in
 [Getting started](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/GETTING_STARTED.md) and the [release guide](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/RELEASING.md).
 
 Source verification includes the full test suite, both examples, and installation of the actual npm
