@@ -31,10 +31,14 @@ checklist; the [acceptance record](https://github.com/WeSpitfire/agent-merge-bro
 distinguishes verified evidence from pending gates.
 
 The `v0.14.0` and `v0.14.1` GitHub tags remain available, but neither version was published to npm.
-The companion core package has not yet had its first npm publication. Its source tarball is
-verified separately; do not use a core registry install command until
+The companion core package `agent-merge-broker-core` had its first npm publication at
+`1.0.0-rc.2`, bootstrapped by a maintainer from the release-verified core artifact. Later versions
+can publish through the release workflow with provenance after its trusted publisher is configured.
+Because npm assigns `latest` to a package's
+first version, core's `latest` also points at the release candidate until a stable core version
+exists. Pin the exact version and confirm it in
 [npm's core package history](https://www.npmjs.com/package/agent-merge-broker-core?activeTab=versions)
-confirms availability.
+before installing.
 
 This candidate requires **Node.js 22 or newer**; version 0.13.0 supported Node.js 20.12 or newer.
 Git 2.31+ is required for Coordinate; Gate requires Git 2.46+. Linux, macOS, and Windows are

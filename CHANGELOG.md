@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The companion `agent-merge-broker-core` package had its first npm publication as
+  `1.0.0-rc.2`, bootstrapped by a maintainer from the release-verified core artifact. Later
+  versions publish through the release workflow with provenance once its trusted publisher is
+  configured. Documentation now names the published core version instead of marking core
+  unpublished.
+
 ## 1.0.0-rc.2 — 2026-09-29
 
 Second 1.0 release candidate. It changes no interface, saved format, or behavior; it refreshes
