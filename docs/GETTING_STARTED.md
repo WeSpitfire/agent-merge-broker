@@ -7,9 +7,10 @@ outside that workflow.
 
 This guide covers [published candidate version `1.0.0-rc.2`](https://www.npmjs.com/package/agent-merge-broker/v/1.0.0-rc.2)
 on npm's `next` channel. Pin that exact version for a trial; `latest` still points to `0.16.0`.
-The companion core package is not yet
-published to npm; check its [version history](https://www.npmjs.com/package/agent-merge-broker-core?activeTab=versions)
-before attempting a core registry install.
+The companion core package is published as
+[`agent-merge-broker-core@1.0.0-rc.2`](https://www.npmjs.com/package/agent-merge-broker-core/v/1.0.0-rc.2);
+its `latest` tag also points at the release candidate because npm assigns `latest` to a package's
+first version, so pin the exact version for a core install as well.
 
 ## Before you begin
 

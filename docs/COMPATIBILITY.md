@@ -108,8 +108,9 @@ before upgrading as directed in [Getting started](GETTING_STARTED.md#upgrade-the
 The companion `agent-merge-broker-core` package shares the Coordinate/Gate CLI and core Node API
 without the MCP server, SDK dependency, or `createMcpServer` export. `agent-merge-broker` retains
 its existing MCP entry points and API. The packages share CLI aliases; choose one per installation.
-Core registry publication has a separate bootstrap and release gate. Core is not yet published to
-npm; the existence of a source tarball does not establish registry availability.
+Core registry publication has a separate bootstrap and release gate. Core's first registry
+publication is `1.0.0-rc.2`, bootstrapped from the release-verified artifact; a source tarball for
+any later version does not by itself establish registry availability.
 These packaging changes are introduced in `0.15.0`.
 
 Both tarballs retain runtime code, TypeScript definitions, schemas, templates, README, and license;

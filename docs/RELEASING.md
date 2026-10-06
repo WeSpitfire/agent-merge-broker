@@ -82,10 +82,16 @@ requires an existing package, and trust is configured separately for each packag
 4. Enable `PUBLISH_CORE_PACKAGE=true` for subsequent unpublished versions. Do not attempt to publish
    the bootstrap version again.
 
+Status: steps 1 and 2 completed on 2026-09-30 with `1.0.0-rc.2` (see the
+[rc.2 acceptance record](https://github.com/WeSpitfire/agent-merge-broker/blob/main/docs/acceptance/2026-09-29-rc2.md)), and `PUBLISH_CORE_PACKAGE` is set to
+`true`. Step 3 is not yet verified: confirm or configure the trusted publisher before the next
+release, otherwise the core job fails while the full-package job still publishes. Do not publish
+core `1.0.0-rc.2` again.
+
 See npm's [trusted publishing guide](https://docs.npmjs.com/trusted-publishers/) and
 [trust configuration](https://docs.npmjs.com/cli/v11/commands/npm-trust/). Do not add a fallback
-`NPM_TOKEN` to the repository. Until bootstrap and publication complete, docs must keep core marked
-unpublished and must not promise registry installation commands for it.
+`NPM_TOKEN` to the repository. Until trusted publishing is configured and a workflow-published core
+version is verified, docs must not claim provenance for core.
 
 ## Release procedure
 
